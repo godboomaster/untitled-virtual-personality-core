@@ -60,9 +60,23 @@ import javax.crypto.spec.GCMParameterSpec;
  * приложения: модель есть у соседа (приложение ядра ↔ Арродес) — считает
  * он, modelStatus говорит via: "peer" (PhoneGemmaPeer).
  *
+ * Ключи, введённые на самом телефоне (приложение без компьютера), — общие
+ * для всех персон, под своим именем (PHONE): ключи с ядра их не затирают, в
+ * cloudChat они идут после ключей персоны с ядра (ядро главное). Вебу — только
+ * маски; целиком — exportPhoneProviders, для переноса на компьютер.
+ *
  * JS: setProviders({persona, providers}), providersInfo({persona}) →
- * {names}, clearProviders({persona?}), cloudChat({persona, messages,
- * maxTokens?, temperature?}) → {text, provider, model}; modelStatus(),
+ * {names}, clearProviders({persona?}), phoneProviders() → {providers: [{name,
+ * base_url, model, keys: [маска]}]}, updatePhoneProvider({name, base_url?,
+ * model?, addKey?, removeKey?, remove?, top?}), exportPhoneProviders() →
+ * {providers}, coreProviders({personas?}) → {providers: [{name, models,
+ * keys: [маска], personas}]} — ключи с ядра всех персон вместе (вкладка
+ * «Провайдеры»), personaProviders({persona}) → {providers: [{name, model,
+ * keys: [маска], own, phone}]} — кем персона может отвечать без ядра (её
+ * цепочка в досье), cloudChat({persona, messages, maxTokens?, temperature?,
+ * only?}) → {text, provider, model} (only — имена провайдеров в порядке
+ * перебора, порядок персоны на телефоне; без него — её ключи с ядра и
+ * телефона по порядку); modelStatus(),
  * downloadModel({url?, allowMetered?}), cancelDownload(), deleteModel(),
  * localChat({requestId, system, history, text, maxTokens?, temperature?, topP?}) →
  * {text, backend}, stopLocal(), unloadModel(); события modelProgress
@@ -87,6 +101,8 @@ public class OfflineLlmPlugin extends Plugin {
     private static final String PREFS = "vpc_offline";
     private static final String KS_ALIAS = "vpc_offline_secrets";
     private static final String PROV_PREFIX = "prov:";
+    // Ключи, введённые на телефоне, — не персона: «*» в id персоны не бывает
+    private static final String PHONE = "*";
     private final ExecutorService io = Executors.newCachedThreadPool();
 
     private volatile boolean downloading = false;
@@ -145,11 +161,159 @@ public class OfflineLlmPlugin extends Plugin {
         }
     }
 
+    /** Провайдеры для ответа: персоны (с ядра), потом введённые на телефоне —
+     * тот же провайдер дополняется ключами телефона, которых у него нет;
+     * поверх — правки с телефона (applyEdits). */
+    private JSONArray providersFor(String persona) {
+        return applyEdits(mergedFor(persona));
+    }
+
+    private JSONArray mergedFor(String persona) {
+        JSONArray own = loadProviders(persona);
+        JSONArray phone = loadProviders(PHONE);
+        if (phone.length() == 0) return own;
+        JSONArray out = new JSONArray();
+        java.util.Map<String, JSONObject> byName = new java.util.HashMap<>();
+        try {
+            for (int i = 0; i < own.length(); i++) {
+                JSONObject p = new JSONObject(own.getJSONObject(i).toString());
+                byName.put(p.optString("name"), p);
+                out.put(p);
+            }
+            for (int i = 0; i < phone.length(); i++) {
+                JSONObject ph = phone.getJSONObject(i);
+                JSONObject p = byName.get(ph.optString("name"));
+                if (p == null) {
+                    out.put(ph);
+                    continue;
+                }
+                JSONArray keys = p.optJSONArray("api_keys");
+                if (keys == null) {
+                    keys = new JSONArray();
+                    p.put("api_keys", keys);
+                }
+                java.util.Set<String> have = new java.util.HashSet<>();
+                for (int k = 0; k < keys.length(); k++) have.add(keys.optString(k));
+                JSONArray more = ph.optJSONArray("api_keys");
+                for (int k = 0; more != null && k < more.length(); k++) {
+                    if (have.add(more.optString(k))) keys.put(more.optString(k));
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "ключи телефона не слились с ключами персоны", e);
+            return own;
+        }
+        return out;
+    }
+
+    private void storeProviders(String persona, JSONArray providers) throws Exception {
+        prefs().edit().putString(PROV_PREFIX + persona, encrypt(providers.toString())).apply();
+    }
+
+    private static String mask(String key) {
+        if (key.length() <= 8) return "••••";
+        return key.substring(0, 3) + "…" + key.substring(key.length() - 4);
+    }
+
+    private JSObject phoneList() {
+        JSONArray list = loadProviders(PHONE);
+        JSArray out = new JSArray();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject p = list.optJSONObject(i);
+            if (p == null) continue;
+            JSObject o = new JSObject();
+            o.put("name", p.optString("name"));
+            o.put("base_url", p.optString("base_url"));
+            o.put("model", p.optString("model"));
+            JSArray masks = new JSArray();
+            JSONArray keys = p.optJSONArray("api_keys");
+            for (int k = 0; keys != null && k < keys.length(); k++) masks.put(mask(keys.optString(k)));
+            o.put("keys", masks);
+            out.put(o);
+        }
+        JSObject ret = new JSObject();
+        ret.put("providers", out);
+        return ret;
+    }
+
+    @PluginMethod
+    public void phoneProviders(PluginCall call) {
+        call.resolve(phoneList());
+    }
+
+    /** Правка одного провайдера телефона: адрес и модель, добавить ключ,
+     * убрать ключ по номеру, убрать провайдера, сделать основным. Провайдера
+     * без ключей не остаётся. */
+    @PluginMethod
+    public void updatePhoneProvider(PluginCall call) {
+        String name = call.getString("name", "");
+        if (name == null || name.isEmpty()) {
+            call.reject("name");
+            return;
+        }
+        try {
+            JSONArray list = loadProviders(PHONE);
+            int at = -1;
+            for (int i = 0; i < list.length(); i++) {
+                if (name.equals(list.getJSONObject(i).optString("name"))) at = i;
+            }
+            JSONObject p = at >= 0 ? list.getJSONObject(at) : new JSONObject().put("name", name)
+                    .put("api_keys", new JSONArray());
+            String baseUrl = call.getString("base_url");
+            if (baseUrl != null && !baseUrl.trim().isEmpty()) p.put("base_url", baseUrl.trim().replaceAll("/+$", ""));
+            String model = call.getString("model");
+            if (model != null) p.put("model", model.trim());
+            Double temp = call.getDouble("temperature");
+            if (temp != null) p.put("temperature", temp);
+            JSONArray keys = p.optJSONArray("api_keys");
+            String add = call.getString("addKey");
+            if (add != null && !add.trim().isEmpty()) {
+                boolean dup = false;
+                for (int k = 0; k < keys.length(); k++) dup |= add.trim().equals(keys.optString(k));
+                if (!dup) keys.put(add.trim());
+            }
+            Integer drop = call.getInt("removeKey");
+            if (drop != null && drop >= 0 && drop < keys.length()) keys.remove(drop);
+            JSONArray next = new JSONArray();
+            boolean keep = !call.getBoolean("remove", false) && keys.length() > 0;
+            boolean top = call.getBoolean("top", false);
+            if (keep && top) next.put(p);
+            for (int i = 0; i < list.length(); i++) if (i != at) next.put(list.getJSONObject(i));
+            if (keep && !top) {
+                // На прежнем месте (новый — в конец)
+                JSONArray placed = new JSONArray();
+                int pos = at >= 0 ? at : next.length();
+                for (int i = 0; i <= next.length(); i++) {
+                    if (i == pos) placed.put(p);
+                    if (i < next.length()) placed.put(next.getJSONObject(i));
+                }
+                next = placed;
+            }
+            if (next.length() == 0) prefs().edit().remove(PROV_PREFIX + PHONE).apply();
+            else storeProviders(PHONE, next);
+            call.resolve(phoneList());
+        } catch (Exception e) {
+            call.reject("Не удалось сохранить ключ: " + e.getClass().getSimpleName());
+        }
+    }
+
+    /** Ключи телефона целиком — только для переноса на компьютер. */
+    @PluginMethod
+    public void exportPhoneProviders(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            ret.put("providers", new JSArray(loadProviders(PHONE).toString()));
+        } catch (Exception e) {
+            ret.put("providers", new JSArray());
+        }
+        call.resolve(ret);
+    }
+
     @PluginMethod
     public void setProviders(PluginCall call) {
         String persona = call.getString("persona", "");
         JSArray providers = call.getArray("providers", new JSArray());
-        if (persona == null || persona.isEmpty()) {
+        if (persona == null || persona.isEmpty() || PHONE.equals(persona)) {
             call.reject("persona");
             return;
         }
@@ -181,12 +345,356 @@ public class OfflineLlmPlugin extends Plugin {
         String persona = call.getString("persona", null);
         SharedPreferences.Editor ed = prefs().edit();
         if (persona == null || persona.isEmpty()) {
-            for (String k : prefs().getAll().keySet()) if (k.startsWith(PROV_PREFIX)) ed.remove(k);
+            // Ключи с ядра; введённые на телефоне — только updatePhoneProvider
+            for (String k : prefs().getAll().keySet()) {
+                if (k.startsWith(PROV_PREFIX) && !k.equals(PROV_PREFIX + PHONE)) ed.remove(k);
+            }
         } else {
             ed.remove(PROV_PREFIX + persona);
         }
         ed.apply();
         call.resolve();
+    }
+
+    /** Ключи с ядра у всех персон, вместе по провайдеру: вкладке «Провайдеры»
+     * (маски, модели, у каких персон). Порядок — по персонам из personas
+     * (порядок списка в приложении), внутри персоны — её порядок с ядра. */
+    @PluginMethod
+    public void coreProviders(PluginCall call) {
+        java.util.List<String> order = new java.util.ArrayList<>();
+        JSArray wanted = call.getArray("personas", new JSArray());
+        java.util.Set<String> stored = storedPersonas();
+        for (int i = 0; i < wanted.length(); i++) {
+            String id = wanted.optString(i, "");
+            if (stored.remove(id)) order.add(id);
+        }
+        order.addAll(stored);
+        java.util.Map<String, JSONObject> byName = new java.util.LinkedHashMap<>();
+        try {
+            for (String persona : order) {
+                JSONArray list = loadProviders(persona);
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject p = list.optJSONObject(i);
+                    if (p == null) continue;
+                    String name = p.optString("name");
+                    JSONObject o = byName.get(name);
+                    if (o == null) {
+                        o = new JSONObject().put("name", name).put("models", new JSONArray())
+                                .put("keys", new JSONArray()).put("personas", new JSONArray());
+                        byName.put(name, o);
+                    }
+                    String model = p.optString("model");
+                    if (!model.isEmpty() && !contains(o.getJSONArray("models"), model)) o.getJSONArray("models").put(model);
+                    JSONArray keys = p.optJSONArray("api_keys");
+                    for (int k = 0; keys != null && k < keys.length(); k++) {
+                        String m = mask(keys.optString(k));
+                        if (!contains(o.getJSONArray("keys"), m)) o.getJSONArray("keys").put(m);
+                    }
+                    o.getJSONArray("personas").put(persona);
+                }
+            }
+            JSArray out = new JSArray();
+            for (JSONObject o : byName.values()) out.put(o);
+            JSObject ret = new JSObject();
+            ret.put("providers", out);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Не удалось прочитать ключи: " + e.getClass().getSimpleName());
+        }
+    }
+
+    /** Персоны, чьи ключи с ядра лежат на телефоне (по алфавиту). */
+    private java.util.TreeSet<String> storedPersonas() {
+        java.util.TreeSet<String> out = new java.util.TreeSet<>();
+        for (String k : prefs().getAll().keySet()) {
+            if (k.startsWith(PROV_PREFIX) && !k.equals(PROV_PREFIX + PHONE)) out.add(k.substring(PROV_PREFIX.length()));
+        }
+        return out;
+    }
+
+    /** Кем персона может отвечать по своему порядку на телефоне: её ключи с
+     * ядра (в её порядке), потом ключи ядра у других персон — ключи ядра общие
+     * (.env), а провайдера, исключённого у персоны на компьютере, ядро ей не
+     * отдало: без них его не вернуть в цепочку на телефоне; потом введённые на
+     * телефоне (тот же провайдер дополняется их ключами). src: own | core | phone. */
+    private JSONArray allProvidersFor(String persona) {
+        JSONArray out = new JSONArray();
+        java.util.Map<String, JSONObject> byName = new java.util.HashMap<>();
+        try {
+            addProviders(out, byName, loadProviders(persona), "own");
+            for (String other : storedPersonas()) {
+                if (!other.equals(persona)) addProviders(out, byName, loadProviders(other), "core");
+            }
+            addProviders(out, byName, loadProviders(PHONE), "phone");
+        } catch (Exception e) {
+            Log.w(TAG, "ключи для порядка персоны не собрались", e);
+        }
+        return applyEdits(out);
+    }
+
+    // ── Правки ключей с телефона ────────────────────────────────────────
+    // Ключи с ядра приходят заново при каждой связи (setProviders), поэтому
+    // правки к ним лежат отдельно, поверх: своя модель провайдера и убранные
+    // ключи ядра (по отпечатку, не сам ключ). Действуют только на телефоне;
+    // «как на компьютере» (editProvider reset) их снимает.
+
+    private static final String EDIT_PREFIX = "edit:";
+
+    private static String keyId(String key) {
+        try {
+            byte[] h = java.security.MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+            StringBuilder b = new StringBuilder();
+            for (int i = 0; i < 8; i++) b.append(String.format("%02x", h[i]));
+            return b.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(key.hashCode());
+        }
+    }
+
+    private JSONObject editOf(String name) {
+        try {
+            return new JSONObject(prefs().getString(EDIT_PREFIX + name, "{}"));
+        } catch (Exception e) {
+            return new JSONObject();
+        }
+    }
+
+    private void storeEdit(String name, JSONObject edit) {
+        boolean empty = edit.optString("model").isEmpty()
+            && (edit.optJSONArray("hide") == null || edit.optJSONArray("hide").length() == 0);
+        if (empty) prefs().edit().remove(EDIT_PREFIX + name).apply();
+        else prefs().edit().putString(EDIT_PREFIX + name, edit.toString()).apply();
+    }
+
+    /** Список провайдеров с правками телефона: своя модель, без убранных ключей ядра. */
+    private JSONArray applyEdits(JSONArray list) {
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject p = list.optJSONObject(i);
+            if (p == null) continue;
+            JSONObject e = editOf(p.optString("name"));
+            JSONArray hide = e.optJSONArray("hide");
+            String model = e.optString("model");
+            if (model.isEmpty() && (hide == null || hide.length() == 0)) {
+                out.put(p);
+                continue;
+            }
+            try {
+                JSONObject c = new JSONObject(p.toString());
+                if (!model.isEmpty()) c.put("model", model);
+                if (hide != null && hide.length() > 0) {
+                    JSONArray keys = c.optJSONArray("api_keys");
+                    JSONArray kept = new JSONArray();
+                    for (int k = 0; keys != null && k < keys.length(); k++) {
+                        if (!contains(hide, keyId(keys.optString(k)))) kept.put(keys.optString(k));
+                    }
+                    c.put("api_keys", kept);
+                }
+                out.put(c);
+            } catch (Exception ex) {
+                out.put(p);
+            }
+        }
+        return out;
+    }
+
+    /** keyring({personas?}) → {providers: [{name, base_url, model, core_model,
+     * phone_model, edited, personas, keys: [{id, mask, src: core|phone, index?,
+     * hidden}]}]} — все ключи телефона по провайдерам для карточки «Ключи
+     * провайдеров»: с ядра (по порядку персон) и введённые на телефоне. */
+    @PluginMethod
+    public void keyring(PluginCall call) {
+        java.util.List<String> order = new java.util.ArrayList<>();
+        JSArray wanted = call.getArray("personas", new JSArray());
+        java.util.Set<String> stored = storedPersonas();
+        for (int i = 0; i < wanted.length(); i++) {
+            String id = wanted.optString(i, "");
+            if (stored.remove(id)) order.add(id);
+        }
+        order.addAll(stored);
+        java.util.Map<String, JSONObject> byName = new java.util.LinkedHashMap<>();
+        try {
+            for (String persona : order) {
+                JSONArray list = loadProviders(persona);
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject p = list.optJSONObject(i);
+                    if (p == null) continue;
+                    JSONObject o = ringEntry(byName, p);
+                    if (o.optString("core_model").isEmpty()) o.put("core_model", p.optString("model"));
+                    if (!contains(o.getJSONArray("personas"), persona)) o.getJSONArray("personas").put(persona);
+                    JSONArray keys = p.optJSONArray("api_keys");
+                    for (int k = 0; keys != null && k < keys.length(); k++) {
+                        String id = keyId(keys.optString(k));
+                        if (ringHas(o, id)) continue;
+                        o.getJSONArray("keys").put(new JSONObject().put("id", id).put("mask", mask(keys.optString(k)))
+                            .put("src", "core"));
+                    }
+                }
+            }
+            JSONArray phone = loadProviders(PHONE);
+            for (int i = 0; i < phone.length(); i++) {
+                JSONObject p = phone.optJSONObject(i);
+                if (p == null) continue;
+                JSONObject o = ringEntry(byName, p);
+                o.put("phone_model", p.optString("model"));
+                JSONArray keys = p.optJSONArray("api_keys");
+                for (int k = 0; keys != null && k < keys.length(); k++) {
+                    o.getJSONArray("keys").put(new JSONObject().put("id", "p" + k).put("mask", mask(keys.optString(k)))
+                        .put("src", "phone").put("index", k));
+                }
+            }
+            JSArray out = new JSArray();
+            for (JSONObject o : byName.values()) {
+                JSONObject e = editOf(o.optString("name"));
+                JSONArray hide = e.optJSONArray("hide");
+                JSONArray keys = o.getJSONArray("keys");
+                for (int k = 0; k < keys.length(); k++) {
+                    JSONObject key = keys.getJSONObject(k);
+                    key.put("hidden", "core".equals(key.optString("src")) && hide != null && contains(hide, key.optString("id")));
+                }
+                String model = e.optString("model");
+                o.put("edited", !model.isEmpty() || (hide != null && hide.length() > 0));
+                o.put("model", !model.isEmpty() ? model
+                    : !o.optString("core_model").isEmpty() ? o.optString("core_model") : o.optString("phone_model"));
+                out.put(o);
+            }
+            JSObject ret = new JSObject();
+            ret.put("providers", out);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Не удалось прочитать ключи: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private static JSONObject ringEntry(java.util.Map<String, JSONObject> byName, JSONObject p) throws Exception {
+        String name = p.optString("name");
+        JSONObject o = byName.get(name);
+        if (o == null) {
+            o = new JSONObject().put("name", name).put("base_url", p.optString("base_url")).put("core_model", "")
+                .put("phone_model", "").put("personas", new JSONArray()).put("keys", new JSONArray());
+            byName.put(name, o);
+        } else if (o.optString("base_url").isEmpty()) {
+            o.put("base_url", p.optString("base_url"));
+        }
+        return o;
+    }
+
+    private static boolean ringHas(JSONObject o, String id) throws Exception {
+        JSONArray keys = o.getJSONArray("keys");
+        for (int k = 0; k < keys.length(); k++) if (id.equals(keys.getJSONObject(k).optString("id"))) return true;
+        return false;
+    }
+
+    /** editProvider({name, model?, hideKey?, showKey?, reset?}) — правка с
+     * телефона: своя модель провайдера ("" — как на компьютере), убрать или
+     * вернуть ключ ядра (id из keyring), reset — снять все правки. */
+    @PluginMethod
+    public void editProvider(PluginCall call) {
+        String name = call.getString("name", "");
+        if (name == null || name.isEmpty()) {
+            call.reject("name");
+            return;
+        }
+        try {
+            JSONObject e = call.getBoolean("reset", false) ? new JSONObject() : editOf(name);
+            String model = call.getString("model");
+            if (model != null) e.put("model", model.trim());
+            JSONArray hide = e.optJSONArray("hide");
+            if (hide == null) hide = new JSONArray();
+            String h = call.getString("hideKey");
+            if (h != null && !h.isEmpty() && !contains(hide, h)) hide.put(h);
+            String sh = call.getString("showKey");
+            if (sh != null) {
+                JSONArray kept = new JSONArray();
+                for (int i = 0; i < hide.length(); i++) if (!sh.equals(hide.optString(i))) kept.put(hide.optString(i));
+                hide = kept;
+            }
+            e.put("hide", hide);
+            storeEdit(name, e);
+            call.resolve();
+        } catch (Exception ex) {
+            call.reject("Не удалось сохранить правку: " + ex.getClass().getSimpleName());
+        }
+    }
+
+    private static void addProviders(JSONArray out, java.util.Map<String, JSONObject> byName, JSONArray list,
+                                     String src) throws Exception {
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject p = list.optJSONObject(i);
+            if (p == null) continue;
+            String name = p.optString("name");
+            JSONObject have = byName.get(name);
+            if (have == null) {
+                JSONObject copy = new JSONObject(p.toString()).put("src", src);
+                if ("phone".equals(src)) copy.put("phone", true);
+                byName.put(name, copy);
+                out.put(copy);
+                continue;
+            }
+            if (!"phone".equals(src)) continue; // ключ ядра у провайдера уже есть
+            // Ключи телефона — к ключам с ядра (своих повторов нет)
+            JSONArray keys = have.optJSONArray("api_keys");
+            if (keys == null) {
+                keys = new JSONArray();
+                have.put("api_keys", keys);
+            }
+            JSONArray more = p.optJSONArray("api_keys");
+            for (int k = 0; more != null && k < more.length(); k++) {
+                if (!contains(keys, more.optString(k))) keys.put(more.optString(k));
+            }
+            have.put("phone", true);
+        }
+    }
+
+    @PluginMethod
+    public void personaProviders(PluginCall call) {
+        JSONArray list = allProvidersFor(call.getString("persona", ""));
+        JSArray out = new JSArray();
+        try {
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject p = list.getJSONObject(i);
+                JSONArray keys = p.optJSONArray("api_keys");
+                // Без модели или без ключа провайдер не ответит — в цепочку не ставим
+                if (p.optString("model").isEmpty() || keys == null || keys.length() == 0) continue;
+                JSONArray masks = new JSONArray();
+                for (int k = 0; k < keys.length(); k++) masks.put(mask(keys.optString(k)));
+                JSObject o = new JSObject();
+                o.put("name", p.optString("name"));
+                o.put("model", p.optString("model"));
+                o.put("keys", masks);
+                o.put("own", "own".equals(p.optString("src")));
+                o.put("core", !"phone".equals(p.optString("src")));
+                o.put("phone", p.optBoolean("phone", false));
+                out.put(o);
+            }
+        } catch (Exception e) {
+            call.reject("Не удалось прочитать ключи: " + e.getClass().getSimpleName());
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("providers", out);
+        call.resolve(ret);
+    }
+
+    private static boolean contains(JSONArray arr, String v) {
+        for (int i = 0; i < arr.length(); i++) if (v.equals(arr.optString(i))) return true;
+        return false;
+    }
+
+    /** Провайдеры ответа в порядке only (имена); кого у персоны нет — мимо. */
+    private static JSONArray pick(JSONArray providers, JSArray only) {
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < only.length(); i++) {
+            String name = only.optString(i, "");
+            for (int k = 0; k < providers.length(); k++) {
+                JSONObject p = providers.optJSONObject(k);
+                if (p != null && name.equals(p.optString("name"))) {
+                    out.put(p);
+                    break;
+                }
+            }
+        }
+        return out;
     }
 
     // ── Облако: запрос к OpenAI-совместимому API ────────────────────────
@@ -197,8 +705,11 @@ public class OfflineLlmPlugin extends Plugin {
         final JSArray messages = call.getArray("messages", new JSArray());
         final int maxTokens = call.getInt("maxTokens", 800);
         final double temperature = call.getDouble("temperature", 0.8);
+        final JSArray only = call.getArray("only", null);
         io.execute(() -> {
-            JSONArray providers = loadProviders(persona);
+            // Порядок персоны на телефоне (досье → настройки): только эти и в этом
+            // порядке; без него — её ключи с ядра и телефона, как раньше
+            JSONArray providers = only != null ? pick(allProvidersFor(persona), only) : providersFor(persona);
             if (providers.length() == 0) {
                 call.reject("Нет ключей облачных моделей для этой персоны", "no_providers");
                 return;
@@ -211,8 +722,10 @@ public class OfflineLlmPlugin extends Plugin {
                 JSONArray keys = p.optJSONArray("api_keys");
                 for (int k = 0; keys != null && k < keys.length(); k++) {
                     try {
+                        // Своя температура провайдера (Kimi принимает только 1.0) — важнее
+                        double temp = p.has("temperature") ? p.optDouble("temperature", temperature) : temperature;
                         String text = postChat(p.optString("base_url"), keys.optString(k), p.optString("model"),
-                                messages, maxTokens, temperature);
+                                messages, maxTokens, temp);
                         JSObject ret = new JSObject();
                         ret.put("text", text);
                         ret.put("provider", p.optString("name"));
@@ -238,7 +751,7 @@ public class OfflineLlmPlugin extends Plugin {
 
     private static String postChat(String baseUrl, String key, String model, JSArray messages,
                                    int maxTokens, double temperature) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(baseUrl + "/chat/completions").openConnection();
+        HttpURLConnection c = (HttpURLConnection) new URL(baseUrl.replaceAll("/+$", "") + "/chat/completions").openConnection();
         try {
             c.setConnectTimeout(10_000);
             c.setReadTimeout(60_000);

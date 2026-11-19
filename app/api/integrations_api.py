@@ -512,6 +512,84 @@ async def imap_preset(user: str = Query(..., max_length=200)):
     return {"host": preset[0], "port": preset[1]} if preset else {"host": "", "port": 993}
 
 
+# ── Перенос с телефона ──────────────────────────────────────────────────
+# Телефон без компьютера сам проверял ленты, GitHub, IMAP и Gmail; появился
+# компьютер — всё с курсорами («уже видел») переезжает сюда (transfer.py)
+
+class PhoneFeedIn(BaseModel):
+    url: str = Field(..., max_length=500)
+    title: str = Field("", max_length=200)
+    seen: List[str] = Field(default_factory=list, max_length=400)
+    seen_init: bool = False
+    etag: str = Field("", max_length=300)
+    modified: str = Field("", max_length=100)
+
+
+class PhoneRssIn(BaseModel):
+    enabled: bool = True
+    feeds: List[PhoneFeedIn] = Field(default_factory=list, max_length=50)
+
+
+class PhoneGithubIn(BaseModel):
+    enabled: bool = True
+    token: str = Field(..., max_length=300)
+    login: str = Field("", max_length=100)
+    since: float = Field(0, ge=0)
+    last_modified: str = Field("", max_length=100)
+
+
+class PhoneImapIn(BaseModel):
+    enabled: bool = True
+    user: str = Field(..., min_length=3, max_length=200)
+    password: str = Field(..., min_length=1, max_length=300)
+    host: str = Field("", max_length=253)
+    port: int = Field(0, ge=0, le=65535)
+    folder: str = Field("INBOX", max_length=100)
+    validity: str = Field("", max_length=20, pattern=r"^\d*$")
+    last_uid: int = Field(0, ge=0)
+
+
+class PhoneGoogleIn(BaseModel):
+    enabled: bool = True
+    client_id: str = Field(..., max_length=300)
+    client_secret: str = Field(..., max_length=300)
+    refresh_token: str = Field(..., min_length=1, max_length=2048)
+    email: str = Field("", max_length=320)
+    scopes: List[str] = Field(default_factory=list, max_length=20)
+    history_id: str = Field("", max_length=40, pattern=r"^\d*$")
+
+
+class PhoneNotifyIn(BaseModel):
+    persona: Optional[str] = Field(None, max_length=64)
+    quiet: Optional[Dict[str, Any]] = None
+    digest_times: Optional[List[str]] = Field(None, max_length=6)
+    max_per_hour: Optional[int] = Field(None, ge=1, le=60)
+    language: Optional[Literal["auto", "ru", "en"]] = None
+
+
+class PhoneServicesImport(BaseModel):
+    rss: Optional[PhoneRssIn] = None
+    github: Optional[PhoneGithubIn] = None
+    imap: Optional[PhoneImapIn] = None
+    google: Optional[PhoneGoogleIn] = None
+    rules: List[RuleIn] = Field(default_factory=list, max_length=200)
+    notify: Optional[PhoneNotifyIn] = None
+    items: List[Dict[str, Any]] = Field(default_factory=list, max_length=200)
+    seen_ids: List[str] = Field(default_factory=list, max_length=4000)
+
+
+@router.post("/import")
+async def import_from_phone(body: PhoneServicesImport):
+    from app.integrations import transfer
+    personas = {p["id"] for p in await asyncio.to_thread(_personas)}
+    res = await asyncio.to_thread(transfer.import_from_phone, body.model_dump(exclude_none=True), personas)
+    # Перенесённое — сразу в опрос: курсоры уже стоят, первый опрос не «запоминает»
+    for name in res["moved"]:
+        if name in hub.polls:
+            hub.poll_now(name)
+    return res
+
+
 # ── RSS и вебхук ────────────────────────────────────────────────────────
 
 @router.post("/rss/check")

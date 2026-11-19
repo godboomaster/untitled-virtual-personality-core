@@ -1,0 +1,5 @@
+Built-in image_gen. Edit target: 54-variant31-larger-eyes-ghost.png. Narrow only the dark capsule eyes horizontally, retaining their enlarged height and positions.
+
+Precise local edit of the supplied ghost-and-cracked-egg logo.
+Make ONLY the TWO DARK EYES NARROWER HORIZONTALLY, reducing each eye's width by approximately 20–25%. Keep their current enlarged vertical height unchanged. Keep each eye centered in its existing position, with the same spacing between eye centers. Retain the upright dark capsule shape with smoothly rounded ends and solid fill.
+Preserve the exact face outline, white face, flat face-to-ribbon edge, thin black ribbon, smooth offsets, straight-sided slender white body without folds, sharp shell junction, both eggshell pieces, cracks, facets, colors, outlines, composition and white background. No pupils, highlights, facial additions or other changes.

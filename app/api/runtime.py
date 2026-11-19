@@ -16,6 +16,7 @@ import yaml
 from app.api.security import safe_join
 from app.bot_instance import BotInstance
 from app.core.addons import persona_dirs, user_personas_dir
+from app.core import persona_modes
 
 # Палитра меток персон (общий календарь): приглушённые тона, различимые
 # и на светлой, и на тёмной теме. Используется, когда в YAML персоны
@@ -96,6 +97,25 @@ def persona_origin(name: str) -> tuple[bool, bool]:
     return builtin, builtin and own
 
 
+# Режимы персоны для GET /api/personas: перечитываются, только когда файлы
+# в папке режимов поменялись (список персон опрашивают часто)
+_modes_cache: dict[str, tuple] = {}
+_modes_cache_lock = threading.Lock()
+
+
+def persona_modes_info(name: str) -> list[dict]:
+    dirs = persona_dirs()
+    sig = persona_modes.signature(name, dirs)
+    with _modes_cache_lock:
+        hit = _modes_cache.get(name)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+    info = persona_modes.modes_info(persona_modes.load_modes(name, dirs))
+    with _modes_cache_lock:
+        _modes_cache[name] = (sig, info)
+    return info
+
+
 def get_persona_info(name: str) -> dict | None:
     # Публичная информация о персоне из её YAML. None — если не персона.
     data = _load_persona_yaml(name)
@@ -111,6 +131,8 @@ def get_persona_info(name: str) -> dict | None:
         "color": persona_color(name, data),
         "features": data.get("features") or {},
         "settings": data.get("settings") or {},
+        # Режимы по триггеру (<id>_modes/): их имена будят персону голосом
+        "modes": persona_modes_info(name),
         # Встроенная (в git/пакете аддона) — удалить нельзя; customized — есть
         # своя копия: «удалить» сбрасывает к встроенной
         "builtin": builtin,
@@ -147,6 +169,12 @@ class BotRegistry:
                 start_bot_features(persona, bot)
                 self._bots[persona] = bot
             return self._bots[persona]
+
+    def peek(self, persona: str) -> BotInstance | None:
+        # Уже поднятый BotInstance персоны или None — без создания (можно
+        # звать из любого потока, в том числе из записи в историю)
+        with self._lock:
+            return self._bots.get(persona)
 
     def evict(self, persona: str) -> None:
         # Убрать бота из кеша и остановить его фоновые циклы (удаление персоны).

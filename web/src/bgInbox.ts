@@ -3,6 +3,7 @@ import type { PluginListenerHandle } from '@capacitor/core';
 import { getApiToken, getApiUrl, inboxClientId, isLinkMode, isNativeApp } from './api';
 import { OPEN_CHAT_EVENT, OPEN_ROOM_EVENT } from './notifications';
 import { requestChatVoice } from './chatNavStore';
+import type { PortraitData } from './portrait/portraitTypes';
 
 /* Приложение на Android: уведомления о сообщениях персон, когда приложение
    свёрнуто или закрыто. WebView в фоне не работает, поэтому опрос ядра
@@ -36,6 +37,8 @@ interface BackgroundInboxPlugin {
   // (голосовой режим чата), иначе — чат
   getLaunchPersona(): Promise<{ persona: string | null; section?: string | null }>;
   addListener(event: 'notificationTap', cb: (data: { persona: string; section?: string | null }) => void): Promise<PluginListenerHandle>;
+  // Листы головы фигуры персоны без своего портрета — виджету «Живой портрет»
+  setHeadPortrait(opts: { persona: string; rows: number; cols: number; sheets: Record<string, string> }): Promise<void>;
 }
 
 const BackgroundInbox = registerPlugin<BackgroundInboxPlugin>('BackgroundInbox');
@@ -72,7 +75,7 @@ function startService(): Promise<void> {
 
 export type BgNotifyResult = 'ok' | 'denied' | 'error';
 
-/** Переключатель в «Настройки» → «Подключение»: включение спрашивает
+/** Переключатель во вкладке «Подключение»: включение спрашивает
  * разрешение на уведомления (Android 13+) и запускает службу. */
 export async function setBgNotify(on: boolean): Promise<BgNotifyResult> {
   if (!isNativeApp()) return 'error';
@@ -132,6 +135,12 @@ export function stopBgInbox() {
 
 export function bgInboxStatus() {
   return BackgroundInbox.status();
+}
+
+/** Листы головы персоны (portrait/widgetHeads) — нативу, для виджета портрета. */
+export function setWidgetHead(persona: string, atlas: PortraitData) {
+  const sheets = Object.fromEntries(Object.entries(atlas.sheets).filter((e): e is [string, string] => !!e[1]));
+  return BackgroundInbox.setHeadPortrait({ persona, rows: atlas.rows, cols: atlas.cols, sheets });
 }
 
 export type NativeNotifyTest = 'ok' | 'denied' | 'channel' | 'error';

@@ -1,0 +1,11 @@
+Built-in image_gen. Full edit target: 104-no-rear-wall-clean-corner-square-logo.png. Exact corner guide: references/open-left-shell-corner-guide-01.png. Output: 105-open-left-shell-corner-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: exact local corner correction in an existing square black-and-white logo.
+Input image 1: COMPLETE LOGO EDIT TARGET, 104-no-rear-wall-clean-corner-square-logo.png.
+Input image 2: USER'S EXACT DESIRED UPPER-LEFT EGGSHELL CORNER, references/open-left-shell-corner-guide-01.png. This close-up guides only that small corner.
+Primary request: make the target's upper-left eggshell corner match image 2.
+The left shell outline should rise into the small chipped tip, angle up-right to the tip's crest, turn down through a short slightly curved or angled segment, then continue down-right into the existing long sloping jagged rim. Reproduce the reference's simple continuous perimeter and proportions at the target scale.
+REMOVE the internal diagonal black bridge currently cutting across this small corner in image 1. It currently encloses a tiny white triangular pocket. There must be NO internal bridge and NO closed triangular cell at this corner. The white interior behind the chipped tip must open directly into the rest of the shell's white interior, as shown in image 2. Keep the outer contour continuous and clean, at the existing shell stroke weight. No solid-black cap, loop, fold, extra stroke or rear wall.
+Change ONLY this little upper-left corner and its connection to the nearby slope. Preserve the rest of the eggshell silhouette, front rim, cracks and stroke weights exactly. Keep the ghost's circular head and thin outline, filled black oval eyes, two leaves, faceted interwoven collar and white cuts, body proportions and jagged hem, white shell separator, overall scale and position, square framing, margins and white background unchanged.
+Output ONE COMPLETE square black-and-white logo, not the reference crop. Crisp flat vector-like contours. No back wall, detached upper shell, text, colors, shading, texture, border or other additions.

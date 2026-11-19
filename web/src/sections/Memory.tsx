@@ -7,6 +7,7 @@ import { useOfflineMode } from '../offline/state';
 import { phoneMemoryView } from '../offline/memoryView';
 import FormModal from '../components/FormModal';
 import InfoButton from '../components/InfoButton';
+import Icon from '../components/icons';
 import { useNarrowScreen } from '../useNarrowScreen';
 
 type Tab = 'stm' | 'ltm' | 'diary';
@@ -531,10 +532,12 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
                       <span className="memory-item-text">{f.fact}</span>
                       {!readOnly && (
                         <>
-                          <button className="btn btn--icon" title={t('common.edit')} onClick={() => openFactEditor(f)}>
-                            ✎
+                          <button className="btn btn--icon btn--square" title={t('common.edit')} aria-label={t('common.edit')} onClick={() => openFactEditor(f)}>
+                            <Icon name="pencil" size={16} />
                           </button>
-                          <button className="btn btn--icon" title={t('common.delete')} onClick={() => deleteFact(f)}>✕</button>
+                          <button className="btn btn--icon btn--square" title={t('common.delete')} aria-label={t('common.delete')} onClick={() => deleteFact(f)}>
+                            <Icon name="trash" size={16} />
+                          </button>
                         </>
                       )}
                     </li>

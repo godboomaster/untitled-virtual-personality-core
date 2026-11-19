@@ -1,0 +1,16 @@
+Built-in image_gen. Full edit target: 94-subtle-flowing-collar-square-logo.png. User guide: references/faceted-infinity-collar-guide-01.png. Output: 95-user-faceted-infinity-collar-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: square black-and-white ghost logo with the user's newly sketched collar.
+Input image 1: COMPLETE LOGO EDIT TARGET, 94-subtle-flowing-collar-square-logo.png.
+Input image 2: USER'S NEW EXACT COLLAR DESIGN GUIDE, references/faceted-infinity-collar-guide-01.png. This is a cropped neck detail, not the output framing.
+Primary request: replace the target's current simple shallow V collar with the angular INTERWOVEN COLLAR drawn in image 2. Follow the user's pictured construction closely; this is a faithful translation of their sketch into clean finished logo contours.
+Collar design:
+- Preserve the two outlined leaves on the LEFT, with their white veins and relative directions.
+- From the leaf/stem junction, recreate the guide's elongated angular LEFT loop: black faceted upper and lower edges enclose a clean white tapered opening.
+- Recreate the guide's central diagonal black strand crossing over the other strand, including its crisp pointed bends and the thin deliberate white clearance cuts that make the over-under weave legible.
+- Recreate the guide's long asymmetric angular RIGHT loop and pointed right end, with the narrow white opening along its top and the sharp lower diagonal return.
+- Match the guide's asymmetrical arrangement, direction of crossing, widths, pointed corners, white negative spaces and small breaks at the joins. The result is a flattened faceted infinity-like twig woven across the neck, integrated with the two left leaves. Use the guide as the exact design, with precise smooth raster edges and consistent ink weight; clean up only rough hand-erased boundaries, without redesigning the geometry.
+Keep the small gaps at the head/collar and collar/body joins as pictured in image 2, with the neighboring strokes logically continuing across the erased portions. Keep each gap intentional and crisp. Do not simplify this into a plain V or a rounded figure eight.
+Output the ENTIRE emblem using image 1's square canvas, scale, positioning and full framing. Outside the small neck-collar area, preserve image 1's head outline, short narrow solid-black oval eyes and spacing, two leaves, torso height and outline, jagged hem, white separator above the shell, lower eggshell silhouette and all cracks, margins and white background. Do not reproduce the guide's cropped view. No upper eggshell.
+One complete square black-and-white logo, crisp flat vector-like contours. No text, labels, extra leaves, extra objects, shadows, gradients, texture, color or border.

@@ -1,0 +1,15 @@
+Built-in image_gen. Edit target: 68-branch-leaf-collar-ghost.png. User branch reference: references/winding-branch-style-01.png. Longer naturally winding neck stems and a few angular leaves, retaining monochrome and the rest of the emblem.
+
+Local botanical-collar redesign of image 1, the black-and-white ghost-and-cracked-egg logo.
+Image 2 is the user's BRANCH STYLE REFERENCE. Study especially the long naturally winding stems along the bottom of the egg: tapering uneven branches, a few angular directional changes blended with curves, small sharp faceted leaves, and an organic asymmetrical rhythm.
+
+The user wants the neck branch MUCH MORE LIKE THOSE STEMS, and explicitly allows it to WIND and BE LONGER than the current small collar.
+Replace ONLY the existing rigid short neck twig with a longer, more natural winding branch arrangement:
+- A slender irregular twig wraps loosely across the base of the head/neck, following a gentle S-like bend rather than a rectangular band or a geometric chevron.
+- Let its left end extend farther outward and curve gently down and back up. A shorter right tip can extend a little beyond the neck as a tapered uneven twig.
+- One short secondary stem can cross/twist around the main stem ONCE, as in the bottom stems of the reference. Keep the crossing legible and sparse, not a knot, scarf or bow.
+- Include TWO or THREE small sharp angular almond/rhombus-shaped leaves placed asymmetrically on the free ends, with one or two simple white midribs. Match the faceted leaf silhouette and taper of the reference, not generic rounded foliage.
+- Give the stem natural changes of thickness and a few subtle woody kinks; no repeated uniform zigzag. Keep the whole botanical collar's span around the head's width, at most slightly wider, and its height restrained. It can extend outside the old collar footprint into the white space beside the neck but must not cross the eyes, cover the face or reach the eggshell.
+
+Use BLACK linework and black/white shapes only, retaining the current MONOCHROME logo. Do not copy the reference's green or beige coloring, foliage around the egg, or a large wreath. The only foliage is this neck branch.
+Preserve the exact head and eye geometry, plain straight-sided white body, ghost outline weight, jagged hem, thin white separator, BOTH white eggshell pieces, cracks, sizes, positions, overall framing and white background. No added body folds, shading, text or other changes.

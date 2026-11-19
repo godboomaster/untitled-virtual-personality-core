@@ -5,6 +5,7 @@ import type { AnswerOptions, PendingReply, TaskCard } from './api';
 import { notifyBotMessage } from './notifications';
 import { getFocusedPersona, tabActive } from './presence';
 import type { Persona } from './mockData';
+import { noteAvatarMode } from './portrait/portraitStore';
 
 /* Фоновые сообщения персон (напоминания, самоинициатива, уроки):
    единый поллер на всё приложение (поднимается в App, работает на любом
@@ -23,6 +24,7 @@ let unread: Record<string, number> = {}; // persona id → сколько неп
 let generating: Record<string, boolean> = {}; // persona id → сейчас генерирует ответ
 let lastTs: Record<string, number> = {}; // persona id → ts последнего сообщения в чате
 let controlMode: Record<string, boolean> = {}; // persona id → режим управления (computer control)
+let phoneMode: Record<string, boolean> = {}; // persona id → режим управления телефоном
 // persona id → кнопки ответа на вопрос режима управления, которого ждёт чат
 let answerOptions: Record<string, AnswerOptions | null> = {};
 // persona id → карточка задачи агента (живая или недавний итог)
@@ -53,7 +55,7 @@ export function useInbox() {
       listeners.delete(force);
     };
   }, []);
-  return { messages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards, pending };
+  return { messages, unread, generating, lastTs, serverLastTs, controlMode, phoneMode, answerOptions, taskCards, pending };
 }
 
 // Реплики в обработке из ответа inbox: новые — в список, пропавшие — с
@@ -85,6 +87,14 @@ export function settlePending(persona: string) {
 export function setControlMode(persona: string, value: boolean) {
   if ((controlMode[persona] ?? false) === value) return;
   controlMode = { ...controlMode, [persona]: value };
+  emit();
+}
+
+// Режим управления телефоном — значок в шапке чата (с режимом компьютера
+// взаимоисключающие)
+export function setPhoneMode(persona: string, value: boolean) {
+  if ((phoneMode[persona] ?? false) === value) return;
+  phoneMode = { ...phoneMode, [persona]: value };
   emit();
 }
 
@@ -222,6 +232,7 @@ export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
             }
             // Режим управления — гасит дебаунс-паузу отправки в чате
             if (typeof r.control_mode === 'boolean') setControlMode(id, r.control_mode);
+            if (typeof r.phone_mode === 'boolean') setPhoneMode(id, r.phone_mode);
             // Кнопки ответа — состояние ожидания живёт в боте и переживает
             // перезагрузку страницы
             if ('answer_options' in r) setAnswerOptions(id, r.answer_options ?? null);
@@ -229,6 +240,9 @@ export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
             if ('task' in r) setTaskCard(id, r.task ?? null);
             // Реплики с других устройств, на которые персона сейчас отвечает
             if (Array.isArray(r.pending)) setPending(id, r.pending);
+            // Режим персоны в чате — за ним идёт аватар (голова в голосовом
+            // режиме и PiP; app/api/avatar_modes)
+            if (typeof r.avatar_mode === 'string') noteAvatarMode(id, r.avatar_mode);
             // Серверная метка последнего сообщения — по ней чат догружает
             // историю, если STM дописан позже, чем её прочитали (поздний ответ)
             const srv = typeof r.last_ts === 'number' ? r.last_ts : 0;

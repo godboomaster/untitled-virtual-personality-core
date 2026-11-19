@@ -23,7 +23,8 @@ import RoomTelemetry, { AwayStrip } from '../room/RoomTelemetry';
 import { patchRoomLayout } from '../room/roomLayoutStore';
 import { spotPoint } from '../room/roomModel';
 import { closePip, isPipOf, openPip, pipSupported, usePip } from '../pipStore';
-import { setSessionAvatar, useRoomScene, useTitleStatus } from '../room/useRoomScene';
+import { useRoomScene, useTitleStatus } from '../room/useRoomScene';
+import { setSessionAvatar } from '../room/sessionAvatar';
 import { BACK_OVERLAY, useBackHandler } from '../backStack';
 import Collapsible from '../components/Collapsible';
 import { consumeRoomPersonaRequest, useRoomPersonaRequest } from '../chatNavStore';
@@ -442,7 +443,7 @@ export default function Room() {
                 <span className="room-modal-title">
                   {persona.name} · {away ? t('room.statusAway') : (activityKnown && activity.label) || '—'}
                 </span>
-                <span className="badge">ROOM // LIVE</span>
+                <span className="badge hud-code">ROOM // LIVE</span>
                 <button
                   type="button"
                   className="pxe-close"
@@ -492,7 +493,7 @@ export default function Room() {
                     <span className="room-modal-title">
                       {persona.name} · {away ? t('room.statusAway') : (activityKnown && activity.label) || '—'}
                     </span>
-                    <span className="badge">ROOM // LIVE</span>
+                    <span className="badge hud-code">ROOM // LIVE</span>
                     <button
                       type="button"
                       className="pxe-close"

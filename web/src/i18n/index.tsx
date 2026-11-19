@@ -7,10 +7,14 @@ import type { MockData } from '../mockData';
 import { helpTextsRu, helpTextsEn } from '../helpTexts';
 import type { HelpEntry, HelpKey } from '../helpTexts';
 import { useApiPersonas } from '../apiData';
+import { useAppliedSkin } from '../skinTheme';
+import { getSkinTexts } from '../../skins';
 
 /* Локализация интерфейса: контекст языка (RU/EN), словарь строк t(),
    моковые данные и тексты подсказок текущей локали. Выбор языка
-   персистится в localStorage (ключ vpc-lang) по образцу темы (vpc-theme). */
+   персистится в localStorage (ключ vpc-lang) по образцу темы (vpc-theme).
+   Скин может говорить своим голосом (web/skins/<id>/texts.ts): пока он
+   применён, его строки перекрывают обычные по тем же ключам. */
 
 export type Lang = 'ru' | 'en';
 
@@ -55,9 +59,14 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('vpc-hints', hintsEnabled ? 'on' : 'off');
   }, [hintsEnabled]);
 
+  // Голос применённого скина (своя тема персоны — тоже: она стоит на <html>)
+  const appliedSkin = useAppliedSkin();
+  const skinTexts = getSkinTexts(appliedSkin);
+
   const value = useMemo<I18nContextValue>(() => {
+    const voice = skinTexts?.[lang];
     const t = (key: string, vars?: Record<string, string | number>) => {
-      let s = dicts[lang][key] ?? dicts.ru[key] ?? key;
+      let s = voice?.[key] ?? dicts[lang][key] ?? dicts.ru[key] ?? key;
       if (vars) {
         for (const [name, v] of Object.entries(vars)) {
           s = s.replaceAll(`{${name}}`, String(v));
@@ -66,7 +75,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       return s;
     };
     return { lang, setLang, hintsEnabled, setHintsEnabled, t };
-  }, [lang, hintsEnabled]);
+  }, [lang, hintsEnabled, skinTexts]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

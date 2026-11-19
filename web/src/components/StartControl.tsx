@@ -539,10 +539,10 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
       <div className="start-control-intro bracketed">
         <div className="corner tl plus" />
         <div className="corner br" />
-        <div className="start-control-eyebrow">MANUAL // REMOTE CONTROL</div>
+        <div className="start-control-eyebrow">{t('cc.eyebrow')}</div>
         <p className="start-control-lead">{t('cc.lead')}</p>
         <div className="start-control-meta">
-          <span className="badge badge--active">WEB CHAT</span>
+          <span className="badge badge--active">{t('cc.webChatBadge')}</span>
           <span className="start-control-access">
             <b>{t('cc.accessLabel')}</b> {t('cc.access')}
           </span>
@@ -682,7 +682,7 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
           <div className="corner br" />
           <div className="home-term-titlebar">
             <span className="lights"><i /><i /><i /></span>
-            <span>vpc-chat — control — web</span>
+            <span>{t('cc.demoWindow')}</span>
             <span className="start-control-rec">● LIVE</span>
           </div>
           <div className="start-control-demo-tabs">

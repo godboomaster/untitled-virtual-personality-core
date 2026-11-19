@@ -1,0 +1,9 @@
+Built-in image_gen. Edit target: 89-lower-larger-square-ghost-logo.png. Output: 90-raised-ghost-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: final square black-and-white ghost logo, small position correction.
+Input image 1: sole edit target, 89-lower-larger-square-ghost-logo.png.
+Primary request: raise the ghost moderately relative to the lower eggshell, while keeping the current large overall drawing scale.
+Move the round ghost head, both solid-black short narrow oval eyes, and the complete two-leaf angular neck collar UPWARD TOGETHER by approximately 60–65 px on this 1254 px square canvas. Do not change their sizes, shapes or positions relative to each other. This should reveal a noticeably taller white torso than in the input, a moderate lift rather than the original very long torso. Extend only the two sloping torso side outlines upward to meet the raised collar. The ghost's bottom zigzag hem stays in its current location above the shell rim, with the same clean white separator.
+Keep the entire lower eggshell EXACTLY fixed in place and at its current large scale: same outer silhouette, jagged rim, cracks and stroke widths. Keep the ghost's large head size, filled-black eye geometry, collar design, both left-hand leaves and tiny white separation cuts exactly unchanged. Maintain the emblem's current horizontal placement. Do not shrink the emblem or shift the shell downward to fake the higher ghost.
+Keep the complete emblem inside the square canvas, with a clear white margin above the raised head. One clean complete logo, pure black and white, flat crisp vector-like contours on white. No upper eggshell, no new details, text, border, highlights, shadows, texture, gradients or colors. Only change the ghost's vertical seating and resulting visible torso height.

@@ -2139,13 +2139,12 @@ html[data-skin='sky-magic'] .home-block-num {
   color: var(--smg-on-sky-dim);
 }
 
-/* Карточки присутствия и разделов консоли — облака */
+/* Карточки присутствия — облака */
 html[data-skin='sky-magic'] .home-presence-grid {
   gap: 18px;
 }
 
 html[data-skin='sky-magic'] .home-presence,
-html[data-skin='sky-magic'] .home-dossier,
 html[data-skin='sky-magic'] .home-feed {
   border: var(--smg-lw) solid var(--smg-line);
   border-radius: var(--smg-r);
@@ -2153,15 +2152,13 @@ html[data-skin='sky-magic'] .home-feed {
   clip-path: none;
 }
 
-html[data-skin='sky-magic'] .home-presence:hover,
-html[data-skin='sky-magic'] .home-dossier:hover {
+html[data-skin='sky-magic'] .home-presence:hover {
   transform: translateY(-2px);
   border-color: var(--smg-line);
   background: var(--smg-cloud);
 }
 
-html[data-skin='sky-magic'] .home-presence-name,
-html[data-skin='sky-magic'] .home-dossier h3 {
+html[data-skin='sky-magic'] .home-presence-name {
   font-family: var(--smg-display);
   font-weight: 400;
   font-size: 20px;
@@ -2171,8 +2168,6 @@ html[data-skin='sky-magic'] .home-dossier h3 {
 
 html[data-skin='sky-magic'] .home-presence-status,
 html[data-skin='sky-magic'] .home-presence-reply,
-html[data-skin='sky-magic'] .home-dossier-foot,
-html[data-skin='sky-magic'] .home-dossier-index,
 html[data-skin='sky-magic'] .home-feed-empty {
   font-family: var(--font);
   font-weight: 700;
@@ -2186,8 +2181,7 @@ html[data-skin='sky-magic'] .home-presence-activity {
   color: var(--text-dim);
 }
 
-html[data-skin='sky-magic'] .home-presence-reply,
-html[data-skin='sky-magic'] .home-dossier-foot {
+html[data-skin='sky-magic'] .home-presence-reply {
   border-top: var(--smg-lw) dotted var(--smg-line-soft);
 }
 
@@ -2402,10 +2396,6 @@ html[data-skin='sky-magic'] .start-guide-dlg-titlebar .lights i:first-child {
   background: var(--smg-amber);
 }
 
-html[data-skin='sky-magic'] .home-term-line .bright {
-  color: var(--smg-amber);
-}
-
 html[data-skin='sky-magic'] .home-term-cursor,
 html[data-skin='sky-magic'] .start-guide-dlg-cursor {
   background: var(--smg-amber);
@@ -2419,20 +2409,6 @@ html[data-skin='sky-magic'] .home-foot-right {
   font-size: 11px;
   letter-spacing: 0.12em;
   color: var(--smg-on-sky-dim);
-}
-
-/* Штрихкод подвала — ряд звёздочек-точек */
-html[data-skin='sky-magic'] .barcode {
-  align-items: center;
-  height: 18px;
-}
-
-html[data-skin='sky-magic'] .barcode i {
-  width: 4px !important;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--smg-on-sky);
-  opacity: 0.6;
 }
 
 /* ===== «Старт» ===== */
@@ -3649,4 +3625,19 @@ html[data-skin='sky-magic'] .image-lightbox-img {
   html[data-skin='sky-magic'] .start-guide-tabs {
     gap: 10px;
   }
+}
+
+/* Облачный берег — в главной сцене и сайдбаре; остальные поверхности чище */
+html[data-skin='sky-magic'] .boot::after {
+  content: none;
+}
+
+html[data-skin='sky-magic'] .chat-input-bar {
+  padding: 18px 22px;
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .voice-chat-controls {
+  padding-top: 18px;
+  background: var(--smg-cloud-2);
 }

@@ -56,6 +56,8 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 - **Files from the computer.** "Open the file report on physics", "send me the file about the
   tax deduction" — the bot finds the file on the computer the core runs on: the web there opens
   it, the phone app and Telegram get the file itself.
+- **Character lore.** History and world in a separate file instead of a long prompt: for each
+  message the persona gets only the pieces it needs, with no extra tokens or model calls.
 - **Voice activation.** Say a persona's name — "Connor, what's the weather?" — and it answers
   out loud: on the computer the core runs on and on the phone, even with the screen off. Phone
   commands work by voice too: "Connor, turn on the flashlight".
@@ -105,10 +107,14 @@ enter a model — a provider without a model is not used. The same can be set in
 shows their status and a live log, and listens for persona names with its own microphone
 ([Voice activation](#voice-activation)). It also keeps the persona's live portrait on the
 desktop — a head above all windows, with no frame or background: it looks at the cursor, a
-click pats it, the persona's new messages pop up in a speech bubble above it (a click opens the
-chat), it dozes off when you are away or the persona is asleep (a pat wakes it for five
+click pats it, the persona's messages pop up in a speech bubble above it (word by word, long ones
+part by part until it finishes; a click on the last part opens the chat), a box beside the head (it shows up when
+you hover over the character) lets you write to it, it dozes off when you are away or the persona is asleep (a pat wakes it for five
 minutes), and clicks next to it go
-through to the windows below. Build instructions — in
+through to the windows below. You can grab and throw it, it strolls along the bottom of the
+screen and the top edges of windows, plays its own animations from the Avatar section, and the
+persona reads and answers a file dropped onto it; a right click offers "Come here", "Hide" and
+"Keep me company". Build instructions — in
 [desktop/README.md](desktop/README.md).
 
 **Docker** — `docker compose up -d --build`, details in the [Docker](#docker) section.
@@ -132,12 +138,14 @@ with a chosen and downloaded model. There are no default models — a human pick
 | `OWNER_USER_ID` | the owner's Telegram ID: owner commands and control mode |
 | `TIMEZONE` | the user's time zone (IANA, e.g. `Europe/Berlin`); empty — the system one |
 | `WEBCHAT_SITES` | web chats in order, e.g. `deepseek,qwen` |
+| `WEBCHAT_LENGTH_HINT` | a web chat cannot take a token limit, so a limit of 40–1200 tokens is put into its prompt in words ("at most about 200 words, roughly 8–17 sentences" for 400 tokens in Russian); `0` — off |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | local model: address (`http://localhost:11434`) and model, e.g. `gemma4:e2b` |
 | `LOCAL_LLM_BACKEND` | who does the internal work (classification, extraction): `ollama` or `webchat` |
 | `LOCAL_LLM_DEVICE` | where the Ollama work runs: `pc` (default) or `phone` — the phone app's Gemma takes the reply-path tasks and the main reply when it falls back to the local model; background tasks, images and private pages stay on the computer's Ollama |
 | `LTM_MODEL_PROVIDER` | a separate provider for fact extraction; empty — the persona's chain |
 | `API_HOST`, `API_PORT` | backend address: `127.0.0.1:8000` |
-| `API_TOKEN` | API password; the web asks for it on sign-in. Empty — no password, but only for requests through `localhost` |
+| `API_TOKEN` | API password for the network (a phone by address, a Pi, another computer); not needed on this machine. Empty — no password, but only for this machine |
+| `API_TOKEN_LOCAL` | `1` — require the token on this machine too (a computer shared with other user accounts) |
 | `API_CORS_ORIGINS`, `API_ALLOWED_HOSTS` | whose pages and which host names may reach the API — see [API](#api) |
 | `VPC_DATA_DIR` | the data folder — one for everything: memory, your personas, state; `data/` by default. `DATA_DIR` is the old name of the same setting |
 | `RATE_LIMIT_DEFAULT`, `RATE_WINDOW` | Telegram message limit (6 per 3600 s) for personas with `rate_limit` |
@@ -198,27 +206,118 @@ as messages: blocks, limits, moderation, muting.
 
 ### Web interface
 
+- **Player** — select multiple audio files or drop them into a persistent browser library,
+  with seeking, volume, a playback queue and track repeat. Music continues while switching
+  sections. Other sections show a compact footer for the active source, with playback,
+  seek and volume controls; expand it to open the full player. Import by absolute path is available from a browser on the computer running
+  the core; it copies the file into that browser's library. On phones, use the file picker.
+  Up to 100 MB per track; codec support depends on the browser. Clearing site data removes
+  the library, and closing the tab stops local file playback. Restart the core after
+  updating to enable new player features.
+  **YouTube / YouTube Music on PC** accepts video/playlist links and runs a separate
+  audible Chrome, headless or visible for sign-in/consent, with pause, resume, volume,
+  seek and next-track controls. Sound plays on the core PC; control is local to that PC.
+  Its profile is `data/player/chrome-profile` (respecting `VPC_DATA_DIR`); personal and
+  agent browsers are separate. Closing the app tab leaves online playback running;
+  “Close browser” or core shutdown closes the player Chrome. Playback depends on site
+  availability, sign-in, consent and site errors; open a visible window when needed.
+  This controls the service's normal webpage, without the embedded YouTube API or
+  extracting audio. Reproduce load measurements with
+  `python -m scripts.benchmark_player --seconds 40 --rounds 3`.
+  Results: `data/player/benchmarks/latest.json`; CPU 100% means one logical core,
+  and memory is summed Chrome RSS (shared pages may be counted more than once).
+  Check real headless playback to the end of a video:
+  `python -m scripts.test_player_live --url "https://www.youtube.com/watch?v=0WA2NX4kPSI" --seconds 0`.
+  Check Music and next-track playback: `python -m scripts.test_player_live --url "https://music.youtube.com/watch?v=dQw4w9WgXcQ" --seconds 150 --next-seconds 90`.
+  These checks use temporary guest profiles and quiet audio, without personal cookies.
+  **Playback controls:** “pause”, “resume”, “next track”, “previous”, “louder”, and
+  “quieter” work with MP3, YouTube and YouTube Music. Volume changes by 10%.
+  PC MP3s use filename order in their folder; uploaded files use library order
+  while the player tab stays open. Previous YouTube tracks come from player history.
+  During an active task/scenario, bare commands remain dialog answers; “pause music”
+  and “resume music” explicitly target the player. A short two-column dock appears to the
+  avatar's right, with pause/play, previous/next and volume controls. Like the chat
+  button, the desktop player hides three seconds after the pointer leaves and
+  returns on hover over the avatar; audio keeps playing. Interaction extends the
+  timer. Auto-hide preserves the player view and transparent window size, keeping
+  the avatar in place. The arrow opens
+  an album card with seek and volume sliders. The close button stops playback and
+  removes the player; starting a new song opens the dock again. The desktop portrait
+  reserves space for the player, puts chat on the left, and moves away from a monitor
+  edge when necessary to keep the card visible.
+  Single tracks close the player at the end: YouTube/YouTube Music recommendations and the
+  next uploaded file do not start automatically. Automatic advance is reserved
+  for playlist playback; manual next/previous controls still work.
+  **Song links and playlists:** requested songs found online are saved automatically.
+  Add or drop individual YouTube / YouTube Music links, optionally name them, organize
+  them into multiple playlists, rename lists, and reorder tracks with the arrows.
+  Links to the same video are deduplicated across both services. Untitled links get
+  their metadata when played. The shared library persists on the core in
+  `data/player/catalog.json` (honoring `VPC_DATA_DIR`). “Play playlist Work music”
+  starts a saved list; next/previous controls follow its order. Automatic advance
+  works with the UI closed and closes the music browser after the final song. Playback uses an order
+  snapshot; restart a playlist to apply edits to its queue. Deleting a playlist
+  keeps its songs; deleting a library link removes it from every saved playlist.
+  The service audio is not downloaded.
+  Live regression in a temporary profile/catalog: `python -m scripts.test_music_playlists_live --last youtube_music`
+  (or `--last youtube`); it does not use the personal library or cookies.
+  **Music from chat:** choose YouTube or YouTube Music under “Where to search for
+  music”. This preference is stored on the core and shared by all personas.
+  “Play Rick Astley Never Gonna Give You Up” first checks MP3 filenames on the PC
+  (OS index, then standard user folders; about a 1.2-second budget), then plays the
+  first video/track from the selected service's search results. “Play song SAIKAI
+  on YouTube Music” overrides the service for that request; “open SAIKAI on YouTube”
+  goes directly online. Local MP3s use the same PC player. Commands work without
+  computer-control mode, for the owner in private chats; skin scripts, UI/settings
+  commands, known apps and scenario recording are excluded. Disable per persona
+  with `features.music_player: false`. Separate Telegram processes forward requests
+  to their matching core API when it is running, keeping the web player in control.
 - **Start** — how to use it: where to begin, special features, the phone, screen and camera,
   a control mode cheat sheet, Telegram commands.
 - **Home** — a calendar and a "while you were away" feed: initiatives, diary, reminders.
 - **Chat** — all chats as a list, then the chat with a persona, voice mode, camera, skins; in
-  control mode — answer buttons, a task card and the agent's live browser window.
+  control mode — answer buttons, a task card and the agent's live browser window. While the
+  answer is being prepared, the live portrait (on the desktop, in the phone widget, in the
+  picture-in-picture window) shows your message as a bubble beside the head: the persona nods,
+  turns to it, "reads" it line by line and then looks thoughtful; the bubble stays until the
+  answer arrives. While the persona is thinking, **Stop** replaces Send: an API model's answer
+  is cut off at once, a web chat site finishes writing but the answer is discarded; your
+  message stays in the history. In control mode Stop halts the agent the same way a typed
+  "stop" does: the current step finishes and the persona says where it stopped. Enter still
+  sends — the message waits in line behind the reply.
 - **Room** — the persona's live scene: where it is, what it is doing, its things;
-  a picture-in-picture window. The art workshop also holds the **live portrait** for voice
-  mode: a 5×5 sheet of head angles (drawn by an image generator from the bundled prompt) that
-  turns the persona into a 2D VTuber — it looks toward the cursor or your touch, blinks and
-  moves its lips while it speaks, and you can pat it with a tap or a stroke; like the room, it can be popped out into a small
-  always-on-top window (Chrome, Edge), and the tray panel puts it right on the desktop.
+  a picture-in-picture window and the art workshop.
+- **Avatar** — the persona's **live portrait**: a 5×5 sheet of head angles (drawn by an image
+  generator from the bundled prompt) turns it into a 2D VTuber — it looks toward the cursor or
+  your touch, blinks and moves its lips while it speaks, and you can pat it with a tap or a
+  stroke; like the room, it can be popped out into a small always-on-top window (Chrome, Edge),
+  and the tray panel puts it right on the desktop. The same section holds desktop
+  **animations**: your own named frame sheets (eating, reading, walking…) that the portrait
+  plays now and then and on events (patted, held with the mouse, falling, thinking, reading a
+  file), and the persona can pick one that fits its reply; plus a cheat sheet of what you can
+  do with the portrait on the desktop.
+  The **Frames** tab is a sheet editor: sliced frames stack as layers (each with its own opacity
+  and color, and you can flicker between them), the grid can be adjusted right on the sheet, and a
+  frame, row, column or the whole sheet can be moved and scaled by hand or aligned to a reference
+  layer, so the head and body stop jumping. Animations get a timing strip under the canvas: drag
+  frames along it, and set the overall speed, repeats and looping there.
 - **Personas** — create (form with the YAML next to it), edit YAML, rename, copy, color.
-- **Skins** — looks for the chat, dossier and room: library, upload, generation.
+- **Skins** — looks for the chat, dossier and room: library (with six built-in flat skins: Ink,
+  Ledger, Pixel, Netrunner, Retro-futurism, Metro), upload, generation by the core's model and
+  "Prompt for your own AI chat" — the generator's prompt ready to paste into any chatbot, then
+  upload the answer (works without the core too). The prompt matches the core:
+  `python -m scripts.gen_skin_prompts` (`--check` verifies).
 - **Settings** — language (ru/en), notifications, developer mode, location, time zone,
-  provider keys, web chats; "Phone" — connect a phone by QR code and the API token for
-  connecting by address.
+  provider keys, web chats.
+- **Connection** — on the computer: connect a phone by QR code, paired phones and the API token
+  for connecting by address; in the phone app: the core connection right now, cores on this
+  network ("is there a core here?"), notifications while the app is closed and "Listen for name".
 - **Persona dossier** — memory, reminders and to-dos, initiative, control mode, learning,
   files, persona settings (models, generation, modules).
 
-The web finds the backend through `VITE_API_URL` (`http://127.0.0.1:8000` by default). If
-`API_TOKEN` is set, the web asks for it on sign-in. Without a backend you can continue on
+The web finds the backend through `VITE_API_URL` (`http://127.0.0.1:8000` by default). The
+web opened on the same machine as the backend doesn't ask for a token; opened from another
+machine with `API_TOKEN` set, it asks for it on sign-in. Without a backend you can continue on
 demo data after 3 seconds — the interface switches to live data by itself once the backend
 is up.
 
@@ -239,15 +338,38 @@ date). The phone cannot delete or turn off alarms — it opens the alarm list in
 control mode, commands are still meant for the computer; the phone also leaves alone anything
 said "on the computer". Works without a connection to the core too.
 
+**Screen control.** The persona taps, types and scrolls in any app on the phone when you ask
+from any chat — the app, Telegram, the computer or by voice. You address the phone
+explicitly: "tap Send on my phone", "phone, go back", "on my phone go home", "on my phone,
+scroll down", "what's on my phone screen?", "type kittens into the search field on my phone",
+"open Telegram on my phone", "on my phone open the notifications" — in Russian too. The core
+decides and the phone only carries it out: an accessibility service stays connected to the
+core as one of its devices, so screen control needs a connection to the core. Turn it on in
+Android settings: Accessibility → "Virtual Persona: screen control"; in the app, the "Screen
+control" card in Settings shows its state, opens the Android settings and has "What the core
+sees". Android 13+ hides the switch at first for apps installed outside a store: App info → ⋮
+→ "Allow restricted settings". Irreversible taps — Send, Delete, Confirm — only after your
+"yes"; payments and "Buy" are never tapped; banking, password and sign-in code apps are not
+read or touched (only "back" and "home" work there), and codes from notifications are not shown
+to the persona. Owner only, and not in Telegram groups. Doesn't work over VPC Link yet — only
+with the core's address.
+
 **Home screen widgets.** "Persona initiative" shows the latest messages personas write on
 their own (initiative and the morning, night and weather messages; reminders and service
 notifications stay out); a tap opens the chat. "Persona room" is the chosen persona's room
 from their art, shown whole, with the persona in their current spot and pose, plus a caption
 with what they are doing; a tap opens the room. "Live portrait" puts the persona's head from
 their live portrait right on the wallpaper: it blinks, glances around and, when the persona
-writes, moves its lips and shows the message in a bubble (a tap on the bubble opens the chat);
+writes, moves its lips and "speaks" the message in a bubble above the head: word by word, a long
+one part by part (word speed and part switching are set in Settings → General, one setting for the
+desktop portrait and the widget; the bubble lies on top, so the head does not shrink; while the screen is off or
+locked, the message waits until you unlock it; a tap on the bubble opens the chat);
 a tap on the head pats it; while the persona sleeps (or at night, if the core does not know)
-it sleeps too, without animating — a pat wakes it for five minutes after the last touch. The widgets get their data through the background connection
+it sleeps too, without animating — a pat wakes it for five minutes after the last touch. The pencil
+in the portrait's corner opens a "Write" window over the home screen: a field above the keyboard
+and a mic for dictation; after you send, the portrait nods, thinks and answers in a bubble, in the
+same conversation as the app; phone commands ("set a timer for 5 minutes") work from here too;
+if the core does not answer, the message goes to the app, as in the chat without a connection. The widgets get their data through the background connection
 ("Notifications when the app is closed", address and token only); the room refreshes while the
 screen is on, the portrait checks whether the persona is asleep when the screen turns on.
 
@@ -256,7 +378,7 @@ on recognize each other by keys: no VPN on the phone, no accounts, no passwords.
 is encrypted end to end ([Noise](https://noiseprotocol.org), the same protocol family as
 WireGuard), and the API itself stays on `127.0.0.1` — the channel carries requests to it.
 
-1. On the computer: Settings → Phone → **Connect a phone**. A one-time QR code appears
+1. On the computer: Connection → **Connect a phone**. A one-time QR code appears
    (valid for 10 minutes).
 2. In the app: **Scan QR code**. Done — the phone shows up in the list on the computer,
    where it can be unpaired at any time.
@@ -276,10 +398,10 @@ The computer must stay awake while you use the app.
 
 **Connecting by address** (fallback): `API_HOST=0.0.0.0`, `API_ALLOWED_HOSTS=192.168.1.5`
 (the computer's address), `API_TOKEN`; in the app — `192.168.1.5:8000` and the token. The
-token is shown on the computer: Settings → Phone → "API token", with "Show" and "Copy"
+token is shown on the computer: Connection → "API token", with "Show" and "Copy"
 buttons. The port in the address is the API port (`API_PORT`, 8000), not `LINK_PORT`: that
 one is for VPC Link only. The traffic is not encrypted here, so VPC Link is the better choice. Without `API_TOKEN` the
-backend refuses requests that don't come through `localhost` (403). If `API_CORS_ORIGINS`
+backend refuses requests that don't come from this machine (403). If `API_CORS_ORIGINS`
 is set, add `https://localhost` to it — that is the app's origin.
 
 **Building the APK** needs Android Studio (it brings the Android SDK and Java):
@@ -298,7 +420,7 @@ and install it (allow installing apps from this source), or `adb install` it. On
 the last step is `cd web/android && gradlew assembleDebug` after `npm run build`,
 `npm run phone-voice` and `npx cap sync android`.
 
-**Notifications while the app is closed** (connection by address only, for now): Settings →
+**Notifications while the app is closed** (connection by address only, for now):
 Connection → **Notifications when the app is closed**. The app then keeps a small background
 service (a silent "Core connection" notification in the shade). The service keeps a request
 to the core open (`GET /api/inbox` with `wait`): the core answers as soon as a message
@@ -329,14 +451,47 @@ speech language is the interface language (Russian or English); for offline reco
 download that language in the phone's voice input settings.
 
 **Without the core.** When the phone can't reach the computer, the app answers by itself: with a
-cloud model if the persona's API keys were copied to the phone, otherwise with Gemma downloaded
-to the phone (Settings → "Without the core"). The persona's description, facts and recent
+cloud model if the persona's API keys were copied to the phone, then with web chats without keys,
+otherwise with Gemma downloaded to the phone. All of it lives in the Providers tab, which shows up
+in the menu only while the core is unreachable. The persona's description, facts and recent
 chat come with it from the core; the conversation is kept on the phone and goes into the core's
 history once it is reachable again. New personas can be created on the phone too: the form is
 the same, the persona is answered by Gemma from its full description and moves to the core as
 soon as it is reachable — under a new id with a `_2` suffix if that id is taken there. After that
 it is an ordinary persona: the core writes its short description for Gemma, gives it the API
 keys and so on.
+
+**No computer at all.** Without a core, the connect screen has a "Use without a computer" button.
+The app opens with the built-in Connor, and you can create your own personas. Replies come from a
+cloud model using keys entered on the phone (Providers → "Cloud model keys on the phone": a key and
+a model, stored encrypted), then from web chats without keys, otherwise from Gemma on the phone.
+
+**Web chats without keys on the phone.** In the Providers tab you can turn on chat websites:
+Duck.ai, ChatGPT and Google AI Mode without an account, DeepSeek with an email-and-password
+sign-in. The app opens the site in an invisible WebView, types the question and reads the answer
+off the page, like the core's web chats; it works in the background and with the screen off too.
+The prompt is the same as for the cloud model; it does not fit into Google AI Mode's field, so the
+short one made for Gemma goes there. Site cookies and sign-ins live in a separate WebView profile
+("Reset web chats" erases only them). Sign-ins and captchas are done by you, in the site's tab
+shown full screen. On DeepSeek each persona writes into its own chat, with at most six new chats a
+day so the site does not block the account. All sites are off by default: the conversation goes
+to a site only if you turn it on. Reminders, search, time, weather
+(set a city in Settings), chat memory and the notes on Home all work without a computer. The rules
+and notes for that are built into the app (`web/src/offline/baseKit.ts`, generated from the core by
+`python -m scripts.gen_offline_base_kit`). Once you install the core: "Connection" →
+"Connect a computer". On the first connection, personas, chats (the core extracts facts from
+them), reminders, notes and the city move to the computer; Connor from the phone goes into the
+core's Connor. Keys move after a question: they are added to the `.env` keys, nothing is replaced.
+From then on the computer leads, and without it the phone answers by itself again.
+
+**Services** work without a computer too: RSS feeds, GitHub, IMAP mail and Gmail (Google sign-in
+with your own OAuth client, as on the core). The phone checks them itself in the background every
+15–30 minutes, triages them with rules (no model) and sends a persona message (a notification and
+in the chat). Google Drive, the webhook and the Telegram account need a computer. Once a computer
+is connected, the phone asks whether to move the services there (with their cursors, so the core
+doesn't re-send what was already shown) and stops checking them itself. "Save to my notes …",
+"delete note 2", "what's in my notes?" in chat and the wake word ("Connor, …") also work without
+a computer.
 
 ## Personas
 
@@ -418,7 +573,7 @@ Without `features` a persona keeps conversation and memory. Top-level keys:
 | `settings` | `temperature`, `max_tokens`, `top_p`, `split_messages` (reply in several messages) |
 | `stm_size` | size of the recent message buffer; `STM_SIZE` from `.env.config` by default |
 | `special_users` | special people: `id` (`${VARIABLE}` works), `aliases`, `greeting`, `behavior` |
-| `short_prompt` | a short card for the phone's Gemma; without it the core writes one itself |
+| `short_prompt` | a short card for the phone's Gemma; without it the core writes one itself. The persona's short description window sets it too: paste your own (it offers the prompt to copy into any AI chat) or have the persona's model write it again |
 | `intellect` | intelligence tier — see below |
 | `conversation_style` | how often a reply ends with a question — see below |
 | `llm` | the persona's models — see [Models](#models) |
@@ -435,6 +590,38 @@ core. No file
 for a mode — the common `system_prompt`. On the web the default speaker (`web_user`, the
 core's app) is the special person; an explicit other `user_id` is matched against
 `special_users`.
+
+Modes by trigger — any other files in the same folder (`<persona>_modes/deviant.yaml`): the
+same persona with a different character. Chat history, facts, diary, todos and reminders are
+shared by all modes; a mode replaces `system_prompt`, `short_prompt`, `settings` and the name
+(`name`). Its `triggers` block switches it on: `names` — being addressed by this name at the
+start of a message (on the web, in a Telegram group and by voice), `keywords` — a word anywhere
+in the message (a trailing `*` matches the start of a word), `exit_keywords` — back to the usual
+self, `mood` — the persona's mood (tags and `valence`/`arousal` thresholds), `hold_minutes` — how
+long the mode lasts. Being addressed by the usual name ends a mode turned on by name. Each chat
+has its own mode; in a chat, `/mode` lists them, `/mode <mode>` turns one on, `/mode off` — the
+usual self, `/mode auto` — by triggers again. A trigger mode wins over modes by speaker; edits to
+the files are picked up without a restart. All keys are explained in
+[persona_mode_template.yaml](persona_mode_template.yaml). On the web, the modes are in the
+"Modes" tab of the dossier and of the "Edit" window: open and edit a mode's YAML, create one
+from a draft, upload a file from disk (a whole persona YAML works too — its names become the
+mode's names), delete.
+
+The modes share one history, but the model sees replies written in another mode with a tag
+(`[in your "Sancho" mode]`): it remembers what was said without picking up that tone. The core
+records which mode the chat was in and when in `data/api_<persona>/persona_mode_log.json`. To hold
+the manner even firmer, a persona and a mode can have `voice_examples` — a few short lines in
+their voice that go at the end of the system block (see the templates).
+
+A mode can have **its own avatar**: the "Avatar" section has a mode picker under the persona
+picker, and the portrait sheets, animations and frames of a mode are edited separately
+(`data/api_<persona>/portrait_modes/<mode>/`). Voice mode, PiP, the desktop portrait, the widget
+and the head over other apps show the avatar of the mode that is on in the chat right now;
+whatever the mode lacks comes from the usual avatar (its own head without its own animations
+plays no animations: the usual ones are drawn for another figure). A **switch** between modes
+is an animation with the "Mode switch" trigger in the avatar of the mode being switched to
+("+ Add a switch", "From" picks the source modes): the portrait plays it instead of the head
+and then shows the new mode's head. No switch animation — the head just changes.
 
 Modules in `features`:
 
@@ -458,6 +645,23 @@ Modules in `features`:
 | `computer_control` | control mode — see [Control mode](#control-mode) |
 | `addons` | the persona's add-ons, e.g. `[arrodes_book]` |
 | `export_server`, `restore_memory` | Telegram: HTTP memory export by token; restore from a dump when memory is empty |
+
+### Character lore
+
+A long history in `system_prompt` costs thousands of tokens on every turn and does not fit web
+chat limits. Upload it as a file in the "Lore" tab of the dossier (txt, md, docx, pdf, odt, rtf,
+epub, html; up to 10 MB per file, up to 2 million characters per persona). Lore is shared by all
+of the persona's channels, lives in `data/api_<persona>/lore/`, follows an id change and is
+copied with the persona.
+
+For each message the persona gets up to 10 short pieces (up to 3 in light mode): the search runs
+over words and meaning, with no model call. Small talk and messages not about the persona pull
+no lore. Pieces are short, so markup helps: headings are searched too.
+
+Keep the voice, personality and a short biography in `system_prompt`. Search sometimes misses:
+the biography keeps the persona itself, and a prompt rule forbids inventing a past. The "Check a
+message" field shows what will be found for a given message. Without the core, the phone searches
+its copy of the lore the same way, or by words only if it has no vector model.
 
 ### Intelligence tier
 
@@ -530,7 +734,8 @@ features:
 
 In the morning — a greeting when you sit down at the computer or write for the first time
 that day. At night — "time to sleep", but only if you were active recently. Weather
-(Open-Meteo) — if a location is set in "Settings".
+(Open-Meteo; MET Norway when Open-Meteo is unreachable) — if a location is set in
+"Settings".
 
 ### Life between messages
 
@@ -586,18 +791,49 @@ shows what to do instead of a reply.
 Say a persona's name and it answers out loud — "Connor, what's the weather?" — with no
 browser open. On the computer the tray panel listens: "Listen for name" in its menu or window
 (details below). Speech is recognised offline
-by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with a small Russian streaming model
-(~28 MB, downloaded from HuggingFace into `data/models/wake-ru` on first start). The names are
+by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with streaming models downloaded from
+HuggingFace on first start: a small Russian one (~28 MB, `data/models/wake-ru`) and an English
+one (~73 MB, `data/models/wake-en`). By default the computer understands both: every phrase is
+heard by both models and the more confident one wins; short answers like "yes"/"да" go by the
+language of the conversation (the language the persona last answered in). "Speech language" in
+the panel (or `WAKE_LANG=ru`, `en`, `ru,en` in `.env`) limits it to one language — less CPU and
+no English download. The phone listens in Russian only. The names are
 each persona's `features.trigger_words` — personas without them are not voice-addressable.
-Names are matched by sound, so "коннер" still wakes Connor; the name has to come at the
-start of the phrase ("hey Connor, …" works, "we talked to Connor yesterday" does not).
+Names are matched by sound, so "коннер" and a British "Conna" still wake Connor; the name has
+to come at the start of the phrase ("hey Connor, …" works, "we talked to Connor yesterday" does
+not). For English, a Latin spelling among the trigger words (`connor` next to `коннор`) helps the
+English model hear the name.
 
 - **Name + request** — "Коннор, поставь будильник на семь" goes straight to the persona.
 - **Name alone** — a short chime, then the next phrase is the request (8 s to start talking).
 - **A reply that ends with a question** — answer within 6 s without the name.
+- **Conversation with the portrait** (computer, tray panel) — if that persona's chat isn't open
+  in the web interface on this computer, saying the name brings the persona's portrait onto the
+  desktop, and from then on you talk without the name. What you say appears in a bubble next to
+  the head as you speak; the phrase is sent once you stay silent for 5 seconds
+  (`WAKE_TALK_PAUSE_SEC`), so you can pause to think mid-sentence and finish it. The persona reads
+  it, thinks and answers out loud. While it is still thinking the microphone keeps listening: its
+  name gets a chime and it keeps thinking; a new phrase means you moved on — the old answer is not
+  spoken (it stays in the chat) and the new phrase goes to the persona, queued after the old one;
+  another persona's name switches to that persona. The conversation ends
+  after 60 s of silence (`WAKE_CONVERSE_SEC`), on "хватит"/"stop", "that's enough" (right away)
+  or "пока"/"bye" (after the goodbye), or when you click the microphone badge by the head;
+  portraits that came out for the conversation then leave. You can interrupt: start talking while
+  the persona answers and it stops and listens (with speakers, say at least two or three words or
+  "подожди"/"wait"; headphones work best — over an English reply the English model often keeps
+  following the persona's voice, so speak clearly louder than the speakers). Name another persona mid-conversation and its portrait appears next to the first;
+  now that one listens, and the first waits until you name it again.
 
 The request goes into the same chat as the web interface, so the exchange shows up there.
-While the persona is speaking the microphone is muted, so it doesn't wake itself up.
+The core knows the reply will be spoken and asks the model to keep it short — a few sentences, no
+lists or markdown — so you don't wait minutes for an essay. A spoken reply is also capped at 400
+tokens (`VOICE_REPLY_MAX_TOKENS`): a model that ignores the request stops in seconds, the cut tail
+is trimmed to the last full sentence, and there is no "continue" round. If you say something new
+while the persona is still thinking, the core aborts that generation (`POST /api/chat/cancel`;
+API providers are called in streaming mode for voice and stop mid-answer, web chats finish their
+answer and it is discarded) and the new phrase goes next without waiting. Outside a portrait
+conversation the microphone is muted while the persona thinks and speaks, so it doesn't wake
+itself up.
 
 **On the computer** you need `pip install -e ".[voice]"` in the Python or venv the core runs in.
 Then turn on "Listen for name" in the tray panel's menu or in its window. The panel runs the
@@ -615,7 +851,7 @@ names, what was heard last and any error. By default it takes the laptop's built
 default: a Bluetooth headset mic would switch the headset into call mode. Replies are spoken
 with `say` on macOS (PowerShell's System.Speech on Windows and espeak on Linux — untested).
 
-**On the phone** — Settings → Connection → "Listen for name" (connection by address and
+**On the phone** — Connection → "Listen for name" (connection by address and
 token, like background notifications). The app listens with the same model and rules, even
 with the screen off, and answers through the phone's speech synthesis; it keeps an ongoing
 notification with an "Off" button. It costs battery. On Honor and other phones with aggressive
@@ -851,6 +1087,24 @@ the persona's `llm.fallback`, the other providers with keys in the order of the 
 web chats, the local model. Without internet the bot goes straight to the local model.
 Several keys of one provider are rotated, starting with the last working one.
 
+Each cloud API attempt has a total deadline of at most 60 seconds, including reading
+the response; heartbeat data does not extend it. A timed-out request is closed and
+retried once. If the retry fails, the bot moves to the next provider. Shorter deadlines
+for auxiliary calls are preserved. If a streaming reply has already started, an
+interruption returns the accumulated text without generating a duplicate reply.
+
+When a reply cannot be produced, error messages come from a bank written in the
+persona's voice. The bank is prepared in the background at creation and startup,
+together with other service phrases, including for personas without computer control.
+The base character and each mode have separate Russian and English variants; selection
+follows the conversation language and avoids consecutive repeats. Handling an error
+does not call a model. Until the matching variants are ready, a short localized
+message is used. Changes to the character or voice examples invalidate the affected variants.
+
+Open the persona dossier → **Phrases** to view and edit the full bank: error replies
+by mode and language, service messages and computer action results. Manual edits are
+used for replies and kept when the bank is regenerated or topped up.
+
 ### Web chats
 
 The prompt goes into a chat on the site, and the answer is read from the page. Sites:
@@ -928,6 +1182,7 @@ descriptions are in Swagger: `/docs`.
 | GET, POST | `/api/personas` | list of personas; create a persona from YAML |
 | GET, PUT | `/api/personas/{p}/yaml` | the persona's YAML |
 | POST | `/api/chat`, `/api/chat/stream` | a message to a persona; with streaming (SSE) |
+| POST | `/api/chat/cancel` | the Stop button: abort the reply being generated in a chat (it won't be saved); an agent at work gets its own stop (`stopping`) |
 | GET | `/api/chat/history` | chat history |
 | POST | `/api/chat/clear` | erase the persona's memory (a copy is kept for 7 days) |
 | GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative; "typing" and messages from other devices the persona is answering now (`pending`) |
@@ -936,6 +1191,8 @@ descriptions are in Swagger: `/docs`.
 | POST | `/api/devices/hello` | a core device introduces itself: id, name, how to address it, what it can do (`camera.snapshot`); the list is `GET /api/devices` |
 | GET | `/api/devices/{id}/commands` | the device waits for a command (with `wait`); the result goes back via `POST /api/devices/{id}/result` |
 | GET | `/api/inbox` | new background messages of all personas — for the app's notification service; with `wait` it waits up to `wait` seconds for a message |
+| GET | `/api/said` | persona lines as they appear (chat replies from any device and background messages) and the pause before an answer (`heard` with the text of your message, `settled`) — the speech bubbles of the desktop portrait, the widget and the picture-in-picture portrait, together with the text speed `text`; with `wait` it waits up to `wait` seconds |
+| GET, PUT | `/api/settings/avatar-text` | avatar text speed: `words_per_sec` (words per second, 0 — all at once) and `part_sec` (seconds per bubble part); Settings → General |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |
 | GET, POST, DELETE | `/api/link`, `/api/link/pair`, `/api/link/devices/{id}` | phones over VPC Link: list, pairing QR code, unpairing |
@@ -956,8 +1213,12 @@ curl -X POST http://127.0.0.1:8000/api/chat \
   another site is refused before anything runs. The list is replaced by `API_CORS_ORIGINS`;
 - it checks the host name — protection against DNS rebinding. Your own names go into
   `API_ALLOWED_HOSTS`;
-- with `API_TOKEN` it requires `Authorization: Bearer <token>`; without it, it refuses
-  requests that come by another host name or through a proxy (403).
+- it lets this machine in without a token: a loopback peer address, a local host name, no
+  proxy headers, and a browser only from your own front end (a local Origin; navigations and
+  images from other sites' pages and an address typed into the address bar need the token).
+  `API_TOKEN_LOCAL=1` requires the token here too;
+- everyone else needs `Authorization: Bearer <token>` with `API_TOKEN`; without `API_TOKEN`
+  they are refused (403).
 
 Using it from a phone — see [Phone app](#phone-app-android). Opening the web over a
 network — set `API_TOKEN`, `API_HOST`, `API_CORS_ORIGINS` and build the web with the right

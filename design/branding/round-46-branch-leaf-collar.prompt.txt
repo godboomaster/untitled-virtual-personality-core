@@ -1,0 +1,12 @@
+Built-in image_gen. Edit target: 67-short-tail-ribbon-ghost.png. Botanical shape reference: references/leaf-branch-style-01.png. Replace the neck band with a branch-like collar and its left free end with one angular leaf; retain the black-and-white palette and other geometry.
+
+Precise local edit to image 1, the black-and-white ghost-and-cracked-egg logo with a short ribbon end on the LEFT of its neck.
+Image 2 is a BOTANICAL SHAPE REFERENCE ONLY. The user wants the free ribbon end to look like ONE of its angular pointed leaves, and the neck ribbon itself to look like its slender bent branch.
+
+Replace ONLY the black neck ribbon and its little left free end:
+- Turn the existing free end into ONE CLEAR SMALL LEAF attached at the same left-hand location. Use the reference's elongated faceted/rhombus-like leaf silhouette, with a sharp tip, angular but gently organic sides and one simple white negative-space midrib if needed. Do not retain the split fishtail/bow shape of the old ribbon end.
+- Turn the band beneath the face into a compact slender WOODY BRANCH wrapped across the same neck region. Give the branch a modest taper, one or two restrained natural bends and a subtly irregular lower contour, like the branch in image 2, rather than a uniform rectangular fabric band. The branch flows directly into the single leaf on the left. Keep it small and structurally connected to the ghost's body and head; not a floating necklace.
+- Preserve the face's existing flat lower contact edge as closely as possible. Keep the branch primarily in the original collar footprint. No dangling scarf, bow, extra leaves, roots, flowers or vines elsewhere.
+
+Retain the logo's STRICT BLACK-AND-WHITE palette: branch and leaf in BLACK ink, a tiny WHITE midrib if used; NO olive/green/brown fill from the reference. Do not bring the reference's egg colors or foliage into the shell.
+Preserve everything outside the neck ornament exactly: head shape and size, both tall capsule eyes, ghost outline thickness, straight white body without folds, jagged black hem, narrow white separator above the shell, both white eggshell pieces, all cracks, line weights, geometry, position, framing and white background. No text or new objects.

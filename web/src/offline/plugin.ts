@@ -60,11 +60,85 @@ export interface AlarmItem {
   at: number; // unix-секунды
 }
 
+// Ключи, введённые на телефоне (без компьютера): вебу — только маски
+export interface PhoneProvider {
+  name: string;
+  base_url: string;
+  model: string;
+  keys: string[]; // маски «sk-…abcd»
+}
+
+// Ключи с ядра у всех персон вместе (вкладка «Провайдеры»): маски и модели
+export interface CoreProvider {
+  name: string;
+  models: string[];
+  keys: string[]; // маски «sk-…abcd»
+  personas: string[]; // у каких персон есть
+}
+
+// Кем персона может отвечать без ядра (её цепочка в досье, personaChain.ts):
+// own — ключ с ядра пришёл ей самой; core — ключ с ядра (её или другой
+// персоны: ключи ядра общие); phone — есть ключи, введённые на телефоне
+export interface PersonaProvider {
+  name: string;
+  model: string;
+  keys: string[]; // маски
+  own: boolean;
+  core: boolean;
+  phone: boolean;
+}
+
+// Все ключи телефона по провайдерам (карточка «Ключи провайдеров», KeysCard):
+// с ядра и введённые на телефоне; правки с телефона — поверх ключей ядра
+export interface RingKey {
+  id: string; // ключ ядра — отпечаток; ключ телефона — p<номер>
+  mask: string;
+  src: 'core' | 'phone';
+  index?: number; // номер ключа телефона (updatePhoneProvider removeKey)
+  hidden: boolean; // ключ ядра убран на телефоне
+}
+
+export interface RingProvider {
+  name: string;
+  base_url: string;
+  model: string; // действующая на телефоне
+  core_model: string;
+  phone_model: string;
+  edited: boolean; // своя модель или убранные ключи ядра
+  personas: string[]; // у каких персон ключ с ядра
+  keys: RingKey[];
+}
+
+// Целиком — только для переноса на компьютер (phoneKeys.ts)
+export interface PhoneProviderSecret {
+  name: string;
+  base_url: string;
+  model: string;
+  api_keys: string[];
+}
+
 interface OfflineLlmPlugin {
+  phoneProviders(): Promise<{ providers: PhoneProvider[] }>;
+  updatePhoneProvider(opts: {
+    name: string;
+    base_url?: string;
+    model?: string;
+    temperature?: number;
+    addKey?: string;
+    removeKey?: number;
+    remove?: boolean;
+    top?: boolean;
+  }): Promise<{ providers: PhoneProvider[] }>;
+  exportPhoneProviders(): Promise<{ providers: PhoneProviderSecret[] }>;
   setProviders(opts: { persona: string; providers: unknown[] }): Promise<{ count: number }>;
   providersInfo(opts: { persona: string }): Promise<{ names: string[] }>;
+  coreProviders(opts: { personas?: string[] }): Promise<{ providers: CoreProvider[] }>;
+  personaProviders(opts: { persona: string }): Promise<{ providers: PersonaProvider[] }>;
+  keyring(opts: { personas?: string[] }): Promise<{ providers: RingProvider[] }>;
+  editProvider(opts: { name: string; model?: string; hideKey?: string; showKey?: string; reset?: boolean }): Promise<void>;
   clearProviders(opts: { persona?: string }): Promise<void>;
-  cloudChat(opts: { persona: string; messages: ChatMsg[]; maxTokens?: number; temperature?: number }): Promise<{
+  // only — имена провайдеров в порядке перебора (порядок персоны, personaChain.ts); без него — все её
+  cloudChat(opts: { persona: string; messages: ChatMsg[]; maxTokens?: number; temperature?: number; only?: string[] }): Promise<{
     text: string;
     provider: string;
     model: string;

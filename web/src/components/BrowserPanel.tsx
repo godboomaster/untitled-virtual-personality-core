@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { ApiError, streamControlView } from '../api';
 import { useI18n } from '../i18n';
+import { SkinPartsContext } from '../skinParts';
 
 /* Окно браузера агента рядом с чатом (режим управления): живые кадры
    вкладки, на которой работает агент, адрес и заголовок. Только просмотр —
@@ -78,7 +79,10 @@ export default function BrowserPanel({ personaId, personaName, onClose }: Props)
     };
   }, [personaId]);
 
-  const overlay = status === 'live' ? (hasFrame ? null : t('bw.st.waiting')) : t(`bw.st.${status}`);
+  const overlayKey = status === 'live' ? (hasFrame ? null : 'waiting') : status;
+  const overlay = overlayKey ? t(`bw.st.${overlayKey}`) : null;
+  // Скин может показать состояние по-своему (parts.tsx → BrowserState)
+  const SkinState = useContext(SkinPartsContext)?.BrowserState;
   return (
     <aside className="chat-browser" aria-label={t('bw.label')}>
       <div className="bw-top">
@@ -104,11 +108,17 @@ export default function BrowserPanel({ personaId, personaName, onClose }: Props)
       </div>
       <div className={`bw-view${hasFrame ? '' : ' bw-view--empty'}${overlay && hasFrame ? ' bw-view--stale' : ''}`}>
         <img ref={imgRef} alt={meta.title || t('bw.label')} />
-        {overlay && (
-          <div className="bw-overlay">
-            <span className="bw-overlay-logo">◉</span>
-            {overlay}
+        {overlayKey && SkinState ? (
+          <div className="bw-overlay bw-overlay--skin">
+            <SkinState status={overlayKey} persona={{ id: personaId, name: personaName }} stale={hasFrame} t={t} />
           </div>
+        ) : (
+          overlay && (
+            <div className="bw-overlay">
+              <img className="bw-overlay-logo" src="/brand-mark.svg?v=118" alt="" aria-hidden="true" width="48" height="48" />
+              {overlay}
+            </div>
+          )
         )}
       </div>
     </aside>

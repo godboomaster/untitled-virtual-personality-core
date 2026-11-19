@@ -1,14 +1,17 @@
 import type { Section } from '../App';
 import { useI18n } from '../i18n';
 import StartGuide from '../components/StartGuide';
+import type { TrackId } from '../components/StartGuide';
 import StartControl from '../components/StartControl';
+
+const LEARNING_TRACKS: TrackId[] = ['console', 'features', 'persona', 'phone'];
 
 interface StartProps {
   onNavigate: (s: Section) => void;
 }
 
 // Страница «Старт»: как пользоваться уже запущенными ботами — обучение
-// (консоль и спецфункции), режим управления и в конце команды Telegram.
+// (консоль, спецфункции, персона и телефон), управление и команды Telegram.
 // Установка ядра — не здесь
 export default function Start({ onNavigate }: StartProps) {
   const { t } = useI18n();
@@ -21,7 +24,7 @@ export default function Start({ onNavigate }: StartProps) {
         <div className="corner bl" />
         <div className="corner br plus" />
         <div className="home-readout top-right">
-          TRACKS <span className="val">03</span>
+          TRACKS <span className="val">{String(LEARNING_TRACKS.length + 1).padStart(2, '0')}</span>
           <br />
           MODE <span className="live-tag">BRIEFING</span>
         </div>
@@ -33,6 +36,12 @@ export default function Start({ onNavigate }: StartProps) {
         <div className="home-cta-row">
           <button
             className="btn btn--primary"
+            onClick={() => document.getElementById('start-guide')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          >
+            {t('start.ctaGuide')}
+          </button>
+          <button
+            className="btn btn--ghost"
             onClick={() => document.getElementById('start-control')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
           >
             {t('start.ctaControl')}
@@ -51,10 +60,11 @@ export default function Start({ onNavigate }: StartProps) {
 
       <div className="chrome-bar" />
 
-      {/* Обучение: консоль (персона, провайдеры, разговор) и спецфункции */}
+      {/* Обучение: консоль, спецфункции, персона и телефон */}
       <StartGuide
+        id="start-guide"
         onNavigate={onNavigate}
-        trackIds={['console', 'features']}
+        trackIds={LEARNING_TRACKS}
         titleKey="guide.title"
         num="01 / BRIEFING"
         leadKey="guide.lead"

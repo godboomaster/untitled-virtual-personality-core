@@ -1,0 +1,32 @@
+Built-in image_gen. Two combined ghost and cracked-egg concepts, inspired by approved ghost bases 05 and 07. Concept explorations, not integrated into the application.
+
+36-ghost-hatching
+Use case: logo-brand.
+Asset type: logo concept for Virtual Persona Core.
+Input image 1: approved style reference 05 ORIGAMI, broad minimal black ghost, rounded rectangular crown, two rounded-square eyes, asymmetrical angular lower tails.
+Input image 2: approved style reference 07 RIBBON, narrower arched minimal black ghost, two vertical capsule eyes and asymmetrical lower tails.
+User idea: COMBINE THE GHOST AND A CRACKED EGG. The project brings a fictional persona to life. Express hatching / a presence coming alive in one compact memorable emblem.
+Keep the approved calm ghost character, two eye holes, solid black silhouette and restrained geometry. Integrate the egg with its lower body / lower cutout as one coherent design. Do not make a ghost standing beside a separate egg.
+The EGG SHELL should be recognizable from a rounded lower contour and an opened broken edge, with only ONE or TWO broad angular breaks. No fine shell cracks, feathering, nest, yolk, baby animal, chick, arms, feet, mouth, stars, hearts, leaves, flames or lettering inside the mark.
+This is mature independent software branding: quiet, clever, minimal and optically balanced, not a baby toy mascot or Easter illustration.
+One large emblem on a square solid warm-ivory #F4F0E7 presentation, near-black #151817 mark, small exact wordmark "Virtual Persona" beneath with tiny spaced "CORE". Small inverse app-icon sample at bottom right using the identical geometry. Specific small concept label bottom left. Generous negative space.
+Crisp flat vector-like shapes. No gradients, textures, grain, shading, shadows, glow, 3D, product mockups, watermark or extra slogans.
+Direction 32 / HATCH:
+Use the wider 05 ORIGAMI ghost as the primary character reference, with the same two rounded-square eye holes and rounded rectangular upper head. A small solid black LOWER HALF OF A CRACKED EGG sits immediately under and partly overlaps the ghost's lower tails. The ghost rises out of it. The egg shell is compact, about two thirds of the ghost's width, with one purposeful asymmetric zigzag opening that echoes the original ghost's angular lower cutout. A broad ivory gap separates ghost and shell at that broken edge, with the upper ghost's slightly tapered lower tip reaching into the opening.
+Only TWO principal solid shapes: ghost and shell. No detached top shell, no small shards. The overall silhouette remains close to square. The rounded lower egg shell and the ghost above should form one balanced compact icon, never a tall stacked illustration or a ghost sitting in a bowl. Let the asymmetrical broken rim suggest an egg hatching, but keep the shell secondary to the ghost. Bottom-left label exactly "32 / HATCH".
+
+37-ghost-cracked-shell
+Use case: logo-brand.
+Asset type: logo concept for Virtual Persona Core.
+Input image 1: approved style reference 05 ORIGAMI, broad minimal black ghost, rounded rectangular crown, two rounded-square eyes, asymmetrical angular lower tails.
+Input image 2: approved style reference 07 RIBBON, narrower arched minimal black ghost, two vertical capsule eyes and asymmetrical lower tails.
+User idea: COMBINE THE GHOST AND A CRACKED EGG. The project brings a fictional persona to life. Express hatching / a presence coming alive in one compact memorable emblem.
+Keep the approved calm ghost character, two eye holes, solid black silhouette and restrained geometry. Integrate the egg with its lower body / lower cutout as one coherent design. Do not make a ghost standing beside a separate egg.
+The EGG SHELL should be recognizable from a rounded lower contour and an opened broken edge, with only ONE or TWO broad angular breaks. No fine shell cracks, feathering, nest, yolk, baby animal, chick, arms, feet, mouth, stars, hearts, leaves, flames or lettering inside the mark.
+This is mature independent software branding: quiet, clever, minimal and optically balanced, not a baby toy mascot or Easter illustration.
+One large emblem on a square solid warm-ivory #F4F0E7 presentation, near-black #151817 mark, small exact wordmark "Virtual Persona" beneath with tiny spaced "CORE". Small inverse app-icon sample at bottom right using the identical geometry. Specific small concept label bottom left. Generous negative space.
+Crisp flat vector-like shapes. No gradients, textures, grain, shading, shadows, glow, 3D, product mockups, watermark or extra slogans.
+Direction 33 / OPEN SHELL:
+Use the narrower 07 RIBBON ghost as the primary character reference: same calm arched top and two tall capsule eyes. Fuse the egg and ghost MORE TIGHTLY into ONE overall silhouette: the upper ghost rises from a rounded egg-shaped base, while a single broad asymmetric ivory zigzag split across the lowest third separates the solid lower shell from the ghost's floating lower tips. One distinct jagged notch on the left and a smoother angled opening on the right, as if the shell has just parted. The top of the ghost remains outside the egg and clearly a spirit, not an egg with eyes painted on it.
+Make the lowest piece a restrained curved eggshell crescent with a broad substantial bottom; the upper ghost's original uneven tails echo and align with the broken rim through a clean gap. No outlines, no thin line illustration. At most two large black components, visually forming a compact cohesive emblem with a slightly egg-like outer contour and a quiet sense of emergence. A distinctive asymmetric fracture, not a generic cartoon sawtooth hem.
+Bottom-left label exactly "33 / OPEN SHELL".

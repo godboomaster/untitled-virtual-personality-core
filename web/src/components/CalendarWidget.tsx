@@ -315,7 +315,7 @@ export default function CalendarWidget() {
             <div className="corner br" />
             <div className="pcreate-head">
               <span className="pcreate-title">{selectedLabel}</span>
-              <span className="badge">CAL</span>
+              <span className="badge hud-code">CAL</span>
               <button type="button" className="pxe-close" onClick={() => setSelected(null)} aria-label={t('common.close')}>
                 ✕
               </button>

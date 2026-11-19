@@ -2,10 +2,11 @@ import { useEffect, useReducer } from 'react';
 
 /* Переписка без ноутбука: хранится на телефоне (localStorage), пока не уйдёт
    на ноутбук (state.ts: syncOffline → POST …/offline/import). source — кто ответил:
-   cloud — облачная модель с телефона, local — Gemma на телефоне; у реплики
+   cloud — облачная модель с телефона, local — Gemma на телефоне, notify —
+   уведомление «Сервисов» телефона (phoneServices.ts); у реплики
    пользователя queued — ответа пока не было. */
 
-export type OfflineSource = 'cloud' | 'local' | 'queued';
+export type OfflineSource = 'cloud' | 'local' | 'queued' | 'notify';
 
 export interface OfflineMsg {
   id: string; // для ядра: повтор по id не записывается дважды
@@ -16,6 +17,7 @@ export interface OfflineMsg {
   source: OfflineSource;
   provider?: string;
   reminder?: { id: string; task: string; at: number }; // поставлено этой репликой
+  mode?: string; // ответ — в каком режиме персоны (из кита; "" — обычный): ядру в журнал режимов
 }
 
 const PREFIX = 'vpc-offline-msgs:';
@@ -56,13 +58,15 @@ export function offlineMessages(persona: string): OfflineMsg[] {
 
 export function addOfflineMessage(
   persona: string,
-  msg: Pick<OfflineMsg, 'role' | 'text' | 'source'> & Pick<Partial<OfflineMsg>, 'provider' | 'reminder'>,
+  msg: Pick<OfflineMsg, 'role' | 'text' | 'source'> & Pick<Partial<OfflineMsg>, 'provider' | 'reminder' | 'ts' | 'mode'>,
 ): OfflineMsg {
+  // ts — когда было на самом деле (уведомление сервисов, доставленное в фоне)
+  const ts = msg.ts ?? Date.now() / 1000;
   const full: OfflineMsg = {
     ...msg,
     id: newId(),
-    num: Date.now() * 10 + (seq++ % 10),
-    ts: Date.now() / 1000,
+    num: Math.round(ts * 1000) * 10 + (seq++ % 10),
+    ts,
   };
   write(persona, [...read(persona), full]);
   return full;

@@ -1,0 +1,12 @@
+Built-in image_gen. Full edit target: 74-full-body-branch-ghost.png. Exact user neck guide: references/two-leaf-neck-guide-01.png. Remove the torso branch and recreate the pictured two-leaf angular collar with clean white separation cuts.
+
+Precise local edit to image 1, the complete black-and-white ghost emerging from a cracked egg.
+Image 2 is the USER'S NEW EXACT DESIGN GUIDE, cropped around the face, neck and body. Follow this guide for the NECK ORNAMENT and clean empty body. Output the COMPLETE emblem using image 1's full framing, not the cropped view.
+
+1. REMOVE the entire vertical branch and all three leaves currently drawn over the torso in image 1. Restore the torso to completely plain white.
+2. Recreate the NECK BRANCH/COLLAR as shown in image 2: a black angular stem following the base of the face, with a low shallow asymmetric V-like bend, slightly rising toward its right end. Match the guide's thickness, angle, placement and shape.
+3. At the LEFT attachment put EXACTLY TWO pointed outlined leaf shapes as in the guide: a larger elongated leaf extending left, and a smaller leaf pointing down-left. Both have the guide's crisp faceted contours and simple narrow white central veins. Keep their relative proportions and directions close to image 2.
+4. Preserve the guide's small deliberate WHITE CLEARANCE CUTS at the leaf/stem junction and between the neck branch and adjacent face/body contours, so the collar remains distinct. Render these as clean precise gaps, not messy eraser edges or extra decorative marks.
+
+This is specifically the user's pictured leafy collar design, not a new creative variation. No long branch over the body, no third leaf, no right-hand foliage, no bow or loops.
+Keep the complete emblem's head size and expression, two dark capsule eyes, straight widening body outline, sharp jagged hem, white separator above the shell, both eggshell pieces and their cracks, proportions, composition, stroke weights and white background. Preserve the existing shape everywhere outside the edited neck/body interior. Strict pure black and white, no shading, colors, texture, text or new objects.

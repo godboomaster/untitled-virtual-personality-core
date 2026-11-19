@@ -6,10 +6,11 @@
 
 Запуск: python -m app.main api  (или uvicorn app.api.server:app)
 
-Авторизация: если задан env API_TOKEN — все /api/* (кроме /api/health)
-требуют заголовок ``Authorization: Bearer <API_TOKEN>``. Без API_TOKEN API
-открыт только запросам по localhost (локальный режим по умолчанию); по
-другому имени хоста (телефон, другая машина) — 403.
+Авторизация: запросы с этой машины (свой фронт, панель, скрипты —
+security.from_this_machine) идут без токена. Остальным, если задан env
+API_TOKEN, все /api/* (кроме /api/health и /api/core/proof) требуют заголовок
+``Authorization: Bearer <API_TOKEN>``; без API_TOKEN — 403. API_TOKEN_LOCAL=1 —
+токен и с этой машины.
 """
 
 import asyncio
@@ -25,19 +26,23 @@ from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.api import chat_events, runtime
+from app.api import chat_events, runtime, said
 from app.api.runtime import chat_lock, get_persona_info, list_personas
 from app.core.router import NoProvidersError
+from app.core import turn_cancel
 from app.api.security import (BodySizeLimit, DeviceIdPath, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
                               LocalOriginGuard, PersonaIdPath, PersonaIdQuery,
-                              host_without_port)
+                              from_this_machine)
 from app.api.schemas import (
     ActiveProviderRequest,
+    AnimSettingsUpdate,
+    AnimUpdate,
     CalendarEntryCreate,
     CalendarEntryUpdate,
+    ChatCancel,
     ChatRequest,
     ChatResponse,
     VoiceWakeHold,
@@ -48,12 +53,19 @@ from app.api.schemas import (
     DeviceResult,
     FactRequest,
     FactUpdateRequest,
+    FrameCutRequest,
+    FrameSaveRequest,
     HistoryMessage,
     InitiativeUpdate,
     InventoryAddRequest,
     LearningStartRequest,
     NoteRequest,
+    NotesImportRequest,
     LocationRequest,
+    LoreSearchRequest,
+    LlmEconomyUpdate,
+    AvatarTextUpdate,
+    UiLookUpdate,
     TimezoneRequest,
     MemoryStats,
     PersonaConfigUpdate,
@@ -63,7 +75,10 @@ from app.api.schemas import (
     PersonaAvatarUpdate,
     PersonaColorUpdate,
     PersonaRenameRequest,
+    PersonaModeSave,
+    PersonaPhraseSave,
     PersonaYamlUpdate,
+    ShortPromptUpdate,
     PresenceRequest,
     ProviderKeyRequest,
     LocalDeviceRequest,
@@ -72,6 +87,7 @@ from app.api.schemas import (
     PersonaLocalTasksUpdate,
     ReminderAddRequest,
     ReminderUpdateRequest,
+    PortraitEmotionUpdate,
     PortraitSheetUpdate,
     RoomArtUpdate,
     RoomFocusRequest,
@@ -89,7 +105,7 @@ from app.core.language import detect_language
 from app.core.message_pacing import send_delay
 from app.core.config import Config
 from app.core.paths import data_dir
-from app.core.presence import web_context, web_presence
+from app.core.presence import local_web_presence, web_context, web_presence
 from app.core import memory as _memory_mod
 from app.core import timeutil
 from app.features.calendar_manager import get_calendar
@@ -136,12 +152,20 @@ async def _start_link():
         await link_host.start_if_needed()
     except Exception as e:
         logger.warning(f"[Link] не запустился: {e}")
+    # Ответ телефону на «кто тут ядро?» (app/link/discovery.py) — если ядро
+    # и так видно из сети; канал, поднятый позже, включает его сам
+    try:
+        from app.link import discovery
+        await discovery.start_if_needed()
+    except Exception as e:
+        logger.warning(f"[Discovery] не запустился: {e}")
 
 
 @app.on_event("shutdown")
 async def _stop_link():
     try:
-        from app.link import host as link_host
+        from app.link import discovery, host as link_host
+        await discovery.shutdown()
         await link_host.shutdown()
     except Exception:
         pass
@@ -158,10 +182,21 @@ log_privacy.install()
 # разбора JSON (security.BodySizeLimit). Добавлен раньше CORS — значит, внутри
 # него, и отказ тоже уходит с CORS-заголовками
 from app.api import skin_gen_api as _skin_gen_limits, skins_api as _skins_limits  # noqa: E402
+from app.api import lore_api  # noqa: E402
+from app.api import player_api  # noqa: E402
 app.add_middleware(BodySizeLimit, rules=[
+    ("POST", r"/api/player/import-path", player_api.MAX_BODY_BYTES),
+    ("POST", r"/api/player/browser/(play|control)", player_api.MAX_BODY_BYTES),
+    ("POST", r"/api/player/play", player_api.MAX_BODY_BYTES),
+    ("POST", r"/api/player/library", player_api.MAX_BODY_BYTES),
+    ("POST", r"/api/player/(saved|playlists|playlists/play)", player_api.MAX_BODY_BYTES),
+    ("PUT", r"/api/player/playlists/[^/]+", 64 * 1024),
+    ("PUT", r"/api/player/settings", player_api.MAX_BODY_BYTES),
     ("POST", r"/api/skins/generate", _skin_gen_limits.MAX_BODY_BYTES),
     ("POST", r"/api/skins/direction", _skin_gen_limits.DIRECTION_MAX_BODY_BYTES),
     ("POST", r"/api/skins", _skins_limits.MAX_BODY_BYTES),
+    # Лор персоны: файл и обвязка multipart
+    ("POST", r"/api/personas/[^/]+/lore", lore_api.MAX_BODY_BYTES),
     ("PUT", r"/api/skins/[^/]+", _skins_limits.MAX_BODY_BYTES),
     # Комната: спрайты/фон/картинки предметов — data-URL до 2 МБ каждый
     ("PUT", r"/api/personas/[^/]+/room/art", 40 * 1024 * 1024),
@@ -177,6 +212,8 @@ app.add_middleware(BodySizeLimit, rules=[
 # любом порту (vite dev 5173, preview 4173 и др.)
 _cors_origins = [o.strip() for o in os.getenv("API_CORS_ORIGINS", "").split(",") if o.strip()]
 _cors_regex = None if _cors_origins else LOOPBACK_ORIGIN_RE
+# Им же — доступ без токена из браузера этой машины (security.from_this_machine)
+_trusted_origins = frozenset(o.rstrip("/").lower() for o in _cors_origins if o != "*")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -187,6 +224,8 @@ app.add_middleware(
 
 _bearer = HTTPBearer(auto_error=False)
 _api_token = os.getenv("API_TOKEN", "")
+# Токен и с этой машины (общий компьютер на несколько учётных записей)
+_api_token_local = os.getenv("API_TOKEN_LOCAL", "").strip().lower() in ("1", "true", "yes", "on")
 _api_host = os.getenv("API_HOST", "127.0.0.1")
 
 # Origin и Host (security.LocalOriginGuard) — снаружи CORS: чужая страница
@@ -284,6 +323,52 @@ def _on_stm_write(context: str, chat_key: str) -> None:
 _memory_mod.on_stm_write(_on_stm_write)
 
 
+def _on_stm_message(context: str, chat_key: str, role: str, content: str) -> None:
+    # Персона сказала реплику в чат веб-персоны — в ленту реплик (портрет на
+    # рабочем столе показывает её облачком, откуда бы ни писали)
+    if role == "assistant" and context.startswith("api_"):
+        persona = context[4:]
+        text = _without_task_lines(persona, chat_key, content)
+        said.note(persona, chat_key, text,
+                  options=_turn_answer_options(persona, chat_key) if text.strip() else None)
+
+
+def _turn_answer_options(persona: str, chat_key: str) -> dict | None:
+    # Кнопки ответа к реплике — как у веба (BotInstance.cc_answer_options):
+    # вопрос режима управления, «какой файл?», экран телефона. Только посреди
+    # хода пользователя в этом чате (_run_generation): обработчик ставит
+    # ожидание ответа раньше, чем пишет реплику в историю, а фоновое
+    # сообщение (напоминание посреди ожидания) кнопок не получает
+    if f"{persona}:{chat_key}" not in _generating:
+        return None
+    try:
+        bot = runtime.registry.peek(persona)
+        opts = bot.cc_answer_options(chat_key, chat_key) if bot is not None else None
+    except Exception as e:
+        logger.debug(f"[said] кнопки ответа не собрались: {e}")
+        return None
+    return opts if isinstance(opts, dict) and opts.get("options") else None
+
+
+def _without_task_lines(persona: str, chat_key: str, content: str) -> str:
+    # Ответ хода агента задач начинается строками хода («Нажал …», «Листаю
+    # страницу.»): они в карточке задачи, веб прячет их из пузыря — облачко
+    # портрета их тоже не говорит (как withoutTaskLines в Chat.tsx)
+    try:
+        bot = runtime.registry.peek(persona)
+        lines = bot.cc_task_lines(chat_key) if bot is not None else frozenset()
+    except Exception as e:
+        logger.debug(f"[said] строки хода не вырезаны: {e}")
+        return content
+    if not lines:
+        return content
+    return "\n".join(ln for ln in str(content or "").split("\n")
+                     if ln.strip() not in lines).strip()
+
+
+_memory_mod.on_stm_message(_on_stm_message)
+
+
 def _log_detached_failure(task: asyncio.Task) -> None:
     # Ошибка задачи, которую уже никто не ждёт (клиент отключился), — в лог,
     # а не в "Task exception was never retrieved"
@@ -319,7 +404,52 @@ def _cc_turn_exit(bot, token) -> None:
             pass
 
 
-async def _run_generation(gen_key: str, fn, on_done=None, pending: dict | None = None):
+# Текст реплики в ленте: облачку у портрета больше и не нужно
+HEARD_CHARS = 500
+
+
+def _pause_heard(gen_key: str, pending: dict) -> None:
+    # Пауза до ответа (лента реплик app/api/said): пользователь написал —
+    # портрет на столе, виджет и PiP показывают его сообщение облачком
+    # сбоку, персона поворачивается к нему, «читает» и думает до settled
+    persona, chat_id = gen_key.split(":", 1)
+    text = str(pending.get("text") or "").strip()[:HEARD_CHARS]
+    said.note(persona, chat_id, text, kind="heard")
+
+
+def _pause_settled(gen_key: str) -> None:
+    # Ход закончен: портрету — перестать думать и убрать облачко пользователя
+    persona, chat_id = gen_key.split(":", 1)
+    said.note(persona, chat_id, "", kind="settled")
+
+
+# Сколько портрет «читает» ваше сообщение (ASK_READ_MS в PortraitOverlay,
+# виджет телефона — до тех же 6 с): с/символ, не меньше, не больше; и запас
+_READ_SEC = (0.06, 2.0, 6.0)
+_READ_PAD_SEC = 1.0
+
+
+def _read_sec(pending: dict) -> float:
+    per, lo, hi = _READ_SEC
+    text = str(pending.get("text") or "").strip()[:HEARD_CHARS]
+    return min(hi, max(lo, len(text) * per)) + _READ_PAD_SEC
+
+
+def _acting_turn(bot, req) -> bool:
+    # Ход в режиме управления: персона не обдумывает ответ, а действует —
+    # агент задач работает минутами. Облачко вашего сообщения у портрета
+    # уходит, как только она его прочитала, а не висит до конца хода.
+    # Реплика из скина в режим не попадает (см. _cc_turn_enter)
+    if req.from_skin:
+        return False
+    try:
+        return bool(bot.control_mode_on(req.chat_id or req.user_id))
+    except Exception:
+        return False
+
+
+async def _run_generation(gen_key: str, fn, on_done=None, pending: dict | None = None,
+                          acting: bool = False):
     """Генерация ответа, которую не отменяет разрыв соединения клиента.
 
     fn — синхронная тяжёлая часть (process_message), идёт в потоке пула;
@@ -334,13 +464,26 @@ async def _run_generation(gen_key: str, fn, on_done=None, pending: dict | None =
     предыдущим, тоже показывает «печатает». on_done — когда поток реально
     закончил (снять регистрацию идущей команды режима управления).
     pending — реплика хода для других устройств (_pending_entry): видна им
-    с этого момента и до записи ответа в историю."""
+    с этого момента и до записи ответа в историю; с ней же — пауза до
+    ответа в ленте реплик (heard с текстом реплики, в конце settled).
+    acting — ход в режиме управления (_acting_turn): settled ещё и сразу
+    после того, как портрет прочитал реплику (_read_sec)."""
     async def _job():
         _generating_enter(gen_key, pending)
+        read = None
+        if pending is not None:
+            _pause_heard(gen_key, pending)
+            if acting:
+                read = asyncio.get_running_loop().call_later(
+                    _read_sec(pending), _pause_settled, gen_key)
         try:
             async with chat_lock(gen_key):
                 return await asyncio.to_thread(fn)
         finally:
+            if read is not None:
+                read.cancel()
+            if pending is not None:
+                _pause_settled(gen_key)
             _generating_exit(gen_key, pending)
             if on_done is not None:
                 on_done()
@@ -361,20 +504,17 @@ async def _run_generation(gen_key: str, fn, on_done=None, pending: dict | None =
 
 async def require_auth(request: Request,
                        credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
-    # Bearer-авторизация активна только когда задан API_TOKEN
-    if not _api_token:
-        # Без токена API — только для этой машины. Запрос по другому имени
-        # хоста (телефон или другой компьютер по адресу в сети) или через
-        # обратный прокси (он ставит X-Forwarded-For; браузер на
-        # этой машине — никогда) получает отказ с подсказкой: иначе ядро
-        # молча открылось бы всей сети
-        h = request.headers
-        if (host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS
-                or "x-forwarded-for" in h or "forwarded" in h):
-            raise HTTPException(status_code=403, detail=(
-                "Удалённый доступ к ядру — только с токеном: задайте API_TOKEN "
-                "в .env и перезапустите ядро"))
+    # Эта машина — без токена: он для сети, а не для своего браузера
+    # (security.from_this_machine; API_TOKEN_LOCAL=1 — токен и здесь)
+    if not (_api_token and _api_token_local) and from_this_machine(request, _trusted_origins):
         return
+    if not _api_token:
+        # Без токена API — только для этой машины. Телефон или другой
+        # компьютер по адресу в сети, запрос через прокси получают отказ с
+        # подсказкой: иначе ядро молча открылось бы всей сети
+        raise HTTPException(status_code=403, detail=(
+            "Удалённый доступ к ядру — только с токеном: задайте API_TOKEN "
+            "в .env и перезапустите ядро"))
     # compare_digest вместо != — токен не сравнивается char-by-char с ранним
     # выходом на первом несовпадении, что убирает timing-канал подбора токена
     if credentials is None or not hmac.compare_digest(credentials.credentials, _api_token):
@@ -406,7 +546,21 @@ def _check_not_muted(bot, persona: str):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    # id — телефон запоминает своё ядро, чтобы найти его, если сменится адрес
+    # (app/link/discovery.py)
+    from app.link import discovery
+    return {"status": "ok", "id": discovery.core_id()}
+
+
+@app.get("/api/core/proof")
+async def core_proof(nonce: str = Query(..., min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")):
+    # Без токена: телефон проверяет ядро на новом адресе, ещё не доверяя ему
+    # токен, — ядро доказывает, что знает его (HMAC по nonce, id и своим адресам)
+    from app.link import discovery
+    hosts = await asyncio.to_thread(discovery.known_hosts)
+    port = int(os.getenv("API_PORT", "8000"))
+    return {"id": discovery.core_id(), "hosts": hosts, "port": port,
+            "proof": discovery.proof(_api_token, nonce, hosts, port)}
 
 
 # ── Ответы без ноутбука (приложение на телефоне, app/api/offline_api.py) ──
@@ -423,11 +577,49 @@ async def offline_kit(persona: PersonaIdPath,
 
 @app.get("/api/personas/{persona}/offline/short-prompt", dependencies=[Depends(require_auth)])
 async def offline_short_prompt(persona: PersonaIdPath):
-    # Краткое описание персоны для модели телефона (посмотреть); не составлено —
-    # начнёт составляться в фоне (app/features/short_prompt.py)
+    # Краткое описание персоны для модели телефона (посмотреть) и промпт для
+    # своей нейросети; не составлено — начнёт составляться в фоне
+    # (app/features/short_prompt.py)
     from app.features import short_prompt
     bot = await _get_bot(persona)
-    return await asyncio.to_thread(short_prompt.get_short_prompt, bot)
+    return await asyncio.to_thread(short_prompt.get_short_prompt, bot, with_prompt=True)
+
+
+@app.put("/api/personas/{persona}/offline/short-prompt", dependencies=[Depends(require_auth)])
+async def offline_short_prompt_set(persona: PersonaIdPath, req: ShortPromptUpdate):
+    # Своё краткое описание (поле short_prompt в YAML; пустое — убрать) или
+    # составленное на телефоне без ядра (source auto + crc характера: другой
+    # характер на ядре — 409, составит ядро)
+    from app.api import settings_api
+    from app.features import short_prompt
+    bot = await _get_bot(persona)
+    if req.source == "auto":
+        if req.crc is None:
+            raise HTTPException(status_code=422, detail="crc обязателен для source auto")
+        if await asyncio.to_thread(settings_api.set_persona_short_prompt, persona, "") is None:
+            raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+        try:
+            result = await asyncio.to_thread(short_prompt.import_card, bot, req.text, req.crc)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if result is None:
+            raise HTTPException(status_code=409, detail="Характер персоны на ядре другой")
+        return result
+    if await asyncio.to_thread(settings_api.set_persona_short_prompt, persona, req.text) is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    return await asyncio.to_thread(short_prompt.get_short_prompt, bot, with_prompt=True)
+
+
+@app.post("/api/personas/{persona}/offline/short-prompt/compose", dependencies=[Depends(require_auth)])
+async def offline_short_prompt_compose(persona: PersonaIdPath):
+    # «Составить заново» моделью персоны: своё описание убирается, готовая
+    # карточка остаётся, пока новая не составлена
+    from app.api import settings_api
+    from app.features import short_prompt
+    bot = await _get_bot(persona)
+    if await asyncio.to_thread(settings_api.set_persona_short_prompt, persona, "") is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    return await asyncio.to_thread(short_prompt.compose, bot)
 
 
 @app.get("/api/personas/{persona}/offline/memory", dependencies=[Depends(require_auth)])
@@ -438,6 +630,14 @@ async def offline_memory(persona: PersonaIdPath,
     from app.api import offline_api
     bot = await _get_bot(persona)
     return await asyncio.to_thread(offline_api.build_memory, bot, persona, chat_id, user_id)
+
+
+@app.get("/api/personas/{persona}/offline/lore", dependencies=[Depends(require_auth)])
+async def offline_lore(persona: PersonaIdPath):
+    # Лор для телефона: куски и векторы, поиск по ним без связи с ядром
+    from app.api import offline_api
+    _lore_persona(persona)
+    return await asyncio.to_thread(offline_api.build_lore, persona)
 
 
 @app.get("/api/personas/{persona}/offline/providers", dependencies=[Depends(require_auth)])
@@ -476,9 +676,9 @@ async def offline_reminders(persona: PersonaIdPath, req: OfflineRemindersRequest
 @app.get("/api/token", dependencies=[Depends(require_auth)])
 async def api_token(request: Request):
     """API_TOKEN ядра — скопировать в приложение на телефоне (вход по адресу
-    и токену). Нового он никому не открывает: с заданным токеном сюда пускают
-    только тех, кто его уже прислал, а без токена — только эту машину, и
-    ответ пустой. Исключение — телефон по VPC Link: токен за него подставляет
+    и токену). Нового он никому не открывает: сюда пускают только эту машину
+    (её браузер со своим фронтом — require_auth) и тех, кто токен уже
+    прислал; без токена ответ пустой. Исключение — телефон по VPC Link: токен за него подставляет
     ноутбук (app/link/tunnel.py), сам телефон его не знает и не узнает."""
     if _via_link(request):
         raise HTTPException(status_code=403, detail="Токен API по каналу VPC Link не выдаётся")
@@ -629,7 +829,8 @@ class _QuietWakeReport(logging.Filter):
     # Слушатель панели сообщает о себе раз в секунду — без строки
     # access-лога на каждое сообщение (терминал ядра, лог панели)
     def filter(self, record: logging.LogRecord) -> bool:
-        return "/api/voice/wake/report" not in str(record.args)
+        return not any(path in str(record.args) for path in (
+            "/api/voice/wake/report", "/api/desktop/portrait/report"))
 
 
 logging.getLogger("uvicorn.access").addFilter(_QuietWakeReport())
@@ -641,7 +842,9 @@ async def voice_wake_report(status: dict = Body(...)):
     # слушатель ядра молчит. В ответ — сколько секунд молчать ему самому
     # (пауза голосового чата веба, /hold)
     from app.voice import wake_listener
-    return {"hold": wake_listener.report_remote(status)}
+    # chat — чьи чаты открыты в вебе на этом компьютере: туда портрет не зовём
+    return {"hold": wake_listener.report_remote(status),
+            "chat": local_web_presence.active_personas("web_user")}
 
 
 @app.post("/api/voice/wake/hold", dependencies=[Depends(require_auth)])
@@ -927,33 +1130,66 @@ async def skin_generate(req: SkinGenRequest):
 
 # Голосовая активация слушает и на компьютере ядра, и на телефоне: фразу
 # «Коннор, …» рядом с обоими услышат оба. Пока голосовая просьба к персоне
-# идёт (и VOICE_DUP_SEC после неё), следующая голосовая — та же фраза с
-# другого устройства: ей duplicate, отвечает только первое
+# идёт (и VOICE_DUP_SEC после неё), голосовая с ДРУГОГО устройства — та же
+# фраза: ей duplicate, отвечает только первое. С того же устройства — новая
+# фраза (сказали ещё, пока персона думала): она ждёт очереди в чате, как
+# обычное сообщение. Устройство — client_id, иначе client («app» — телефон);
+# неизвестно — как раньше, дубль
 VOICE_DUP_SEC = 3.0
-_voice_turns: dict[str, list] = {}  # персона → [просьб в работе, конец последней]
+# персона → [просьб в работе, конец последней, устройства просьб в работе,
+# устройство последней]
+_voice_turns: dict[str, list] = {}
 
 
-def _voice_turn_enter(persona: str) -> bool:
+def _voice_source(req: ChatRequest) -> str:
+    return req.client_id or req.client or ""
+
+
+def _voice_state(persona: str) -> list:
+    st = _voice_turns.setdefault(persona, [0, 0.0, [], ""])
+    while len(st) < 4:
+        st.append([] if len(st) == 2 else "")
+    return st
+
+
+def _voice_turn_enter(persona: str, source: str = "") -> bool:
     """False — дубль. Проверка и отметка без await между ними: атомарно в loop."""
-    st = _voice_turns.setdefault(persona, [0, 0.0])
-    if st[0] > 0 or time.monotonic() - st[1] < VOICE_DUP_SEC:
+    st = _voice_state(persona)
+    count, last_end, sources, last_source = st
+    # Просьбы в работе с другого (или неизвестного) устройства
+    mine = sum(1 for s in sources if source and s == source)
+    busy_other = count > mine
+    recent_other = time.monotonic() - last_end < VOICE_DUP_SEC and not (source and last_source == source)
+    if busy_other or recent_other:
         return False
     st[0] += 1
+    sources.append(source)
     return True
 
 
-def _voice_turn_exit(persona: str) -> None:
-    st = _voice_turns.setdefault(persona, [1, 0.0])
+def _voice_turn_exit(persona: str, source: str = "") -> None:
+    st = _voice_state(persona)
     st[0] = max(0, st[0] - 1)
+    if source in st[2]:
+        st[2].remove(source)
     st[1] = time.monotonic()
+    st[3] = source
 
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
 async def chat(req: ChatRequest, request: Request):
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
+    if req.supersede:
+        # Сказали новое, пока прежний ход ещё генерируется: тот обрывается и
+        # отдаёт лок чата сразу, эта реплика не ждёт его до конца. Работу
+        # агента новая фраза не обрывает — только «стоп»
+        if _stop_turn(req.persona, req.user_id, req.chat_id, "новая реплика",
+                      agents=False).get("cancelled"):
+            logger.info(f"[chat] {_chat_key(req)}: новая реплика — прежний ход отменён")
     if req.voice:
-        if not _voice_turn_enter(req.persona):
+        source = _voice_source(req)
+        if not _voice_turn_enter(req.persona, source):
             logger.info(f"[Voice] {req.persona}: та же голосовая просьба с другого устройства — пропуск")
             return ChatResponse(reply="", persona=req.persona, chat_id=req.chat_id or req.user_id,
                                 control_mode=bot.control_mode_on(req.chat_id or req.user_id),
@@ -961,8 +1197,87 @@ async def chat(req: ChatRequest, request: Request):
         try:
             return await _chat_turn(bot, req, request)
         finally:
-            _voice_turn_exit(req.persona)
+            _voice_turn_exit(req.persona, source)
     return await _chat_turn(bot, req, request)
+
+
+def _chat_key(req) -> str:
+    # Ключ чата для лока и отмены хода — как lock_key в _chat_turn
+    return f"{req.persona}:{req.chat_id or req.user_id}"
+
+
+def _chat_generating(key: str) -> bool:
+    # Идёт ли ход, ответ которого ещё будет: отменённый, но не вышедший
+    # (веб-чат дописывает на сайте) — уже нет, «печатает» по нему не горит
+    return _generating.get(key, 0) > turn_cancel.cancelled_count(key)
+
+
+def _agent_working(bot, user_id, chat_id) -> bool:
+    """Ход — работа агента: прогон агента задач исполняет шаги или идёт
+    команда режима управления. Её обрывает только свой «стоп» (шаг
+    доделывается, ход отвечает итогом): TurnCancelled посреди шага оставил
+    бы прогон и вкладку в полуготовом виде."""
+    key = str(chat_id or user_id or "")
+    try:
+        ta = getattr(bot, "task_agent", None)
+        if ta is not None and ta.busy(chat_id or user_id):
+            return True
+        return bool(bot.control_mode_on(key)
+                    and (bot.__dict__.get("_cc_inflight") or {}).get(key))
+    except Exception:
+        return False
+
+
+def _agent_stop(bot, user_id, chat_id) -> None:
+    # «Стоп» агенту — тем же путём, что набранный в чат (BotInstance.cc_turn_enter)
+    enter = getattr(bot, "cc_turn_enter", None)
+    if callable(enter):
+        try:
+            reply, tok = enter("стоп", user_id, chat_id)
+            _cc_turn_exit(bot, tok)
+            if reply is not None:
+                return
+        except Exception as e:
+            logger.debug(f"[chat] стоп агенту: {e}")
+    ta = getattr(bot, "task_agent", None)
+    try:
+        if ta is not None and ta.busy(chat_id or user_id):
+            ta.cancel(chat_id or user_id)
+    except Exception as e:
+        logger.debug(f"[chat] стоп прогону агента: {e}")
+
+
+def _stop_turn(persona: str, user_id: str, chat_id, reason: str,
+               agents: bool = True) -> dict:
+    """Остановить ход чата. Ответ модели — отмена генерации (turn_cancel):
+    ответ в историю не ляжет, стрим хода сразу закончится cancelled. Работа
+    агента (agents) — его «стоп»: ход доделает шаг и ответит итогом."""
+    key = f"{persona}:{chat_id or user_id}"
+    bot = runtime.registry.peek(persona)
+    if bot is not None and _agent_working(bot, user_id, chat_id):
+        if not agents:
+            return {"cancelled": 0}
+        _agent_stop(bot, user_id, chat_id)
+        logger.info(f"[chat] {key}: «стоп» агенту ({reason})")
+        return {"cancelled": 0, "stopping": True}
+    n = turn_cancel.cancel(key, reason)
+    if n:
+        # Портрет перестаёт думать, открытый веб узнаёт о спаде «печатает»
+        _pause_settled(key)
+        chat_events.bump(persona)
+    return {"cancelled": n}
+
+
+@app.post("/api/chat/cancel", dependencies=[Depends(require_auth)])
+async def chat_cancel(req: ChatCancel):
+    """Кнопка «Стоп»: оборвать начатую генерацию ответа в чате
+    (app/core/turn_cancel) — ответ в историю не ляжет, ход вернёт cancelled;
+    работу агента — его «стоп». Реплики в очереди за ходом не трогаются.
+    → {"cancelled": n} (+ "stopping": агент останавливается)."""
+    res = _stop_turn(req.persona, req.user_id, req.chat_id, "отменён")
+    if res.get("cancelled"):
+        logger.info(f"[chat] {_chat_key(req)}: ход отменён по запросу")
+    return res
 
 
 async def _chat_turn(bot, req: ChatRequest, request: Request):
@@ -979,6 +1294,7 @@ async def _chat_turn(bot, req: ChatRequest, request: Request):
             persona=req.persona, chat_id=req.chat_id or req.user_id,
             provider=None, model=None,
             control_mode=bot.control_mode_on(req.chat_id or req.user_id),
+            phone_mode=_phone_mode(bot, req.chat_id or req.user_id),
             images=[])
     # Ход пользователя — от получения сообщения до отдачи ответа (см.
     # _begin_turn): фоновые сообщения чата в это окно в STM не встают
@@ -996,16 +1312,13 @@ async def _chat_turn(bot, req: ChatRequest, request: Request):
 
 def _file_delivery(request: Request, req: ChatRequest):
     """Что сделать с файлом по «открой/пришли файл X» (app/features/file_access).
-    Открыть на компьютере ядра — только вебу, открытому на нём самом (адрес
-    localhost, без VPC Link и прокси). Приложение на телефоне, VPC Link и
-    любой другой адрес — прислать файл в чат. Скин — никак: реплику мог
-    написать скрипт скина."""
+    Открыть на компьютере ядра — только вебу, открытому на нём самом
+    (security.from_this_machine, без VPC Link). Приложение на телефоне, VPC
+    Link и любой другой адрес — прислать файл в чат. Скин — никак: реплику
+    мог написать скрипт скина."""
     if req.from_skin:
         return None
-    h = request.headers
-    if (req.client == "app" or _via_link(request)
-            or host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS
-            or "x-forwarded-for" in h or "forwarded" in h):
+    if req.client == "app" or _via_link(request) or not from_this_machine(request, _trusted_origins):
         return "send"
     return "open"
 
@@ -1043,6 +1356,11 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                     from_skin=req.from_skin,
                     turn_note=_phone_note(req),
                     file_delivery=delivery,
+                    # Голосом: ответ прозвучит — коротко (без флага — как было:
+                    # заглушки ботов в тестах его не знают)
+                    **({"spoken": True} if req.voice else {}),
+                    # Каким именем позвали голосом — имя режима персоны его включает
+                    **({"called_as": req.called_as} if req.called_as else {}),
                 )
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
                 # потоке (см. _answer_provider)
@@ -1060,12 +1378,34 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         files = _pending_files(bot, req, None)
         return reply, provider, model, extra, question_kind, files
 
+    # Ход можно отменить (новая реплика с supersede, /api/chat/cancel): поток
+    # генерации сам проверяет флажок и выходит; голосом — и посреди ответа
+    # API-провайдера (потоком). Флажок снимается, когда поток реально вышел
+    tok = turn_cancel.open_turn(lock_key, stream_abort=req.voice)
+
+    def _generate_cancellable():
+        try:
+            with turn_cancel.scope(tok):
+                return _generate()
+        except turn_cancel.TurnCancelled as e:
+            logger.info(f"[chat] {lock_key}: ход отменён ({e}) — ответа не будет")
+            return None
+
+    def _done():
+        _cc_turn_exit(bot, cc_token)
+        turn_cancel.close_turn(tok)
+
     # Лок на (персона, чат) и флаг «генерирует» держит _run_generation:
     # сообщения одного чата сериализуются, разные чаты и персоны идут
     # параллельно; разрыв соединения генерацию не обрывает
-    reply, provider, model, extra, question_kind, files = await _run_generation(
-        lock_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token),
-        pending=_pending_entry(req))
+    result = await _run_generation(
+        lock_key, _generate_cancellable, on_done=_done,
+        pending=_pending_entry(req), acting=_acting_turn(bot, req))
+    if result is None:
+        return ChatResponse(reply="", persona=req.persona, chat_id=req.chat_id or req.user_id,
+                            control_mode=bot.control_mode_on(req.chat_id or req.user_id),
+                            cancelled=True)
+    reply, provider, model, extra, question_kind, files = result
     return ChatResponse(
         reply=reply,
         extra_messages=extra,
@@ -1076,6 +1416,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         model=model,
         # Может измениться самим этим сообщением («перейди в режим управления»)
         control_mode=bot.control_mode_on(req.chat_id or req.user_id),
+        phone_mode=_phone_mode(bot, req.chat_id or req.user_id),
         # Скриншоты страницы из режима управления («что на странице?»)
         images=_pending_images(bot, req.chat_id),
         answer_options=bot.cc_answer_options(req.chat_id or req.user_id, req.user_id),
@@ -1183,6 +1524,27 @@ def _prepare_turn_input(bot, req: ChatRequest, photos: list | None = None,
         llm_input = _prepare_image_input(bot, req.message, req.image, req.chat_id, req.user_id,
                                          local_only=req.image_source == "camera")
         return llm_input, f"📷 {message}" if message else "📷 (изображение)"
+    from app.features import device_gaze, device_head, screen_look
+    addresses = getattr(bot, '_address_names', lambda: [])()
+    gaze = device_gaze.find_request(req.message, addresses, getattr(bot, 'persona_name', None))
+    if gaze is not None:
+        # A directional request must never silently become an ordinary snapshot.
+        if req.from_skin or req.phone_action is not None:
+            return req.message, None
+        if bot.control_mode_on(req.chat_id or req.user_id):
+            return req.message, None
+        allowed = getattr(bot, '_cc_allowed', None)
+        if not callable(allowed) or not allowed(req.user_id, req.chat_id):
+            raise HTTPException(status_code=403, detail=device_head.denied(_turn_language(bot, message, req.chat_id, req.user_id)))
+        try:
+            llm_input, shot = device_gaze.capture_input(
+                getattr(bot, '_local_router', None), gaze, message,
+                _turn_language(bot, message, req.chat_id, req.user_id), on_photo)
+        except screen_look.ScreenLookError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if photos is not None:
+            photos.append((shot, device_gaze.caption(gaze)))
+        return llm_input, f"📷 {message}"
     device = _wants_device_look(bot, req)
     if device is not None:
         llm_input, shot = _prepare_device_input(bot, device, message, req.chat_id, req.user_id,
@@ -1202,6 +1564,16 @@ def _attach_photos(bot, chat_id, photos: list) -> None:
         bot.add_pending_photo(chat_id, shot, caption)
 
 
+def _phone_mode(bot, key) -> bool:
+    # Режим управления телефоном чата (BotInstance.phone_mode_on); бот без
+    # него (заготовки) — выключен
+    fn = getattr(bot, "phone_mode_on", None)
+    try:
+        return bool(fn(key)) if fn else False
+    except Exception:
+        return False
+
+
 def _phone_note(req: ChatRequest) -> str | None:
     # Команду уже исполнил телефон — персоне заметка об итоге. Не из скина:
     # скин — сторонний код, «итог» он мог бы прислать сам. С картинкой
@@ -1216,9 +1588,11 @@ def _wants_screen(bot, req: ChatRequest) -> bool:
     # «Посмотри на экран». Не из скина: скин — сторонний код, ответ с
     # описанием экрана он бы прочитал. Не в режиме управления: там «экран»
     # — страница агента, её смотрит сам режим
-    from app.features import screen_look
+    from app.features import phone_control, screen_look
     if req.from_skin or not screen_look.is_screen_request(req.message):
         return False
+    if phone_control.mentions_phone(req.message):
+        return False  # экран телефона — его читает служба на телефоне
     try:
         return not bot.control_mode_on(req.chat_id or req.user_id)
     except Exception:
@@ -1229,9 +1603,11 @@ def _wants_device_look(bot, req: ChatRequest) -> dict | None:
     # «Что видит робот?» → устройство с камерой (app/features/device_look).
     # Не из скина и не в режиме управления — как экран; не в ходе команды
     # телефону: её уже исполнил телефон
-    from app.features import device_look
+    from app.features import device_look, device_gaze
     if req.from_skin or req.phone_action is not None:
         return None
+    if device_gaze.mentions_directional_look(req.message):
+        return None  # Never substitute an unturned frame for a rejected directional command.
     device = device_look.find_request(req.message)
     if device is None:
         return None
@@ -1247,6 +1623,15 @@ def _prepare_device_input(bot, device: dict, message: str, chat_id: str = None,
                           user_id: str = None, on_photo=None) -> tuple[str, bytes]:
     # Кадр устройства, как и экран, смотрит только локальная модель
     from app.features import device_look, screen_look
+    from app.core import device_bodies
+    try:
+        device_bodies.ensure_access(getattr(bot, 'persona_name', None), device['id'])
+    except device_bodies.BindingError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    if 'body.wake' in device.get('capabilities', []):
+        allowed = getattr(bot, '_cc_allowed', None)
+        if not callable(allowed) or not allowed(user_id, chat_id):
+            raise HTTPException(status_code=403, detail='Камера тела доступна владельцу или разрешённому пользователю.')
     try:
         return device_look.snapshot_input(getattr(bot, "_local_router", None), device, message,
                                           _turn_language(bot, message, chat_id, user_id),
@@ -1361,11 +1746,13 @@ _SLASH_HELP = (
     "/stop_learning [тема] — остановить курс\n"
     "/remind <что> [через N / в HH:MM] — напомнить\n"
     "/web — вкл/выкл веб-поиск\n"
+    "/mode — режим персоны (если есть): /mode <режим>, /mode off\n"
     "/todo — список дел · /add_todo <задача>\n"
     "/notes — мои заметки\n"
     "/reminders — активные напоминания · /cancel_reminder N\n"
     "/inventory — инвентарь · /add_inventory <предмет>[: описание]\n"
     "/files — загруженные файлы\n"
+    "/commands — команды привязанного робота\n"
     "/help — этот список"
 )
 
@@ -1386,9 +1773,19 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
     if cmd == "help":
         return _SLASH_HELP, False
 
+    if cmd == "commands":
+        from app.features import device_commands
+        return device_commands.render(getattr(bot, 'persona_name', req.persona), args,
+                                      bot.chat_user_language(chat_id)), False
+
     if cmd == "web":
         enabled = bot.toggle_web_search(chat_id)
         return ("Веб-поиск включён." if enabled else "Веб-поиск выключен."), False
+
+    if cmd == "mode":
+        # Режимы персоны (app/core/persona_modes); ключ чата — как у STM хода
+        return bot.mode_command(bot.stm_key(req.chat_id, req.user_id), args,
+                                lang=bot.chat_user_language(chat_id)), False
 
     if cmd == "todo":
         if args:
@@ -1549,6 +1946,11 @@ async def chat_stream(req: ChatRequest, request: Request):
                     from_skin=req.from_skin,
                     turn_note=_phone_note(req),
                     file_delivery=delivery,
+                    # Голосом: ответ прозвучит — коротко (без флага — как было:
+                    # заглушки ботов в тестах его не знают)
+                    **({"spoken": True} if req.voice else {}),
+                    # Каким именем позвали голосом — имя режима персоны его включает
+                    **({"called_as": req.called_as} if req.called_as else {}),
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
                 provider, model = _answer_provider(bot)
@@ -1600,41 +2002,85 @@ async def chat_stream(req: ChatRequest, request: Request):
                 "chat_id": req.chat_id or req.user_id,
                 "provider": None, "model": None,
                 "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
+                "phone_mode": _phone_mode(bot, req.chat_id or req.user_id),
                 "images": [],
             }
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
             return
-        # Кадр устройства («что видит робот?») — пользователю сразу, как
-        # пришёл: снимок сделан, а модель его ещё смотрит. В финале он же
-        # остаётся в images — для клиентов без события photo
+        # До ответа — события сразу, как случились: кадр устройства («что
+        # видит робот?»: снимок сделан, а модель его ещё смотрит; в финале он
+        # же остаётся в images — для клиентов без события photo)
         loop = asyncio.get_running_loop()
-        early_photos: asyncio.Queue = asyncio.Queue()
+        early: asyncio.Queue = asyncio.Queue()
         turn["on_photo"] = lambda shot: loop.call_soon_threadsafe(
-            early_photos.put_nowait, "data:image/jpeg;base64," + base64.b64encode(shot).decode("ascii"))
+            early.put_nowait, {"photo": "data:image/jpeg;base64," + base64.b64encode(shot).decode("ascii")})
+        # Кнопка «Стоп» (/api/chat/cancel): поток генерации сам видит флажок
+        # хода и выходит, API-провайдер обрывается посреди ответа (потоком).
+        # Стрим кончается сразу (stopped), не дожидаясь потока: веб-чат на
+        # сайте допишет, ответ выбросится. Флажок снимается, когда поток вышел
+        tok = turn_cancel.open_turn(gen_key, stream_abort=True)
+        stopped = loop.create_future()
+
+        def _set_stopped():
+            if not stopped.done():
+                stopped.set_result(True)
+        tok.on_cancel(lambda: loop.call_soon_threadsafe(_set_stopped))
+
+        def _generate_cancellable():
+            try:
+                with turn_cancel.scope(tok):
+                    return _generate()
+            except turn_cancel.TurnCancelled as e:
+                logger.info(f"[chat/stream] {gen_key}: ход отменён ({e}) — ответа не будет")
+                return None
+
+        def _done():
+            _cc_turn_exit(bot, cc_token)
+            turn_cancel.close_turn(tok)
+
         gen = asyncio.ensure_future(_run_generation(
-            gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token),
-            pending=_pending_entry(req)))
+            gen_key, _generate_cancellable, on_done=_done,
+            pending=_pending_entry(req), acting=_acting_turn(bot, req)))
         try:
             try:
-                while not gen.done():
-                    got = asyncio.ensure_future(early_photos.get())
+                while not gen.done() and not stopped.done():
+                    got = asyncio.ensure_future(early.get())
                     try:
-                        await asyncio.wait({gen, got}, return_when=asyncio.FIRST_COMPLETED)
+                        await asyncio.wait({gen, got, stopped}, return_when=asyncio.FIRST_COMPLETED)
                     finally:
                         if not got.done():
                             got.cancel()
                     if got.done() and not got.cancelled():
-                        yield f"data: {json.dumps({'photo': got.result()})}\n\n"
-                while not early_photos.empty():
-                    yield f"data: {json.dumps({'photo': early_photos.get_nowait()})}\n\n"
+                        yield f"data: {json.dumps(got.result(), ensure_ascii=False)}\n\n"
+                while not early.empty():
+                    yield f"data: {json.dumps(early.get_nowait(), ensure_ascii=False)}\n\n"
             finally:
-                # Клиент ушёл посреди генерации: отмена ожидания — как раньше
-                # у await _run_generation (генерация дорабатывает в фоне, её
-                # ошибка — в лог)
                 if not gen.done():
-                    gen.cancel()
+                    if stopped.done():
+                        # Ход отменён, поток ещё выходит: его итог (None или
+                        # ошибка) никому не нужен
+                        gen.add_done_callback(lambda f: f.cancelled() or f.exception())
+                    else:
+                        # Клиент ушёл посреди генерации: отмена ожидания — как
+                        # раньше у await _run_generation (генерация
+                        # дорабатывает в фоне, её ошибка — в лог)
+                        gen.cancel()
+            result = gen.result() if gen.done() else None
+            if result is None:
+                # Остановлено: ответа нет, реплика пользователя — в истории
+                payload = {
+                    "done": True, "cancelled": True, "reply": "", "extra_messages": [],
+                    "question_kind": None, "persona": req.persona,
+                    "chat_id": req.chat_id or req.user_id,
+                    "provider": None, "model": None,
+                    "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
+                    "phone_mode": _phone_mode(bot, req.chat_id or req.user_id),
+                    "images": [],
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                return
             (reply, split_rest, extra, question_kind, images,
-             provider, model, reply_ts, files, reply_stm) = gen.result()
+             provider, model, reply_ts, files, reply_stm) = result
         except HTTPException as e:
             # Отказ нашего же кода до генерации (картинку, камеру или экран
             # не посмотреть: нет разрешения на запись экрана, Ollama не
@@ -1678,6 +2124,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             # Режим управления после обработки сообщения (фронт гасит
             # дебаунс-паузу отправки для команд управления)
             "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
+            "phone_mode": _phone_mode(bot, req.chat_id or req.user_id),
             # Скриншоты страницы из режима управления («что на странице?»)
             "images": images,
             "reply_ts": reply_ts,
@@ -2201,6 +2648,155 @@ async def reset_files(persona: PersonaIdPath, user_id: str = "web_user"):
     return {"status": "ok"}
 
 
+# ── Лор персоны ───────────────────────────────────────────────────────
+
+def _lore_persona(persona: str):
+    if persona not in list_personas():
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+
+
+@app.get("/api/personas/{persona}/lore", dependencies=[Depends(require_auth)])
+async def lore_info(persona: PersonaIdPath):
+    _lore_persona(persona)
+    return await asyncio.to_thread(lore_api.info, persona)
+
+
+@app.post("/api/personas/{persona}/lore", dependencies=[Depends(require_auth)])
+async def lore_upload(persona: PersonaIdPath, file: UploadFile):
+    # Индексация большого файла — десятки секунд: в потоке, поиск её не ждёт
+    _lore_persona(persona)
+    data = await file.read()
+    try:
+        return await asyncio.to_thread(lore_api.upload, persona, file.filename or "", data)
+    except lore_api.LoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/personas/{persona}/lore/{filename}", dependencies=[Depends(require_auth)])
+async def lore_delete(persona: PersonaIdPath, filename: str):
+    _lore_persona(persona)
+    result = await asyncio.to_thread(lore_api.remove, persona, filename)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    return result
+
+
+# ── Сгенерированные фразы персоны ──────────────────────────────────
+
+def _phrases_call(fn, *args):
+    from app.api.phrases_api import PhraseError
+    try:
+        return fn(*args)
+    except PhraseError as e:
+        return JSONResponse(status_code=e.status, content={"detail": str(e), "code": e.code})
+
+
+@app.get("/api/personas/{persona}/phrases", dependencies=[Depends(require_auth)])
+async def persona_phrases_list(persona: PersonaIdPath):
+    from app.api.phrases_api import list_phrases
+    return await asyncio.to_thread(_phrases_call, list_phrases, persona)
+
+
+@app.put("/api/personas/{persona}/phrases", dependencies=[Depends(require_auth)])
+async def persona_phrases_save(persona: PersonaIdPath, req: PersonaPhraseSave):
+    from app.api.phrases_api import save_phrases
+    return await asyncio.to_thread(_phrases_call, save_phrases, persona,
+                                   req.group_id, req.revision, req.variants)
+
+
+# ── Режимы персоны (<id>_modes/<режим>.yaml) ──────────────────────────
+
+def _modes_call(persona: str, fn, *args):
+    from app.api import modes_api
+    if persona not in list_personas():
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    try:
+        return fn(*args)
+    except modes_api.ModeError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+
+@app.get("/api/personas/{persona}/modes", dependencies=[Depends(require_auth)])
+async def persona_modes_list(persona: PersonaIdPath):
+    from app.api import modes_api
+    return await asyncio.to_thread(_modes_call, persona, modes_api.list_modes, persona)
+
+
+@app.get("/api/personas/{persona}/mode-skeleton", dependencies=[Depends(require_auth)])
+async def persona_mode_skeleton(persona: PersonaIdPath,
+                                name: str = Query("", max_length=80),
+                                lang: str = Query("ru", max_length=8)):
+    # Заготовка нового режима: имя → name и имя-обращение
+    from app.api import modes_api
+    text = await asyncio.to_thread(_modes_call, persona, modes_api.skeleton, persona, name, lang)
+    return {"yaml": text, "id": modes_api.suggest_id(name)}
+
+
+@app.post("/api/personas/{persona}/modes", dependencies=[Depends(require_auth)])
+async def persona_mode_upload(persona: PersonaIdPath, file: UploadFile,
+                              mode: str = Query("", max_length=40),
+                              overwrite: bool = Query(False)):
+    # Загрузить файл режима с диска (или YAML персоны целиком — её характер)
+    from app.api import modes_api
+    data = await file.read(modes_api.MAX_BODY_BYTES + 1)
+    if len(data) > modes_api.MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Файл слишком большой")
+    return await asyncio.to_thread(_modes_call, persona, modes_api.upload, persona,
+                                   file.filename or "", data, mode, overwrite)
+
+
+@app.get("/api/personas/{persona}/modes/{mode}", dependencies=[Depends(require_auth)])
+async def persona_mode_yaml(persona: PersonaIdPath, mode: str):
+    from app.api import modes_api
+    return await asyncio.to_thread(_modes_call, persona, modes_api.get_yaml, persona, mode)
+
+
+@app.put("/api/personas/{persona}/modes/{mode}", dependencies=[Depends(require_auth)])
+async def persona_mode_save(persona: PersonaIdPath, mode: str, req: PersonaModeSave):
+    from app.api import modes_api
+    return await asyncio.to_thread(_modes_call, persona, modes_api.save, persona, mode,
+                                   req.yaml, req.create)
+
+
+@app.delete("/api/personas/{persona}/modes/{mode}", dependencies=[Depends(require_auth)])
+async def persona_mode_delete(persona: PersonaIdPath, mode: str):
+    from app.api import modes_api
+    return await asyncio.to_thread(_modes_call, persona, modes_api.delete, persona, mode)
+
+
+@app.get("/api/personas/{persona}/lore/{filename}/view", dependencies=[Depends(require_auth)])
+async def lore_view(persona: PersonaIdPath, filename: str):
+    # Файл лора во вкладке «Лор»: текст с заголовками и куски нарезки
+    _lore_persona(persona)
+    result = await asyncio.to_thread(lore_api.view, persona, filename)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    return result
+
+
+@app.get("/api/personas/{persona}/lore/{filename}/original", dependencies=[Depends(require_auth)])
+async def lore_original(persona: PersonaIdPath, filename: str):
+    # Сам загруженный файл. Встроенно — только PDF, остальное скачивается;
+    # nosniff и sandbox — чтобы браузер ничего из него не исполнил
+    from fastapi.responses import FileResponse
+    _lore_persona(persona)
+    found = await asyncio.to_thread(lore_api.original, persona, filename)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Оригинал не сохранён: файл загружен до этой версии")
+    path, media, name = found
+    return FileResponse(path, media_type=media, filename=name,
+                        content_disposition_type="inline" if media == "application/pdf" else "attachment",
+                        headers={"X-Content-Type-Options": "nosniff",
+                                 "Content-Security-Policy": "sandbox"})
+
+
+@app.post("/api/personas/{persona}/lore/search", dependencies=[Depends(require_auth)])
+async def lore_search(persona: PersonaIdPath, req: LoreSearchRequest):
+    # «Проверить запрос»: тот же поиск, что на ходу персоны
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(lore_api.search, bot, req.query, req.previous)
+
+
 # ── Дела (todo) ───────────────────────────────────────────────────────
 # Менеджеры фич ключуются по chat_id — веб-фронт использует "web_user".
 
@@ -2536,6 +3132,14 @@ async def notes_add(persona: PersonaIdPath, req: NoteRequest):
     return {"note": _note_out(note)}
 
 
+@app.post("/api/personas/{persona}/notes/import", dependencies=[Depends(require_auth)])
+async def notes_import(persona: PersonaIdPath, req: NotesImportRequest):
+    # Перенос заметок с телефона (без ядра записаны там): свои id и время
+    notes = await asyncio.to_thread(_notes_for, persona)
+    items = [n.model_dump() for n in req.notes]
+    return await asyncio.to_thread(notes.import_notes, items)
+
+
 @app.patch("/api/personas/{persona}/notes/{note_id}", dependencies=[Depends(require_auth)])
 async def notes_update(persona: PersonaIdPath, note_id: str, req: NoteRequest):
     from app.features.user_notes import valid_note_id
@@ -2752,13 +3356,69 @@ async def room_art_put(persona: PersonaIdPath, req: RoomArtUpdate):
 
 # ── Живой портрет (голосовой режим): листы ракурсов головы ─────────────
 
-@app.get("/api/personas/{persona}/portrait", dependencies=[Depends(require_auth)])
-async def portrait_get(persona: PersonaIdPath):
-    # Атласы листов data-URL'ами (их рисует web/src/portrait/LivePortrait.tsx);
-    # портрета нет — sheets: {}
-    from app.api import portrait_api
+# Аватар режима персоны (app/api/avatar_modes.py): ?mode=<режим> — его
+# листы и анимации (вкладки раздела «Аватар»), нет — обычные. ?live=1 —
+# что показывать сейчас: аватар режима, включённого в чате chat_id (портрет
+# на рабочем столе, голосовой режим веба, виджет телефона)
+ModeQuery = Query(None, max_length=40)
+
+
+async def _avatar(persona: str, mode: str | None) -> str:
+    """Персона есть → ключ аватара: обычный или режима (?mode=)."""
+    from app.api import avatar_modes
     await asyncio.to_thread(_room_persona, persona)
-    return await _room_call(portrait_api.get_portrait, persona)
+    return await _room_call(avatar_modes.check, persona, mode)
+
+
+@app.get("/api/personas/{persona}/portrait", dependencies=[Depends(require_auth)])
+async def portrait_get(persona: PersonaIdPath, mode: str | None = ModeQuery, live: bool = False,
+                       chat_id: str = Query("web_user", max_length=128)):
+    # Атласы листов data-URL'ами (их рисует web/src/portrait/LivePortrait.tsx);
+    # портрета нет — sheets: {}. live — ещё mode (режим чата) и avatar (чьи
+    # листы: "" — обычные)
+    from app.api import avatar_modes, portrait_api
+    if live:
+        await asyncio.to_thread(_room_persona, persona)
+        return await _room_call(avatar_modes.live_portrait, persona, chat_id)
+    return await _room_call(portrait_api.get_portrait, await _avatar(persona, mode))
+
+
+@app.get("/api/personas/{persona}/portrait/initiative-badge", dependencies=[Depends(require_auth)])
+async def initiative_badge_get(persona: PersonaIdPath):
+    from app.api import initiative_badge
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(initiative_badge.get, persona)
+
+
+@app.put("/api/personas/{persona}/portrait/initiative-badge", dependencies=[Depends(require_auth)])
+async def initiative_badge_put(persona: PersonaIdPath, body: dict = Body(...)):
+    from app.api import initiative_badge
+    await asyncio.to_thread(_room_persona, persona)
+    value = await _room_call(
+        initiative_badge.put, persona, body.get("kind"), body.get("symbol"), body.get("image"), body.get("size"),
+    )
+    said.portrait_changed(persona)
+    return value
+
+
+@app.get("/api/personas/{persona}/portrait/modes", dependencies=[Depends(require_auth)])
+async def portrait_modes_get(persona: PersonaIdPath):
+    # Что есть у аватаров режимов: свой портрет, анимации, переходы в режим;
+    # active — режим основного чата сейчас
+    from app.api import avatar_modes
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(avatar_modes.overview, persona)
+
+
+@app.get("/api/personas/{persona}/portrait/switch", dependencies=[Depends(require_auth)])
+async def portrait_switch_get(persona: PersonaIdPath,
+                              from_mode: str = Query("", alias="from", max_length=40, pattern=r"^[\w-]*$"),
+                              to: str = Query("", max_length=40, pattern=r"^[\w-]*$")):
+    # Анимации перехода из режима from в режим to ("" — обычный) с атласами:
+    # голосовой режим веба играет одну из них, пока голова меняется
+    from app.api import avatar_modes
+    await asyncio.to_thread(_room_persona, persona)
+    return {"anims": await _room_call(avatar_modes.switch_anims, persona, from_mode, to)}
 
 
 @app.get("/api/portraits", dependencies=[Depends(require_auth)])
@@ -2768,12 +3428,27 @@ async def portraits_list():
     # когда портрет правили (updated: сохранённую копию качать заново, только
     # если сменилось) и спит ли персона сейчас (asleep: true/false, null —
     # живого состояния нет): портрет на столе и виджет телефона засыпают
-    # вместе с ней. Запрос лёгкий — его и зовут по таймеру
-    from app.api import portrait_api, room_api
-    from app.core import room
+    # вместе с ней. Запрос лёгкий — его и зовут по таймеру. text — скорость
+    # текста в облачке (app/core/avatar_text). anims — когда правили
+    # анимации портрета (app/api/portrait_anim) у всех, у кого они есть:
+    # панель качает их заново, только если метка сменилась. look — как
+    # выглядит веб (app/core/ui_look): голова портрета — рисовкой скина
+    #
+    # Портрет и анимации — того режима персоны, что включён в основном чате
+    # (app/api/avatar_modes): mode — режим ("" — обычный), updated и anims —
+    # метки ровно того, что отдадут /portrait?live=1 и /portrait/anims?live=1
+    from app.api import avatar_modes, room_api
+    from app.core import avatar_text, room, ui_look
 
     def _list():
-        ids = [p for p in list_personas() if portrait_api.has_portrait(p)]
+        everyone = list_personas()
+        state = {}
+        for p in everyone:
+            try:
+                state[p] = avatar_modes.live_state(p)
+            except Exception as e:
+                logger.debug(f"[portraits] {p}: {e}")
+        ids = [p for p in everyone if state.get(p, {}).get("has_head")]
         sleep = {}
         for p in ids:
             try:
@@ -2781,31 +3456,181 @@ async def portraits_list():
             except Exception:
                 sleep[p] = None
         return {"personas": ids, "asleep": sleep,
-                "updated": {p: portrait_api.updated_at(p) for p in ids}}
+                "updated": {p: state[p]["head"] for p in ids},
+                "anims": {p: s["anims"] for p, s in state.items() if s["has_anims"]},
+                "mode": {p: s["mode"] for p, s in state.items()},
+                "text": avatar_text.get(), "look": ui_look.get()}
 
     return await asyncio.to_thread(_list)
 
 
-@app.put("/api/personas/{persona}/portrait/{sheet}", dependencies=[Depends(require_auth)])
-async def portrait_sheet_put(persona: PersonaIdPath, sheet: str, req: PortraitSheetUpdate):
+async def _portrait_saved(persona: str, call):
+    """Записали портрет или анимации персоны — её портрету на столе перечитать
+    кадры сразу (событие portrait ленты реплик), а не к следующему опросу.
+    Ошибка записи — без события: ничего не поменялось."""
+    result = await call
+    said.portrait_changed(persona)
+    return result
+
+
+# ── Анимации портрета на рабочем столе: свои листы кадров ──────────────
+# Объявлены до PUT /portrait/{sheet}: иначе «anims-settings» ушёл бы туда
+# как имя листа
+
+@app.get("/api/personas/{persona}/portrait/anims", dependencies=[Depends(require_auth)])
+async def portrait_anims_get(persona: PersonaIdPath, atlas: bool = True, mode: str | None = ModeQuery,
+                             live: bool = False, chat_id: str = Query("web_user", max_length=128)):
+    # Анимации с атласами data-URL'ами (atlas=0 — без них: лёгкий список).
+    # live — что играть сейчас: анимации аватара режима чата и переходы в него
+    from app.api import avatar_modes, portrait_anim
+    if live:
+        await asyncio.to_thread(_room_persona, persona)
+        return await _room_call(avatar_modes.live_anims, persona, chat_id, atlas)
+    return await _room_call(portrait_anim.get_anims, await _avatar(persona, mode), atlas)
+
+
+@app.put("/api/personas/{persona}/portrait/anims-settings", dependencies=[Depends(require_auth)])
+async def portrait_anims_settings_put(persona: PersonaIdPath, req: AnimSettingsUpdate, mode: str | None = ModeQuery):
+    from app.api import portrait_anim
+    key = await _avatar(persona, mode)
+    sleep = req.sleep_anim if "sleep_anim" in req.model_fields_set else portrait_anim.KEEP
+    return await _portrait_saved(persona, _room_call(portrait_anim.put_settings, key, req.every_min, req.walk, sleep))
+
+
+@app.put("/api/personas/{persona}/portrait/anims/{anim_id}", dependencies=[Depends(require_auth)])
+async def portrait_anim_put(persona: PersonaIdPath, anim_id: str, req: AnimUpdate, mode: str | None = ModeQuery):
+    # anim_id "new" — новая анимация (id выдаёт ядро); без data_url — правка
+    # полей или переразметка загруженного листа
+    from app.api import portrait_anim
+    key = await _avatar(persona, mode)
+    return await _portrait_saved(persona, _room_call(portrait_anim.put_anim, key, anim_id, req.model_dump()))
+
+
+@app.delete("/api/personas/{persona}/portrait/anims/{anim_id}", dependencies=[Depends(require_auth)])
+async def portrait_anim_delete(persona: PersonaIdPath, anim_id: str, mode: str | None = ModeQuery):
+    from app.api import portrait_anim
+    key = await _avatar(persona, mode)
+    return await _portrait_saved(persona, _room_call(portrait_anim.delete_anim, key, anim_id))
+
+
+@app.post("/api/personas/{persona}/portrait/anims/{anim_id}/play", dependencies=[Depends(require_auth)])
+async def portrait_anim_play(persona: PersonaIdPath, anim_id: str, mode: str | None = ModeQuery):
+    # «Проиграть на рабочем столе»: портрету — через ленту реплик (kind act).
+    # Портрет на столе играет её, если она в его живом наборе (аватар режима,
+    # что включён сейчас)
+    from app.api import portrait_anim
+    key = await _avatar(persona, mode)
+    anim = await asyncio.to_thread(portrait_anim.find, key, anim_id)
+    if anim is None:
+        raise HTTPException(status_code=404, detail="Анимация не найдена")
+    said.note(persona, "web_user", anim_id, kind=said.ACT_KIND)
+    return {"ok": True}
+
+
+# Редактор кадров: kind — sheet (лист портрета) или anim (анимация)
+
+@app.get("/api/personas/{persona}/portrait/frames/{kind}/{item}", dependencies=[Depends(require_auth)])
+async def portrait_frames_get(persona: PersonaIdPath, kind: str, item: str, mode: str | None = ModeQuery):
+    from app.api import portrait_frames
+    key = await _avatar(persona, mode)
+    return await _room_call(portrait_frames.describe, key, kind, item)
+
+
+@app.get("/api/personas/{persona}/portrait/frames/{kind}/{item}/sheet", dependencies=[Depends(require_auth)])
+async def portrait_frames_sheet(persona: PersonaIdPath, kind: str, item: str, mode: str | None = ModeQuery):
+    # Исходный лист, поверх него рисуется сетка
+    from app.api import portrait_frames
+    key = await _avatar(persona, mode)
+    raw, mime = await _room_call(portrait_frames.sheet_bytes, key, kind, item)
+    return Response(content=raw, media_type=mime)
+
+
+@app.post("/api/personas/{persona}/portrait/frames/{kind}/{item}/cut", dependencies=[Depends(require_auth)])
+async def portrait_frames_cut(persona: PersonaIdPath, kind: str, item: str, req: FrameCutRequest,
+                              mode: str | None = ModeQuery):
+    # Пробная нарезка: на диск ничего не идёт
+    from app.api import portrait_frames
+    key = await _avatar(persona, mode)
+    return await _room_call(portrait_frames.preview, key, kind, item, req.model_dump())
+
+
+@app.put("/api/personas/{persona}/portrait/frames/{kind}/{item}", dependencies=[Depends(require_auth)])
+async def portrait_frames_put(persona: PersonaIdPath, kind: str, item: str, req: FrameSaveRequest,
+                              mode: str | None = ModeQuery):
+    from app.api import portrait_frames
+    key = await _avatar(persona, mode)
+    body = req.model_dump()
+    fix, timing, order = body.pop("fix"), body.pop("timing"), body.pop("order")
+    if "order" not in req.model_fields_set:
+        order = portrait_frames.KEEP  # вкладка старой версии порядка не знает
+    return await _portrait_saved(persona, _room_call(portrait_frames.save, key, kind, item, body, fix, timing, order))
+
+
+# Эмоции портрета: свои наборы листов, персона выбирает сама ([EMO:имя])
+
+@app.put("/api/personas/{persona}/portrait/emotions/{emo_id}", dependencies=[Depends(require_auth)])
+async def portrait_emotion_put(persona: PersonaIdPath, emo_id: str, req: PortraitEmotionUpdate,
+                               mode: str | None = ModeQuery):
+    # emo_id "new" — новая (id выдаёт ядро, в ответе created); иначе — имя,
+    # подсказка и условие «по настроению» (без поля mood — прежнее)
     from app.api import portrait_api
-    await asyncio.to_thread(_room_persona, persona)
-    return await _room_call(portrait_api.put_sheet, persona, sheet, req.data_url, req.rows, req.cols,
-                            req.offset_x, req.offset_y, req.bg, req.tolerance)
+    key = await _avatar(persona, mode)
+    mood = ((req.mood.model_dump() if req.mood else None,) if "mood" in req.model_fields_set else ())
+    return await _portrait_saved(persona, _room_call(portrait_api.put_emotion, key, emo_id, req.name, req.hint, *mood))
+
+
+@app.get("/api/personas/{persona}/portrait/mood", dependencies=[Depends(require_auth)])
+async def portrait_mood(persona: PersonaIdPath):
+    # Настроение персоны сейчас ({valence, arousal, tag}; null — живого
+    # состояния нет) — в её последнем активном чате, как у «Комнаты»: живое
+    # лицо само подбирает эмоцию по условию «по настроению». Лёгкий, из
+    # файлов — его зовут по таймеру
+    from app.api import room_api
+
+    def _mood():
+        return room_api.current_mood(persona, _room_persona(persona))
+    return {"mood": await asyncio.to_thread(_mood)}
+
+
+@app.delete("/api/personas/{persona}/portrait/emotions/{emo_id}", dependencies=[Depends(require_auth)])
+async def portrait_emotion_delete(persona: PersonaIdPath, emo_id: str, mode: str | None = ModeQuery):
+    from app.api import portrait_api
+    key = await _avatar(persona, mode)
+    return await _portrait_saved(persona, _room_call(portrait_api.delete_emotion, key, emo_id))
+
+
+@app.post("/api/personas/{persona}/portrait/emotions/{emo_id}/show", dependencies=[Depends(require_auth)])
+async def portrait_emotion_show(persona: PersonaIdPath, emo_id: str, mode: str | None = ModeQuery):
+    # «Показать на рабочем столе»: портрету — через ленту реплик (kind emo).
+    # Покажет, если эмоция — у аватара, что включён сейчас
+    from app.api import portrait_api
+    key = await _avatar(persona, mode)
+    if not any(e["id"] == emo_id for e in await asyncio.to_thread(portrait_api.llm_emotions, key)):
+        raise HTTPException(status_code=404, detail="Эмоции нет или у неё нет основного листа")
+    said.note(persona, "web_user", emo_id, kind=said.EMO_KIND)
+    return {"ok": True}
+
+
+@app.put("/api/personas/{persona}/portrait/{sheet}", dependencies=[Depends(require_auth)])
+async def portrait_sheet_put(persona: PersonaIdPath, sheet: str, req: PortraitSheetUpdate, mode: str | None = ModeQuery):
+    from app.api import portrait_api
+    key = await _avatar(persona, mode)
+    return await _portrait_saved(persona, _room_call(portrait_api.put_sheet, key, sheet, req.data_url, req.rows, req.cols,
+                                                     req.offset_x, req.offset_y, req.bg, req.tolerance))
 
 
 @app.delete("/api/personas/{persona}/portrait/{sheet}", dependencies=[Depends(require_auth)])
-async def portrait_sheet_delete(persona: PersonaIdPath, sheet: str):
+async def portrait_sheet_delete(persona: PersonaIdPath, sheet: str, mode: str | None = ModeQuery):
     from app.api import portrait_api
-    await asyncio.to_thread(_room_persona, persona)
-    return await _room_call(portrait_api.delete_sheet, persona, sheet)
+    key = await _avatar(persona, mode)
+    return await _portrait_saved(persona, _room_call(portrait_api.delete_sheet, key, sheet))
 
 
 @app.delete("/api/personas/{persona}/portrait", dependencies=[Depends(require_auth)])
-async def portrait_delete(persona: PersonaIdPath):
+async def portrait_delete(persona: PersonaIdPath, mode: str | None = ModeQuery):
     from app.api import portrait_api
-    await asyncio.to_thread(_room_persona, persona)
-    return await _room_call(portrait_api.delete_all, persona)
+    key = await _avatar(persona, mode)
+    return await _portrait_saved(persona, _room_call(portrait_api.delete_all, key))
 
 
 @app.post("/api/personas/{persona}/room/poke", dependencies=[Depends(require_auth)])
@@ -2861,8 +3686,13 @@ _presence_no_persona_warned = False
 
 
 # ── Inbox: фоновые сообщения (напоминания, уроки, инициативы) ─────────
+def _local_web(request: Request) -> bool:
+    # Веб открыт на этом же компьютере (не телефон по Wi-Fi и не VPC Link)
+    return not _via_link(request) and from_this_machine(request, _trusted_origins)
+
+
 @app.post("/api/presence", dependencies=[Depends(require_auth)])
-async def presence(req: PresenceRequest):
+async def presence(req: PresenceRequest, request: Request):
     """Состояние вкладки веб-чата (видима и в фокусе): мгновенный сигнал по
     visibilitychange/focus/blur. Пока активна — фоновая работа бота по ЭТОМУ
     чату молчит (ключ — персона + чат, см. app/core/presence.py).
@@ -2881,6 +3711,8 @@ async def presence(req: PresenceRequest):
             _presence_no_persona_warned = True
         return {"ok": True}
     web_presence.note(web_context(req.persona), req.chat_id, req.active)
+    if _local_web(request):
+        local_web_presence.note(web_context(req.persona), req.chat_id, req.active)
     return {"ok": True}
 
 
@@ -2900,7 +3732,7 @@ def _read_last_message_ts(persona: str, chat_id: str) -> float:
 
 
 @app.get("/api/personas/{persona}/inbox", dependencies=[Depends(require_auth)])
-async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool = False,
+async def inbox(persona: PersonaIdPath, request: Request, chat_id: str = "web_user", focused: bool = False,
                 client_id: str = Query("", max_length=64, pattern=r"^[A-Za-z0-9_-]*$")):
     from app.api.inbox import inbox_pop
     from app.api.runtime import registry
@@ -2910,11 +3742,13 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # скрытой вкладки гасил бы флаг активной (сброс — POST /api/presence или TTL)
     if focused:
         web_presence.note(web_context(persona), chat_id, True)
+        if _local_web(request):
+            local_web_presence.note(web_context(persona), chat_id, True)
     # Бота не создаём: inbox — фоновый опрос всех персон, не должен
     # инициализировать тяжёлые инстансы. Нет бота — нет и сообщений.
     # generating — идёт ли сейчас генерация ответа в этом чате (фронт
     # показывает «печатает» даже после перезагрузки страницы).
-    generating = f"{persona}:{chat_id}" in _generating
+    generating = _chat_generating(f"{persona}:{chat_id}")
     # Реплики в обработке, отправленные с других устройств, — до ответа
     pending = _pending_public(f"{persona}:{chat_id}", client_id)
     # Метка последнего сообщения чата (STM штампует её на каждое сообщение) —
@@ -2922,6 +3756,10 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # часто опрашиваемый эндпоинт (поллинг фронта): синхронное чтение файла
     # прямо в хендлере блокировало бы event loop на каждый тик
     last_ts = await asyncio.to_thread(_read_last_message_ts, persona, chat_id)
+    # Режим персоны в этом чате — за ним идёт аватар (app/api/avatar_modes):
+    # голосовой режим веба меняет голову и играет переход
+    from app.api import avatar_modes
+    avatar_mode = await asyncio.to_thread(avatar_modes.active_mode, persona, chat_id)
     bot = registry._bots.get(persona)
     # Карантины веб-чатов (антибот) и состояние пулов браузера — общие для
     # процесса, не per-chat
@@ -2938,7 +3776,8 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     if bot is None:
         return {"messages": [], "generating": generating, "pending": pending,
                 "last_ts": last_ts, "control_mode": False, "answer_options": None,
-                "task": None, "webchat_quarantine": quarantine, "browser_pools": pools}
+                "task": None, "webchat_quarantine": quarantine, "browser_pools": pools,
+                "avatar_mode": avatar_mode}
     # Поллинг инбокса = пользователь открыл веб: сигнал присутствия для rhythm
     # (дёшев, с внутренним троттлингом — триггер утреннего приветствия)
     try:
@@ -2960,8 +3799,10 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     task = bot.cc_task_card(chat_id, chat_id)
     return {"messages": inbox_pop(persona, chat_id, client_id), "generating": generating,
             "pending": pending, "last_ts": last_ts, "control_mode": control_mode,
+            "phone_mode": _phone_mode(bot, chat_id),
             "answer_options": answer_options, "task": task,
-            "webchat_quarantine": quarantine, "browser_pools": pools}
+            "webchat_quarantine": quarantine, "browser_pools": pools,
+            "avatar_mode": avatar_mode}
 
 
 @app.get("/api/inbox", dependencies=[Depends(require_auth)])
@@ -2993,6 +3834,40 @@ async def inbox_all(request: Request,
     items, cursor = await inbox_mod.inbox_wait(chat_id, client_id, start, wait,
                                                gone=request.is_disconnected)
     return {"messages": await _inbox_named(items), "cursor": cursor, "epoch": inbox_mod.EPOCH}
+
+
+@app.get("/api/said", dependencies=[Depends(require_auth)])
+async def said_feed(request: Request,
+                    chat_id: str = Query("web_user", max_length=128),
+                    wait: float = Query(0, ge=0),
+                    since: int | None = Query(None, ge=0),
+                    epoch: str | None = Query(None, max_length=32),
+                    acts: bool = Query(False),
+                    emo: bool = Query(False)):
+    # Реплики персон по мере появления (app/api/said) — облачко портрета на
+    # рабочем столе: и ответы в чате, откуда бы ни писали, и фоновые
+    # сообщения. Долгий опрос: пусто — ждём до wait секунд. Первый запрос —
+    # без epoch: сразу, только номер. Номер прошлого запуска ядра — реплики
+    # этого запуска за последние said.REPLAY_SEC. acts=1 — и анимации,
+    # которые портрету сыграть (kind act, текст — id; app/api/portrait_anim);
+    # emo=1 — и эмоции лица (kind emo, текст — id эмоции; app/api/portrait_api)
+    if acts:
+        said.mark_acts_listener(chat_id)
+    if emo:
+        said.mark_emo_listener(chat_id)
+    if epoch == said.EPOCH:
+        start, fresh = since, None
+    elif epoch:
+        start, fresh = 0, said.REPLAY_SEC
+    else:
+        start, fresh = None, None
+    items, cursor = await said.wait(start, wait, chat_id, fresh, gone=request.is_disconnected,
+                                    acts=acts, emo=emo)
+    # Скорость текста у аватара — вместе с репликами: облачко берёт её к
+    # следующей реплике, отдельно опрашивать не нужно
+    from app.core import avatar_text
+    return {"messages": await _inbox_named(items), "cursor": cursor, "epoch": said.EPOCH,
+            "text": avatar_text.get()}
 
 
 @app.get("/api/changes", dependencies=[Depends(require_auth)])
@@ -3170,6 +4045,19 @@ async def initiative(persona: PersonaIdPath, chat_id: str = "web_user"):
     return await asyncio.to_thread(_read)
 
 
+@app.post("/api/personas/{persona}/initiative/trigger", dependencies=[Depends(require_auth)])
+async def initiative_trigger(persona: PersonaIdPath, chat_id: str = "web_user"):
+    bot = await _get_bot(persona)
+    _check_not_muted(bot, persona)
+    proactive = bot.proactive
+    if proactive is None or not proactive.config.enabled:
+        raise HTTPException(status_code=409, detail="Самоинициатива выключена")
+    message = await proactive.trigger_once(chat_id)
+    if not message:
+        raise HTTPException(status_code=409, detail="Не удалось сгенерировать инициативу")
+    return {"sent": True, "text": message}
+
+
 @app.put("/api/personas/{persona}/initiative", dependencies=[Depends(require_auth)])
 async def initiative_update(persona: PersonaIdPath, req: InitiativeUpdate):
     # Записать параметры проактивности в YAML персоны и в живой конфиг
@@ -3298,7 +4186,8 @@ async def device_hello(req: DeviceHello):
     # Устройство ядра (app/core/devices) представилось: кто оно и что умеет.
     # При каждом своём запуске и после обрыва связи
     from app.core import devices
-    return {"ok": True, "device": devices.register(req.id, req.name, req.names, req.capabilities)}
+    return {"ok": True, "device": devices.register(req.id, req.name, req.names, req.capabilities,
+                                                   req.body.model_dump() if req.body else None)}
 
 
 @app.get("/api/devices", dependencies=[Depends(require_auth)])
@@ -3313,6 +4202,14 @@ async def device_forget(device_id: DeviceIdPath):
     if not devices.forget(device_id):
         raise HTTPException(status_code=404, detail="Такого устройства нет")
     return {"ok": True}
+
+
+@app.post("/api/devices/{device_id}/bye", dependencies=[Depends(require_auth)])
+async def device_bye(device_id: DeviceIdPath):
+    # Устройство уходит само (служба управления экраном выключена): сразу
+    # «не на связи», чтобы ход персоны не ждал команде таймаута
+    from app.core import devices
+    return {"ok": devices.leave(device_id)}
 
 
 @app.get("/api/devices/{device_id}/commands", dependencies=[Depends(require_auth)])
@@ -3339,7 +4236,8 @@ async def device_result(device_id: DeviceIdPath, req: DeviceResult):
         except ValueError:
             raise HTTPException(status_code=400, detail="Некорректные данные изображения (base64)")
     return {"ok": devices.complete(device_id, req.command_id, req.ok, data=req.data,
-                                   image=image, error=req.error)}
+                                   image=image, error=req.error,
+                                   body=req.body.model_dump() if req.body else None)}
 
 
 @app.get("/api/personas/{persona}/local-tasks", dependencies=[Depends(require_auth)])
@@ -3380,6 +4278,62 @@ async def timezone_set(req: TimezoneRequest):
     if not result.get("ok"):
         raise HTTPException(status_code=422, detail=result.get("detail") or "Некорректный часовой пояс")
     return result
+
+
+@app.get("/api/settings/llm-economy", dependencies=[Depends(require_auth)])
+async def llm_economy_get():
+    # «Экономия нейронки»: где вместо модели работает код (общая для всех персон)
+    from app.core import llm_economy
+    return await asyncio.to_thread(llm_economy.get_settings)
+
+
+@app.put("/api/settings/llm-economy", dependencies=[Depends(require_auth)])
+async def llm_economy_set(req: LlmEconomyUpdate):
+    # Частичная правка; неизвестный пункт → 422, файл не трогается
+    from app.core import llm_economy
+    try:
+        return await asyncio.to_thread(llm_economy.update, req.items)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/api/settings/avatar-text", dependencies=[Depends(require_auth)])
+async def avatar_text_get():
+    # Скорость текста у аватара: слова в облачке и смена частей (общая)
+    from app.core import avatar_text
+    return await asyncio.to_thread(avatar_text.get_settings)
+
+
+@app.put("/api/settings/avatar-text", dependencies=[Depends(require_auth)])
+async def avatar_text_set(req: AvatarTextUpdate):
+    # Частичная правка; вне пределов → 422, файл не трогается
+    from app.core import avatar_text
+    try:
+        return await asyncio.to_thread(avatar_text.update, req.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/api/settings/ui-look", dependencies=[Depends(require_auth)])
+async def ui_look_get():
+    # Как выглядит веб на компьютере: скин, свои темы персон, схема
+    from app.core import ui_look
+    return await asyncio.to_thread(ui_look.get)
+
+
+@app.put("/api/settings/ui-look", dependencies=[Depends(require_auth)])
+async def ui_look_set(req: UiLookUpdate):
+    # Веб присылает выбор целиком; сменился — портрет на столе перерисует
+    # голову (событие look ленты реплик). Негодный id → 422, файл не трогается
+    from app.api import said
+    from app.core import ui_look
+    try:
+        look, changed = await asyncio.to_thread(ui_look.update, req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if changed:
+        said.look_changed()
+    return look
 
 
 @app.get("/api/settings/location", dependencies=[Depends(require_auth)])
@@ -3495,6 +4449,21 @@ async def persona_draft_delete(draft_id: str):
     if not await asyncio.to_thread(drafts_api.delete_draft, draft_id):
         raise HTTPException(status_code=404, detail="Черновик не найден")
     return {"status": "ok"}
+
+
+from app.api import desktop_portrait  # noqa: E402
+
+app.include_router(desktop_portrait.create_router(require_auth))
+
+
+from app.features import music_player as _music_player  # noqa: E402
+_music_player.IS_API_PROCESS = True
+app.include_router(player_api.create_router(require_auth, _trusted_origins))
+
+
+@app.on_event("shutdown")
+async def _stop_music_browser():
+    await player_api.music_browser.shutdown()
 
 
 # ── Сервисы: почта, Диск, GitHub, Telegram-аккаунт, ленты, вебхук ──

@@ -9,6 +9,7 @@ import { isNativeApp } from './api'
 import { handleBack } from './backStack'
 import { initWakeOffline } from './wakeWord'
 import SkinHost from './components/SkinHost'
+import SkinLookProvider from './components/SkinLookProvider'
 import { initSkinTheme } from './skinTheme'
 
 // Приложение на Android: «Назад» закрывает открытое (backStack), а с
@@ -31,9 +32,11 @@ void initSkinTheme().then(() => {
     <StrictMode>
       <I18nProvider>
         <SkinHost />
-        <BootGate>
-          <App />
-        </BootGate>
+        <SkinLookProvider>
+          <BootGate>
+            <App />
+          </BootGate>
+        </SkinLookProvider>
       </I18nProvider>
     </StrictMode>,
   )

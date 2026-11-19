@@ -157,7 +157,7 @@ def main():
           and r5._provider_sem("openai", {"api_keys": []}) is None)
 
     class _Completions:
-        def create(self, **kw):
+        async def create(self, **kw):
             return types.SimpleNamespace(choices=[types.SimpleNamespace(
                 message=types.SimpleNamespace(content="ок"))])
 
@@ -168,8 +168,14 @@ def main():
             FakeOpenAI.calls += 1
             self.chat = types.SimpleNamespace(completions=_Completions())
 
-    _orig_oai = rt.OpenAI
-    rt.OpenAI = FakeOpenAI
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    _orig_oai = rt.AsyncOpenAI
+    rt.AsyncOpenAI = FakeOpenAI
     try:
         sem.acquire()  # провайдер занят фоновой задачей
         FakeOpenAI.calls = 0
@@ -187,7 +193,7 @@ def main():
               and sem.acquire(blocking=False))
         sem.release()
     finally:
-        rt.OpenAI = _orig_oai
+        rt.AsyncOpenAI = _orig_oai
 
     # ── 5. Фоновые генераторы работают не на канале main ──
     class CapRouter:

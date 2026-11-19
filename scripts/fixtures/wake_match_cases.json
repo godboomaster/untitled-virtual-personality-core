@@ -1,5 +1,5 @@
 {
-  "_comment": "Общие примеры голосовой активации: app/voice/wake_match.py (scripts/test_wake_word.py) и WakeMatch.java (WakeMatchTest). text — как пишет распознаватель (sherpa-onnx, малая русская модель).",
+  "_comment": "Общие примеры голосовой активации: app/voice/wake_match.py (scripts/test_wake_word.py) и WakeMatch.java (WakeMatchTest). text — как пишет распознаватель (sherpa-onnx: малая русская модель; латиницей — английская, только на ядре).",
   "personas": [
     {"id": "connor", "name": "Коннор", "features": {"trigger_words": ["коннор", "connor", "жабка"]}},
     {"id": "arrodes", "name": "Великий Арродес", "features": {"trigger_words": ["arrodes", "арродес", "mirror", "зеркало"]}},
@@ -34,6 +34,11 @@
     {"text": "канал не работает", "persona": null},
     {"text": "кино", "persona": null},
     {"text": "ассистент привет", "persona": null},
-    {"text": "", "persona": null}
+    {"text": "", "persona": null},
+    {"text": "connor what's the weather like to day", "persona": "connor", "command": "what's the weather like to day"},
+    {"text": "cona opened my notes please", "persona": "connor", "command": "opened my notes please"},
+    {"text": "mirra mirra on the wall", "persona": "arrodes", "command": "mirra on the wall"},
+    {"text": "мира и счастья", "persona": null},
+    {"text": "gonna be late", "persona": null}
   ]
 }

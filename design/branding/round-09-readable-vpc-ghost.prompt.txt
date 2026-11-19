@@ -1,0 +1,19 @@
+Built-in image_gen. Revision prioritizing legibility of all three initials while retaining a compact ghost. Primary edit target: 17-compact-vpc-ghost.png. Letterform reference: 15-vpc-ghost-ligature.png. Not integrated into the application.
+
+Use case: logo-brand.
+Asset type: refinement of a compact VPC ghost monogram, prioritizing LETTER LEGIBILITY.
+Input image 1 (compact ghost on ivory/graphite): PRIMARY EDIT TARGET. Keep the friendly restrained ghost character, monochrome palette, roughly square mark, two pill-shaped eyes, paired light/dark presentation, and exact wordmark "Virtual Persona" with small "CORE".
+Input image 2 (wide VPC ligature): SECONDARY REFERENCE FOR LETTER LEGIBILITY ONLY. The user rejected its wide, bulky composition and the separate head bump. Do not copy that design.
+
+USER REQUEST: make V P C clearly readable in the compact ghost mark from image 1. A plain ghost with a bite in its side is NOT sufficient. Each of the THREE actual uppercase Latin letter structures must be visibly identifiable without a written explanation.
+Redesign the geometry into an elegant tightly integrated ligature with a roughly SQUARE footprint, no more than 1.15 times as wide as tall. It must retain a recognizable friendly ghost in the SAME geometry.
+Build the mark from these shared strokes:
+- V: two bold clean diagonals converging to a distinct downward point in the LOWER LEFT/CENTER. Both arms of V are visible. A simple triangular notch in a solid body alone is not enough.
+- P: an actual upright stem with an unmistakable rounded upper bowl and a generous clearly defined counter (interior opening). The P sits centrally and SHARES its stem/diagonal with V; its bowl is part of the ghost's rounded upper body. The counter must establish a real P, not just two generic ghost eyes or a tiny corner.
+- C: a clear curved stroke on the RIGHT sharing part of the P's rounded shoulder, with a broad opening facing right and distinct upper/lower ends. Keep its open curve obvious rather than a small semicircular bite.
+Let those three structures INTERLOCK AND SHARE STROKES into ONE compact emblem. Fit exactly two small calm ghost eye slots in an already-existing broad upper stroke, not on an extra head attached above the lettering. The ghost emerges from the rounded top, eyes and two unequal lower points of this SAME ligature.
+Use stroke weight substantially lighter and counterforms more generous than the heavy wide secondary reference. Simple geometric construction, no complex weaving or extra loops. This is an optical balance between readable initials and ghost silhouette; legibility of V P C is the required improvement.
+Do not put a row of VPC text on a ghost's stomach. Do not make three separate adjacent letters with a ghost above them. No separate badge, no mouth, no diagrams or letter labels. One well-proportioned icon.
+
+Keep the landscape two-panel layout of image 1: left warm ivory #F4F0E7 with large black #151817 mark, right graphite with an IDENTICAL ivory mark smaller. Same silhouette and counters in both versions. Exact small "Virtual Persona" wordmark beneath with "CORE". Bottom-left label exactly "14 / VPC".
+Flat vector-like precise edges and pure solid colors. No shadows, gradients, textures, grain, highlights, 3D, glow or watermark.

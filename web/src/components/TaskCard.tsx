@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import type { TaskCard as TaskCardData } from '../api';
 import { useI18n } from '../i18n';
+import { SkinPartsContext } from '../skinParts';
 
 /* Карточка задачи агента в ленте чата (режим управления): цель, статус,
    план заказа с отметками и журнал хода (с числом шагов и запросов к
    модели). Обновляется на месте поллингом
-   inbox, пока агент работает; итог висит ещё полчаса (CARD_TTL_SEC). */
+   inbox, пока агент работает; итог висит ещё полчаса (CARD_TTL_SEC).
+   Скин может показать её по-своему (parts.tsx → TaskCard) — те же данные. */
 
 const LOG_TAIL = 6; // строк журнала в свёрнутом виде
 
@@ -23,6 +25,8 @@ export default function TaskCard({ card }: { card: TaskCardData }) {
   const hidden = open ? 0 : Math.max(0, card.log.length - LOG_TAIL);
   const log = card.log.slice(hidden);
   const live = card.status === 'working';
+  const SkinCard = useContext(SkinPartsContext)?.TaskCard;
+  if (SkinCard) return <SkinCard card={card} t={t} />;
   return (
     <div className={`task-card task-card--${card.status}`} role="status" aria-live="polite">
       <div className="task-card-head">

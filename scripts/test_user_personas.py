@@ -193,7 +193,7 @@ def providers_case():
     r = router_mod.ModelRouter.__new__(router_mod.ModelRouter)
     r.model_overrides = {}
     called = []
-    with mock.patch.object(router_mod, "OpenAI", lambda *a, **k: called.append(1)):
+    with mock.patch.object(router_mod, "AsyncOpenAI", lambda *a, **k: called.append(1)):
         out = router_mod.ModelRouter._call_with_keys(
             r, "zai", cfg(""), [{"role": "user", "content": "hi"}], 0.7, 10, 0.9, 5.0)
     check("роутер: без модели — None и ни одного запроса", out is None and not called)
@@ -239,7 +239,8 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="user_personas_"))
     os.environ["VPC_DATA_DIR"] = str(tmp / "data")
     os.environ.setdefault("OLLAMA_URL", "http://127.0.0.1:9")
-    personas_case(tmp)
+    with mock.patch("app.features.flavor_text.ensure_flavor_bank"):
+        personas_case(tmp)
     providers_case()
     git_case()
     print(f"\nИтого: {ok} проверок, {failures} провалов")

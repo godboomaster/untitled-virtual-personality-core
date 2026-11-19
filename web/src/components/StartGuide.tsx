@@ -5,7 +5,8 @@ import { useI18n } from '../i18n';
 import OllamaModels from './OllamaModels';
 import { requestDossierTab } from '../chatNavStore';
 
-/* Обучение на странице «Старт»: маршруты (консоль, спецфункции, Telegram) —
+/* Обучение на странице «Старт»: маршруты (консоль, спецфункции, персона,
+   телефон, Telegram) —
    вертикальная лента шагов с отметками «пройдено», копированием команд и
    переходами в разделы, рядом — живой демо-диалог. Блок показывает свой набор
    маршрутов (trackIds), поэтому на странице их два: обучение и Telegram.
@@ -22,7 +23,7 @@ interface StartGuideProps {
   id?: string; // якорь блока для прокрутки из шапки страницы
 }
 
-export type TrackId = 'console' | 'features' | 'telegram';
+export type TrackId = 'console' | 'features' | 'persona' | 'phone' | 'telegram';
 
 // Код-чип: литерал (команды, пути) или ключ i18n (фразы обычной речью);
 // hint — ключ пояснения, тогда чипы рисуются списком «команда — что делает»
@@ -40,7 +41,7 @@ interface Step {
   here?: boolean; // шаг про текущий раздел — вместо кнопки метка «вы здесь»
   warn?: string; // ключ i18n предупреждения под описанием шага
   anchor?: string; // id блока на этой же странице — кнопка прокрутки к нему
-  dossier?: 'initiative' | 'settings'; // кнопка «Досье → вкладка» (чат последней активной персоны)
+  dossier?: 'memory' | 'tasks' | 'initiative' | 'lore' | 'modes' | 'files' | 'settings'; // чат последней активной персоны
   models?: boolean; // сравнение локальных моделей Ollama (шаг «Провайдеры: Ollama»)
 }
 
@@ -86,7 +87,10 @@ const TRACKS: Track[] = [
       { id: 'home', nav: 'home' },
       { id: 'chat', nav: 'chat' },
       { id: 'room', nav: 'room' },
-      { id: 'phone', nav: 'settings', warn: 'guide.console.phoneWarn' },
+      { id: 'phone', nav: 'connection', warn: 'guide.console.phoneWarn' },
+      { id: 'preferences', nav: 'settings' },
+      { id: 'economy', nav: 'settings' },
+      { id: 'gemma', nav: 'settings' },
     ],
     window: 'console — chat — persona',
     dialog: [
@@ -140,6 +144,20 @@ const TRACKS: Track[] = [
         ],
       },
       {
+        id: 'notes',
+        nav: 'home',
+        chips: [
+          { code: '[запиши в заметки] номер заказа 123' },
+          { code: '[что у меня в заметках?]' },
+          { code: '[удали заметку] 2' },
+        ],
+        chipsEn: [
+          { code: '[add a note:] order number 123' },
+          { code: '[show my notes]' },
+          { code: '[delete note] 2' },
+        ],
+      },
+      {
         id: 'inventory',
         chips: [
           { code: '[держи] яблоко', hint: 'guide.hGive' },
@@ -186,7 +204,19 @@ const TRACKS: Track[] = [
         ],
       },
       { id: 'search', chips: [{ code: '/web', hint: 'guide.cmdWeb' }] },
-      { id: 'files', chips: [{ code: '/files', hint: 'guide.cmdFiles' }] },
+      { id: 'files', dossier: 'files', chips: [{ code: '/files', hint: 'guide.cmdFiles' }] },
+      {
+        id: 'computerFiles',
+        nav: 'chat',
+        chips: [{ code: '[пришли файл] про налоговый вычет' }, { code: '[открой последний файл из загрузок]' }],
+        chipsEn: [{ code: '[send me the file] about tax deduction' }, { code: '[open the latest file in Downloads]' }],
+      },
+      {
+        id: 'services',
+        nav: 'services',
+        chips: [{ code: '[что нового в почте?]' }, { code: '[кто мне писал?]' }, { code: '[не присылай уведомления от] Ozon' }],
+        chipsEn: [{ code: '[what is new in my email?]' }, { code: '[who messaged me?]' }],
+      },
       { id: 'initiative', dossier: 'initiative' },
       { id: 'rhythm', dossier: 'settings' },
       {
@@ -199,6 +229,12 @@ const TRACKS: Track[] = [
         ],
       },
       { id: 'camera', nav: 'chat' },
+      {
+        id: 'devices',
+        nav: 'chat',
+        chips: [{ code: '[что видит робот?]' }, { code: '[посмотри через робота]' }],
+        chipsEn: [{ code: '[what does the robot see?]' }],
+      },
       {
         id: 'phonecmd',
         chips: [
@@ -216,18 +252,19 @@ const TRACKS: Track[] = [
           { code: '[turn on the flashlight]' },
         ],
       },
-      // Голосовая активация: распознавание пока только русское — примеры
-      // по-русски и в английской локали
+      // На компьютере есть русский и английский, на телефоне — русский.
       {
         id: 'voice',
-        nav: 'settings',
+        nav: 'connection',
         warn: 'guide.features.voiceWarn',
         chips: [
           { code: '[Коннор], какая сегодня погода?' },
           { code: '[Коннор] … поставь будильник на семь' },
           { code: '[Коннор], включи фонарик' },
         ],
+        chipsEn: [{ code: '[Connor], what is the weather today?' }],
       },
+      { id: 'conversation', nav: 'avatar' },
       { id: 'control', anchor: 'start-control' },
     ],
     window: 'console — chat — persona',
@@ -238,6 +275,56 @@ const TRACKS: Track[] = [
       { who: 'bot', text: 'guide.dlgFeatSnoozed', i18n: true },
       { who: 'sys', text: '— 16:50 —' },
       { who: 'bot', text: 'guide.dlgFeatPing', i18n: true },
+    ],
+  },
+  {
+    id: 'persona',
+    index: 'T_03',
+    steps: [
+      { id: 'memory', dossier: 'memory' },
+      { id: 'lore', dossier: 'lore' },
+      { id: 'modes', dossier: 'modes', chips: [{ code: '/mode' }, { code: '/mode off' }] },
+      { id: 'style', nav: 'personas', dossier: 'settings' },
+      { id: 'life', nav: 'room' },
+      { id: 'portrait', nav: 'avatar' },
+      { id: 'animations', nav: 'avatar' },
+      { id: 'frames', nav: 'avatar' },
+      { id: 'desktop', nav: 'avatar' },
+      { id: 'skins', nav: 'skins' },
+    ],
+    window: 'console — chat — persona',
+    dialog: [
+      { who: 'sys', text: 'guide.dlgPersonaLore', i18n: true },
+      { who: 'op', text: 'guide.dlgPersonaAsk', i18n: true },
+      { who: 'bot', text: 'guide.dlgPersonaAnswer', i18n: true },
+      { who: 'sys', text: 'guide.dlgPersonaHint', i18n: true },
+    ],
+  },
+  {
+    id: 'phone',
+    index: 'T_04',
+    steps: [
+      { id: 'standalone', nav: 'connection' },
+      { id: 'providers', nav: 'settings' },
+      { id: 'chain', dossier: 'settings' },
+      { id: 'sync', nav: 'connection' },
+      { id: 'background', nav: 'connection' },
+      { id: 'widgets', nav: 'connection' },
+      { id: 'overlay', nav: 'avatar' },
+      {
+        id: 'screen',
+        nav: 'settings',
+        chips: [{ code: '[что на экране телефона?]' }, { code: '[на телефоне нажми] «Отправить»' }, { code: '[на телефоне листай вниз]' }],
+        chipsEn: [{ code: "[what's on my phone screen?]" }, { code: '[tap Send on my phone]' }, { code: '[scroll down on my phone]' }],
+      },
+      { id: 'services', nav: 'services' },
+    ],
+    window: 'console — chat — persona',
+    dialog: [
+      { who: 'sys', text: 'guide.dlgPhoneOffline', i18n: true },
+      { who: 'op', text: 'guide.dlgPhoneAsk', i18n: true },
+      { who: 'bot', text: 'guide.dlgPhoneAnswer', i18n: true },
+      { who: 'sys', text: 'guide.dlgPhoneSync', i18n: true },
     ],
   },
   {
@@ -256,6 +343,8 @@ const TRACKS: Track[] = [
           { code: '/last', hint: 'guide.cmdLast' },
           { code: '/context', hint: 'guide.cmdContext' },
           { code: '/ratelimits', hint: 'guide.cmdRatelimits' },
+          { code: '/mode', hint: 'guide.cmdMode' },
+          { code: '/mode off', hint: 'guide.cmdModeOff' },
         ],
       },
       {
@@ -427,7 +516,7 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
 
       {/* Строка прогресса по всем маршрутам */}
       <div className="start-guide-bar">
-        <span className="start-guide-bar-label">PROGRESS</span>
+        <span className="start-guide-bar-label hud-code">PROGRESS</span>
         <span className="start-guide-bar-count">{t('guide.progress', { n: doneCount, m: total })}</span>
         <span
           className="start-guide-meter"
@@ -482,7 +571,7 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
                   onClick={() => setTrackIdx(i)}
                 >
                   <span className="start-guide-tab-index">
-                    {tr.index}
+                    <span className="hud-code">{tr.index}</span>
                     <span className="start-guide-tab-count">
                       {complete ? '✓' : `${trDone}/${tr.steps.length}`}
                     </span>
@@ -759,7 +848,7 @@ function GuideDialog({ track, reduced }: GuideDialogProps) {
       <div className="corner br" />
       <div className="start-guide-dlg-titlebar">
         <span className="lights"><i /><i /><i /></span>
-        <span className="start-guide-dlg-window">{track.window}</span>
+        <span className="start-guide-dlg-window">{t(`guide.window.${track.id}`)}</span>
         <span className="start-guide-dlg-live">LIVE</span>
       </div>
       <div className="start-guide-dlg-peer">

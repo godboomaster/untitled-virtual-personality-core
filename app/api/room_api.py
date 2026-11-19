@@ -357,7 +357,8 @@ def _clean_avatar(av) -> dict | None:
     out = {}
     if "head" in av:
         out["head"] = str(av.get("head") or "")[:32]
-    for k in ("eyes", "accessory", "shade"):
+    # body — тело и одежда (индекс в web room/avatarBody bodyOptions; нет — обычное)
+    for k in ("eyes", "accessory", "shade", "body"):
         if k in av:
             try:
                 out[k] = int(av[k])
@@ -580,6 +581,28 @@ def asleep(persona: str, persona_data: dict) -> bool | None:
     return str(st.get("pose")) == "sleep"
 
 
+def current_mood(persona: str, persona_data: dict) -> dict | None:
+    """Настроение персоны в её последнем активном чате — для живого лица
+    (эмоции «по настроению», app/api/portrait_api): {valence, arousal, tag}.
+    Живое состояние выключено или его ещё нет — None."""
+    from app.core.living_persona import LivingPersonaConfig
+    if not LivingPersonaConfig((persona_data or {}).get("features") or {}).state_enabled:
+        return None
+    source = resolve_source(persona, "auto")
+    st = _states(source["context"]).get(source["chat_id"])
+    mood = st.get("mood") if isinstance(st, dict) else None
+    if not isinstance(mood, dict):
+        return None
+
+    def num(key: str, default: float, lo: float) -> float:
+        try:
+            return round(max(lo, min(1.0, float(mood.get(key)))), 2)
+        except (TypeError, ValueError):
+            return default
+    return {"valence": num("valence", 0.0, -1.0), "arousal": num("arousal", 0.3, 0.0),
+            "tag": str(mood.get("tag") or "")[:60]}
+
+
 def focus(persona: str, action: str, minutes: int | None = None,
           chat_id: str | None = "auto") -> dict:
     """start — запомнить сессию и дать сигнал focus_start; end — закрыть,
@@ -658,7 +681,9 @@ def generate_focus_line(bot, elapsed_min: int) -> str | None:
     try:
         if (bot.features or {}).get("muted"):
             return None
-        system = (bot.persona.system_prompt or "").strip()
+        # Характер — режима этого чата (app/core/persona_modes), как в ответе
+        from app.core.persona import persona_prompt
+        system = persona_prompt(bot.persona, WEB_CHAT_ID, WEB_CHAT_ID).strip()
         if not system:
             return None
         messages = [{"role": "system", "content": system}]

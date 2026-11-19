@@ -60,6 +60,13 @@ MODULES = {
     "store": url("offline/store.ts"),
     "reminders": url("offline/reminders.ts"),
     "personaSync": url("offline/personaSync.ts"),
+    "reply": url("offline/reply.ts"),
+    "localNotes": url("offline/localNotes.ts"),
+    "avatarStore": url("avatarStore.ts"),
+    "shortPrompt": url("offline/shortPrompt.ts"),
+    "shortCompose": url("offline/shortCompose.ts"),
+    "engine": url("offline/engine.ts"),
+    "memory": url("offline/memory.ts"),
 }
 
 # Общая часть сценария: заглушки модулей, localStorage, поддельное ядро
@@ -72,6 +79,7 @@ export class ApiError extends Error {
 export const api = new Proxy({}, { get: (_, k) => (...a) => globalThis.__api(String(k), ...a) });
 export function isNativeApp() { return true; }
 export function getApiUrl() { return 'http://core:8000'; }
+export function isLinkMode() { return false; }
 `;
 const stubs = {
   '@capacitor/core': `export const Capacitor = { isPluginAvailable: () => false, isNativePlatform: () => true };
@@ -81,6 +89,8 @@ const stubs = {
   '../api': API_STUB,
   './api': API_STUB,
   '../link/client': 'export function getLinkConfig() { return null; }',
+  // Модель векторов (onnxruntime-web, ?url вайта) Node не грузит — поиск только по словам
+  './embed': 'export async function queryVector() { return null; } export async function embedTexts() { return null; } export function releaseEmbedder() {} export function warmEmbedder() {}',
 };
 registerHooks({
   resolve(spec, ctx, next) {
@@ -109,7 +119,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Ядро в памяти: персоны (id → YAML), память удалённых, режимы сбоев
 const core = {
   personas: new Map(), leftover: new Set(), createMode: 'ok', listMode: 'ok',
-  importFail: 0, imports: 0, kitShort: [], calls: [], notFound: [],
+  importFail: 0, imports: 0, kitShort: [], calls: [], notFound: [], avatars: new Map(),
+  shortMode: 'ok', shorts: [],
 };
 const DONOR = INPUT.donor;
 function personaApi(id) {
@@ -165,6 +176,31 @@ globalThis.__api = async (method, ...a) => {
       const [id, list] = a;
       if (!core.personas.has(id)) throw notFound(method, id);
       return { created: Object.fromEntries(list.map((r) => [r.id, 'srv'])), past: [], enabled: true };
+    }
+    case 'getPersonaAvatars':
+      if (core.listMode === 'net') throw new TypeError('Failed to fetch');
+      return { avatars: Object.fromEntries(core.avatars) };
+    case 'setPersonaAvatar': {
+      const [id, url] = a;
+      if (!core.personas.has(id)) throw notFound(method, id);
+      core.avatars.set(id, url);
+      return { ok: true };
+    }
+    case 'deletePersonaAvatar': {
+      const [id] = a;
+      if (!core.avatars.has(id)) throw notFound(method, id);
+      core.avatars.delete(id);
+      return { ok: true };
+    }
+    case 'setShortPrompt': {
+      const [id, text, source, crc] = a;
+      if (core.shortMode === 'net') throw new TypeError('Failed to fetch');
+      if (!core.personas.has(id)) throw notFound(method, id);
+      if (core.shortMode === '409') throw new ApiError(409, 'Характер персоны на ядре другой');
+      if (core.shortMode === '500') throw new ApiError(500, 'ядро не готово');
+      core.shorts.push([id, text, source ?? 'yaml', crc ?? null]);
+      const own = (source ?? 'yaml') === 'yaml';
+      return { text, source: own && text ? 'yaml' : 'auto', status: text ? 'ready' : 'pending', at: 5, chars: 10, composing: false };
     }
     case 'getOfflineMemory':
     case 'getOfflineProviders':
@@ -222,6 +258,107 @@ def node(code: str, extra=None) -> dict | None:
         check(f"Node: {res.stderr.strip()[:1500]}", False)
         return None
     return json.loads(res.stdout.strip().splitlines()[-1])
+
+
+LORE_NODE = r"""
+// Сети нет: веб-поиск и погода телефона в сценарии не участвуют
+globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+// IndexedDB в памяти: приложение хранит там лор
+const idbData = new Map();
+const idbReq = (fn) => { const r = {}; queueMicrotask(() => { r.result = fn(); r.onsuccess?.(); }); return r; };
+globalThis.indexedDB = {
+  open() {
+    const r = {};
+    queueMicrotask(() => {
+      r.result = {
+        transaction: () => ({ objectStore: () => ({
+          get: (k) => idbReq(() => idbData.get(k)),
+          put: (v, k) => idbReq(() => { idbData.set(k, v); }),
+          delete: (k) => idbReq(() => { idbData.delete(k); }),
+        }) }),
+      };
+      r.onsuccess?.();
+    });
+    return r;
+  },
+};
+const lore = {
+  persona: 'kaya', stamp: 's1', vectors: null,
+  chunks: [
+    { f: 'a.md', s: 'Любовь', t: 'Кая носит компас, подаренный Лукасом.' },
+    { f: 'a.md', s: 'Еда', t: 'Кая терпеть не может рыбу.' },
+    { f: 'a.md', s: 'Страх', t: 'Кая боится штиля в открытом море.' },
+  ],
+};
+const rules = { ...INPUT.donor.rules, lore_head: 'LORE HEAD', lore_weak: 'LORE WEAK', lore: 'LORE RULE', lore_gap: 'LORE GAP' };
+const kit = { ...INPUT.donor, persona: 'kaya', name: 'Кая', lore_stamp: 's1', rules, reminders: [], reminders_enabled: false, fetched_at: Date.now() };
+let loreCalls = 0;
+const apiBefore = globalThis.__api;
+globalThis.__api = async (method, ...a) => {
+  if (method === 'getOfflineLore') { loreCalls += 1; return lore; }
+  return apiBefore(method, ...a);
+};
+const sent = [];
+const gemma = [];
+let cloudUp = true;
+globalThis.__plugin = async (name, arg) => {
+  if (name === 'cloudChat') {
+    if (!cloudUp) throw Object.assign(new Error('offline'), { code: 'offline' });
+    sent.push(arg.messages);
+    return { text: 'Ответ.', provider: 'test' };
+  }
+  if (name === 'modelStatus') return { downloaded: true };
+  if (name === 'localChat') { gemma.push(arg); return { text: 'Ответ Gemma.' }; }
+  if (name === 'addListener') return { remove() {} };
+  return {};
+};
+const engine = await import(INPUT.modules.engine);
+const memory = await import(INPUT.modules.memory);
+const kits = await import(INPUT.modules.kit);
+kits.storeKit('kaya', kit);
+await memory.refreshLore('kaya', kit);
+await memory.refreshLore('kaya', kit);
+const stored = [...idbData.keys()];
+const ask = async (text) => {
+  const before = sent.length;
+  await engine.answerOffline('kaya', text, []);
+  return sent.length > before ? sent[sent.length - 1][0].content : '';
+};
+const hit = await ask('что за компас у тебя?');
+const small = await ask('привет');
+const off = await ask('как приготовить борщ?');
+cloudUp = false;
+await engine.answerOffline('kaya', 'что за компас у тебя?', []);
+const local = gemma[gemma.length - 1];
+kit.lore_stamp = '';
+await memory.refreshLore('kaya', kit);
+const gone = [...idbData.keys()];
+cloudUp = true;
+const after = await ask('что за компас у тебя?');
+Object.assign(out, { loreCalls, stored, hit, small, off, localText: local?.text ?? '', localSystem: local?.system ?? '', gone, after });
+"""
+
+
+def test_lore_offline():
+    section("Лор на телефоне: от ядра до запроса к модели")
+    out = node(LORE_NODE)
+    if out is None:
+        return
+    r = out
+    check("лор забран один раз: метка та же — повторно не качается", r["loreCalls"] == 1)
+    check("лор лежит в хранилище телефона", "lore:kaya" in r["stored"])
+    check("облако: кусок лора в системном тексте", "компас, подаренный Лукасом" in r["hit"]
+          and "LORE HEAD" in r["hit"] and "LORE RULE" in r["hit"])
+    check("облако: лишнего лора нет", "терпеть не может рыбу" not in r["hit"])
+    check("облако: правило против выдумки", "LORE GAP" in r["hit"])
+    check("болтовня: только правило, без кусков", "LORE GAP" in r["small"] and "компас" not in r["small"])
+    check("посторонняя реплика: только правило, без кусков", "LORE GAP" in r["off"] and "компас" not in r["off"])
+    check("Gemma: кусок в реплике пользователя", "компас, подаренный Лукасом" in r["localText"])
+    check("Gemma: правило в системном тексте", "LORE GAP" in r["localSystem"])
+    check("лор удалён на ядре: удалён и с телефона", "lore:kaya" not in r["gone"])
+    check("без лора в запросе ни кусков, ни правила", bool(r["after"]) and "Лукасом" not in r["after"]
+          and "LORE GAP" not in r["after"])
+    check("сценарий не ходил в сеть", "WEB SEARCH RESULTS" not in r["hit"] and "WEB SEARCH RESULTS" not in r["after"])
 
 
 def yaml_with(id_=None, **fields):
@@ -344,9 +481,16 @@ out.kitPersonas = kit.kitPersonas();
     check("характер — весь system_prompt", full["parts"]["character"] == character and full["system"].startswith(character))
     check("имя и id из YAML, local без fallback", full["name"] == "Нова" and full["persona"] == "nova"
           and full.get("local") is True and not full.get("fallback"))
-    check("без кита с ядра: версия 1, свои правила, без напоминаний и погоды",
-          bare["version"] == 1 and "unavailable" in bare["parts"]["rules"] and bare["reminders_enabled"] is False
-          and bare["env"] is None and bare["notes"]["set"] == "")
+    # Ни одного кита с ядра (скачан только APK) — общее из базового кита
+    # приложения (baseKit.ts из offline_api.build_base_kit): правила без
+    # компьютера, заметки напоминаний, гейт поиска; напоминания — по флагу
+    # персоны, погода — только с городом телефона
+    check("без кита с ядра: базовый кит приложения (правила без компьютера, напоминания, гейт)",
+          bare["version"] == 3 and bare.get("standalone") is True and "phone app" in bare["parts"]["rules"]
+          and bare["reminders_enabled"] is True and bare["env"] is None and "{when}" in bare["notes"]["set"]
+          and bare["notes"]["recurring"].find("phone app") >= 0 and len(bare["search_gate"]["smalltalk"]) > 0
+          and bare["rules"]["web"] != "")
+    check("с китом с ядра — не standalone", not full.get("standalone"))
     check("язык — интерфейса (ru)", full["lang"] == "ru" and "Russian" in full["parts"]["language"])
     check("с китом с ядра: правила, стиль, заметки, гейт поиска, погода — из него",
           full["version"] == 3 and full["parts"]["rules"] == "CORE OFFLINE RULES" and full["parts"]["style"] == "STYLE NOTE"
@@ -662,6 +806,151 @@ out.first2 = store.offlineMessages('connor')[0].id;
           len(r["imports2"]) == 2 and r["left2"] == 251 and r["first2"] == "m200" and r["done2"] == ["connor"])
 
 
+def test_standalone_bundled():
+    section("D8. Телефон без компьютера: встроенный Коннор → в Коннора ядра")
+    code = r"""
+const state = await import(M.state);
+const lp = await import(M.localPersonas);
+const store = await import(M.store);
+const kit = await import(M.kit);
+const rem = await import(M.reminders);
+const apiData = await import(M.apiData);
+const bundled = { connor: 'id: connor\nname: Коннор\nfeatures:\n  reminder: true\nsystem_prompt: |\n  Я Коннор с телефона.\n' };
+// Скачан только APK: снимка с ядра нет, встроенные — один раз
+out.added = lp.ensureBundledPersonas(bundled, []);
+out.seeded = apiData.seedOfflinePersonas(true);
+out.kitLocal = kit.getKit('connor')?.local === true && kit.getKit('connor')?.standalone === true;
+store.addOfflineMessage('connor', { role: 'user', text: 'привет', source: 'local' });
+store.addOfflineMessage('connor', { role: 'assistant', text: 'Здравствуйте.', source: 'local' });
+for (let i = 0; i < 120; i++) rem.addLocalReminder('connor', `дело ${i}`, Date.now() / 1000 + 3600 + i);
+// На ядре свой Коннор (другой YAML — встроенный или его копия пользователя)
+core.personas.set('connor', 'id: connor\nsystem_prompt: Коннор ядра\n');
+await state.syncWithCore();
+out.creates = creates();
+out.renames = renames;
+out.local = lp.localPersonas().length;
+out.imports = imports();
+out.reminderChunks = core.calls.filter((c) => c[0] === 'offlineReminders').map((c) => c[2].length);
+out.remLeft = rem.localReminders().length;
+// Удалил встроенного — второй раз не появится
+lp.removeLocalPersona('connor');
+out.again = lp.ensureBundledPersonas(bundled, []);
+"""
+    setup = r"""
+const renames = [];
+const creates = () => core.calls.filter((c) => c[0] === 'createPersona').map((c) => /^id:\s*(\S+)/m.exec(c[1])[1]);
+const imports = () => core.calls.filter((c) => c[0] === 'offlineImport').map((c) => [c[1], c[2].length]);
+"""
+    r = node(setup + code)
+    if r is None:
+        return
+    check("встроенный Коннор добавлен один раз, список без снимка ядра", r["added"] == ["connor"] and r["seeded"] is True)
+    check("его кит — с телефона, из базового кита приложения", r["kitLocal"] is True)
+    check("на ядре Коннор уже есть — не создаётся заново и не становится connor_2",
+          r["creates"] == [] and r["renames"] == [] and r["local"] == 0)
+    check("переписка ушла в Коннора ядра", r["imports"] == [["connor", 2]])
+    check("120 напоминаний — частями 50, 50, 20 (лимит ядра)", r["reminderChunks"] == [50, 50, 20] and r["remLeft"] == 0)
+    check("удалённый встроенный не возвращается", r["again"] == [])
+
+
+def test_notes_offline():
+    section("D9. «Запиши в заметки» без ядра: код записывает, модель — итог")
+    code = r"""
+const lp = await import(M.localPersonas);
+const kit = await import(M.kit);
+const reply = await import(M.reply);
+const notes = await import(M.localNotes);
+const rem = await import(M.reminders);
+lp.ensureBundledPersonas({ connor: 'id: connor\nname: Коннор\nfeatures:\n  reminder: true\nsystem_prompt: Я Коннор.\n' }, []);
+let cloud = null;
+const sent = [];
+globalThis.__plugin = async (method, opts) => {
+  if (method === 'cloudChat') {
+    sent.push(opts.messages[0].content);
+    if (!cloud) { const e = new Error('no'); e.code = 'no_providers'; throw e; }
+    return { text: cloud, provider: 'p', model: 'm' };
+  }
+  if (method === 'modelStatus') return { downloaded: false };
+  return {};
+};
+// Ни облака, ни модели: итог говорит приложение, заметка записана
+const r1 = await reply.replyOffline('connor', 'Коннор, запиши в заметки купить хлеб', []);
+out.r1 = r1.text;
+out.n1 = notes.localNotes('connor').map((n) => [n.text, n.source]);
+const r2 = await reply.replyOffline('connor', 'что у меня в заметках?', []);
+out.r2 = r2.text;
+// С облаком: модели — итог (prompt_saved ядра), напоминание ход не берёт
+cloud = 'Записал.';
+const r3 = await reply.replyOffline('connor', 'запиши в заметки напомнить маме через час про лекарства', []);
+out.r3 = r3.text;
+out.sys3 = sent[sent.length - 1];
+out.rem = rem.localReminders().length;
+out.n3 = notes.localNotes('connor').length;
+const r4 = await reply.replyOffline('connor', 'удали заметку 1', []);
+out.sys4 = sent[sent.length - 1];
+out.n4 = notes.localNotes('connor').map((n) => n.text);
+// «Покажи заметки» с моделью: ответ модели + список отдельным сообщением
+cloud = 'Вот они.';
+await reply.replyOffline('connor', 'покажи заметки', []);
+const store = await import(M.store);
+out.tail = store.offlineMessages('connor').slice(-2).map((m) => [m.role, m.text]);
+"""
+    r = node(code)
+    if r is None:
+        return
+    check("без модели: заметка записана кодом, ответ — приложения",
+          r["n1"] == [["Купить хлеб", "chat"]] and r["r1"].startswith("Записано в заметки: «Купить хлеб»"))
+    check("без модели: «что у меня в заметках?» — список", r["r2"].startswith("📝 Заметки:\n1. Купить хлеб"))
+    check("с облаком: модели — итог записи (как prompt_saved ядра)",
+          r["r3"] == "Записал." and "You have just written this into the user's notes" in r["sys3"])
+    check("«запиши в заметки напомнить … через час» — не напоминание", r["rem"] == 0 and r["n3"] == 2)
+    check("«удали заметку 1» — удалена старейшая, модели — итог",
+          r["n4"] == ["Напомнить маме через час про лекарства"] and "You have just deleted" in r["sys4"])
+    check("«покажи заметки» — ответ модели, потом список отдельным сообщением",
+          r["tail"][0] == ["assistant", "Вот они."] and r["tail"][1][1].startswith("📝 Заметки:"))
+
+
+def test_avatars_offline():
+    section("D10. Аватар персоны с телефона: на телефоне, на ядро — с ней")
+    code = SETUP + r"""
+const av = await import(M.avatarStore);
+localStorage.setItem('vpc-persona-avatars-migrated', '1');
+core.listMode = 'net';
+addNova();
+await av.setPersonaAvatar('nova', 'data:image/png;base64,NOVA');
+out.local = av.getPersonaAvatar('nova');
+out.pending = JSON.parse(localStorage.getItem('vpc-persona-avatars-pending') || '{}');
+// Аватар персоны ядра, заданный без связи (снимок списка), — тоже ждёт
+await av.setPersonaAvatar('connor', 'data:image/png;base64,CONNOR');
+// Ядро вернулось, а nova там занята чужой — переезжает в nova_2 с аватаром
+core.listMode = 'ok';
+core.personas.set('nova', 'id: nova\nsystem_prompt: чужая\n');
+await state.syncWithCore();
+out.renamed = av.getPersonaAvatar('nova_2');
+out.gone = av.getPersonaAvatar('nova');
+out.core = Object.fromEntries(core.avatars);
+out.pendingAfter = localStorage.getItem('vpc-persona-avatars-pending');
+// Удалённая с телефона персона уносит аватар
+lp.addLocalPersona('id: vega\nsystem_prompt: hi\n', ['connor']);
+await av.setPersonaAvatar('vega', 'data:image/png;base64,VEGA');
+sync.forgetLocalPersona('vega');
+out.vega = av.getPersonaAvatar('vega');
+out.pendingVega = localStorage.getItem('vpc-persona-avatars-pending');
+"""
+    r = node(code)
+    if r is None:
+        return
+    check("без ядра: аватар персоны с телефона — на телефоне и ждёт отправки",
+          r["local"] == "data:image/png;base64,NOVA" and r["pending"] == {"nova": "set"})
+    check("перенос под новым id — аватар переехал за персоной",
+          r["renamed"] == "data:image/png;base64,NOVA" and r["gone"] is None)
+    check("при связи оба аватара ушли на ядро (nova_2 и connor), очередь пуста",
+          r["core"].get("nova_2") == "data:image/png;base64,NOVA"
+          and r["core"].get("connor") == "data:image/png;base64,CONNOR" and r["pendingAfter"] is None)
+    check("удалённая с телефона персона — без аватара и без отправки",
+          r["vega"] is None and r["pendingVega"] is None)
+
+
 def test_short_prompt():
     section("D7. Краткое описание: дозапрос, пока составляется")
     code = r"""
@@ -699,6 +988,118 @@ out.dedupe = kitCalls('nova') - 3;
     check("второй дозапрос той же персоны не запускается параллельно", 2 <= r["dedupe"] <= 5)
 
 
+SHORT_CHARACTER = (
+    "Ты — Вега, штурман дальнего корабля. Говоришь коротко и по делу, с лёгкой иронией.\n\n"
+    "Нельзя: грубить, выдумывать факты о собеседнике."
+)
+SHORT_CARD = (
+    "Ты — Вега, штурман дальнего корабля, спокойная и ироничная.\n\n"
+    "Как ты говоришь:\n- коротко и по делу\n- с морскими словечками\n- с лёгкой иронией\n\n"
+    "Никогда:\n- не грубишь\n- не выдумываешь факты о собеседнике\n\n"
+    "Примеры ответов:\n(привет) Свистать всех наверх — здравствуй!\n(как дела?) Курс ровный, ветер попутный."
+)
+CLEAN_CASES = [
+    SHORT_CARD,
+    "<think>сначала подумаю</think>```text\n" + SHORT_CARD + "\n```",
+    "────\n" + SHORT_CARD + "\n\n\n\n====\n",
+    "коротко",
+    ("Абзац номер один, довольно длинный. " * 30 + "\n\n") * 4,
+    "строка\r\n" * 120,
+]
+
+
+def test_short_offline():
+    section("D11. Краткое описание без ядра: своё, составленное телефоном, перенос")
+    from app.features import short_prompt as sp
+    code = SETUP + r"""
+const sp = await import(M.shortPrompt);
+const comp = await import(M.shortCompose);
+out.clean = INPUT.cleanCases.map((c) => sp.cleanCard(c));
+out.manual = sp.manualPrompt(INPUT.character);
+addNova();
+sp.setPendingShort('nova', { text: 'Нова: своё описание', source: 'yaml', at: 1000 });
+let k = kit.getKit('nova');
+out.own = { short: k.parts.short, src: k.short_prompt?.source, st: k.short_prompt?.status, local: !!k.local };
+sp.setPendingShort('connor', { text: 'АВТО', source: 'auto', at: 2000, crc: 1 });
+out.autoStale = kit.getKit('connor').parts.short;
+const pluginCalls = [];
+globalThis.__plugin = async (m, o) => {
+  pluginCalls.push([m, o]);
+  if (m === 'cloudChat') return { text: '```\n' + INPUT.card + '\n```', provider: 'groq', model: 'x' };
+  return {};
+};
+const res = await comp.composeOnPhone('connor');
+const kc = kit.getKit('connor');
+const cc = pluginCalls.find((c) => c[0] === 'cloudChat')?.[1];
+out.compose = {
+  provider: res.provider, same: res.text === INPUT.card, short: kc.parts.short === INPUT.card,
+  src: kc.short_prompt.source, sys: cc?.messages[0].content.startsWith(INPUT.cardPrompt),
+  user: cc?.messages[1].content === INPUT.donor.parts.character, max: cc?.maxTokens,
+  gemma: pluginCalls.some((c) => c[0] === 'localChat'),
+};
+globalThis.__plugin = async (m) => {
+  if (m === 'cloudChat') throw Object.assign(new Error('нет ключей'), { code: 'no_providers' });
+  return {};
+};
+try {
+  await comp.composeOnPhone('connor');
+  out.fail = 'не упало';
+} catch (e) {
+  out.fail = [e.constructor.name, e.reason, e.cloud];
+}
+globalThis.__plugin = async () => ({});
+core.kitShort = ['ready', 'ready', 'ready'];
+await state.syncWithCore();
+await sleep(50);
+out.shorts = core.shorts;
+out.pendingAfter = localStorage.getItem('vpc-short-prompt-pending');
+const order = callNames();
+out.order = [order.indexOf('createPersona'), order.indexOf('setShortPrompt:nova'), order.lastIndexOf('getOfflineKit:nova')];
+"""
+    extra = {"cleanCases": CLEAN_CASES, "character": SHORT_CHARACTER, "card": SHORT_CARD,
+             "cardPrompt": sp.CARD_PROMPT}
+    r = node(code, extra)
+    if r is None:
+        return
+    check("cleanCard — как clean_card ядра (6 случаев)", r["clean"] == [sp.clean_card(c) for c in CLEAN_CASES])
+    check("промпт для своей нейросети — как manual_prompt ядра", r["manual"] == sp.manual_prompt(SHORT_CHARACTER))
+    check("своё без ядра — сразу в ките персоны с телефона",
+          r["own"] == {"short": "Нова: своё описание", "src": "yaml", "st": "ready", "local": True})
+    check("составленное по другому характеру — не накладывается", r["autoStale"] == "Коннор кратко")
+    c = r["compose"]
+    check("составлено облаком персоны: тот же запрос, без Gemma, в ките сразу",
+          c["provider"] == "groq" and c["same"] and c["short"] and c["src"] == "auto" and c["sys"] and c["user"]
+          and c["max"] == 1200 and not c["gemma"])
+    check("составить некому — ComposeFailed no_route с кодом облака",
+          r["fail"] == ["ComposeFailed", "no_route", "no_providers"])
+    crc = zlib.crc32(DONOR["parts"]["character"].encode("utf-8"))
+    check("при связи: составленное — ядру с crc характера, своё перенесённой — после её создания",
+          sorted(map(tuple, r["shorts"])) == sorted([("connor", SHORT_CARD, "auto", crc),
+                                                     ("nova", "Нова: своё описание", "yaml", None)]))
+    i_create, i_short, i_kit = r["order"]
+    check("порядок: создание персоны → её описание → кит", 0 <= i_create < i_short < i_kit)
+    check("очередь пуста", r["pendingAfter"] is None)
+
+    code = SETUP + r"""
+const sp = await import(M.shortPrompt);
+core.personas.set('nova', 'id: nova\nsystem_prompt: другая\n');
+addNova();
+sp.setPendingShort('nova', { text: 'своё', source: 'yaml', at: 1 });
+sp.setPendingShort('connor', { text: 'своё К', source: 'yaml', at: 2 });
+core.shortMode = 'net';
+await state.syncWithCore();
+out.afterNet = Object.keys(JSON.parse(localStorage.getItem('vpc-short-prompt-pending') || '{}')).sort();
+core.shortMode = '409';
+await sync.syncShortPrompts();
+out.after409 = localStorage.getItem('vpc-short-prompt-pending');
+"""
+    r = node(code)
+    if r is None:
+        return
+    check("id занят — правка переехала на nova_2; нет сети — ждёт", r["afterNet"] == ["connor", "nova_2"])
+    check("ядро отклонило (409) — правка снята", r["after409"] is None)
+
+
 def test_forget():
     section("E. «Удалить с телефона»")
     code = SETUP + r"""
@@ -734,8 +1135,13 @@ def main():
     test_sync_ours()
     test_sync_errors()
     test_sync_chunks()
+    test_standalone_bundled()
+    test_notes_offline()
+    test_avatars_offline()
     test_short_prompt()
+    test_short_offline()
     test_forget()
+    test_lore_offline()
     print(f"\n{ok - failures}/{ok} OK" + (f", FAIL: {failures}" if failures else ""))
     return 1 if failures else 0
 

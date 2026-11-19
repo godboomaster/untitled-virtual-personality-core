@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 59-flat-white-egg-ghost.png. Add a thin white separator at the ghost/lower-shell contacts while retaining the angular shell rim and remaining emblem.
+
+Precise local edit to the supplied ghost-and-cracked-egg logo.
+Add a THIN PURE-WHITE SEPARATOR / KEYLINE between the GHOST and the LOWER EGGSHELL wherever their dark contours touch or overlap at the jagged shell opening. The ghost should remain emerging from behind the shell, but its dark body side outlines must no longer merge directly into the shell's dark rim.
+Make the separation narrow and clean, approximately 6–8 pixels at this image size, following the sharp angular rim/contact region. Preserve the shell's existing dark jagged rim continuously; trim the ghost's overlapping dark outline back very slightly above/behind that rim to leave the white clearance. Apply the same small white clearance at both left and right body-to-shell contacts. Keep the separation local, not a broad floating gap or a new outline around the whole character.
+Preserve the exact centered enlarged ghost, head shape, eyes, flat ribbon boundaries, ribbon thickness, smooth offsets and straight plain white body. Keep both eggshell pieces, their sizes, positions, shapes, dark outlines and crack marks, flat white interiors and white background. No shading, colors, new objects, text or other changes.

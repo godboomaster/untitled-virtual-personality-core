@@ -25,6 +25,16 @@
         <item name="colorAccent">@color/widget_text</item>
     </style>
 
+    <!-- Окно «Написать» виджета портрета: плоская панель у нижнего края над
+         клавиатурой; рабочий стол за ней не затемнён — портрет видно -->
+    <style name="PortraitInputTheme" parent="Theme.AppCompat.DayNight.Dialog">
+        <item name="windowNoTitle">true</item>
+        <item name="android:windowBackground">@drawable/input_window_bg</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="colorAccent">@color/widget_text</item>
+        <item name="colorControlActivated">@color/widget_text</item>
+    </style>
+
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
     </style>

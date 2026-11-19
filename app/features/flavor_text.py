@@ -1,6 +1,12 @@
-"""Короткие реплики в характере персоны о результатах команд управления
-компьютером (CC) — «системные сообщения», которым не нужны история диалога,
-LTM, погода и прочий контекст.
+"""Короткие реплики в характере персоны: ошибки чата и результаты команд
+управления компьютером (CC). История диалога, LTM и погода им не нужны.
+
+Ошибки (errors) готовятся для всех персон в том же задании создания/старта,
+раньше CC-фраз: по три ситуации, ru/en, отдельно для обычного характера и
+каждого режима. На ошибке — только чтение банка актуального режима/языка;
+соседние реплики не повторяются (последняя по чату сохраняется на диске).
+Хэш включает описание режима и образцы голоса. Пустой/устаревший банк —
+короткий локализованный текст, без дополнительного ожидания нейронки.
 
 Живой вызов: если у персоны назначен провайдер ответа (llm.answer_provider,
 router.answer_provider) — ОДНА попытка через него (router.get_response_assigned,
@@ -40,12 +46,13 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
-from app.core.language import persona_language, user_language_line
+from app.core.language import detect_language, persona_language, user_language_line
 from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2  # версия схемы банка: включает секцию phrases (служебные фразы)
+ERROR_SCHEMA_VERSION = 1
 FLAVOR_BANK_REFRESH_DAYS = 3
 _OK_PER_KIND = 6    # вариантов успеха просим у генератора
 _ERR_PER_KIND = 4   # вариантов ошибки
@@ -128,6 +135,9 @@ _PHRASE_KEYS = {
 _BANK_LOCK = threading.Lock()
 _GEN_LOCK = threading.Lock()       # одна генерация/пополнение на процесс
 _GEN_STARTED: set = set()          # context → фоновая генерация уже идёт
+_GEN_STARTED_LOCK = threading.Lock()  # регистрация не ждёт долгую генерацию
+_GEN_SIGNATURES: dict = {}
+_GEN_PENDING: dict = {}  # правки характера/режимов во время текущего задания
 
 # Кэш webchat-инстансов google по контексту (канал «cc» — stateless)
 _WC: dict = {}
@@ -145,17 +155,196 @@ def _load_bank(context: str) -> dict:
     return bank if isinstance(bank, dict) else {}
 
 
-def _save_bank(context: str, bank: dict):
+def _save_bank(context: str, bank: dict, *, strict: bool = False):
     path = _bank_path(context)
     try:
+        _apply_manual(bank)
         atomic_write_json(path, bank)
     except Exception as e:
+        if strict:
+            raise
         logger.warning(f"[Flavor] банк не записан ({context}): {e}")
 
 
 def _prompt_hash(system_prompt: str) -> str:
     return hashlib.sha256(
         f"{SCHEMA_VERSION}:{system_prompt}".encode("utf-8")).hexdigest()[:16]
+
+
+def phrase_group_id(path: list[str]) -> str:
+    return json.dumps(path, ensure_ascii=False, separators=(",", ":"))
+
+
+def _apply_manual(bank: dict) -> None:
+    """Ручные варианты остаются источником истины при любой перезаписи банка.
+
+    Генерация держит сетевой вызов вне _BANK_LOCK, поэтому пользователь
+    может править банк в это время. Перед записью вызывающий перечитывает
+    файл под локом; наложение ручных групп сохраняет правку и при смене
+    хэша характера, и при фоновом пополнении.
+    """
+    manual = bank.get("manual")
+    if not isinstance(manual, dict):
+        return
+    for group_id, variants in manual.items():
+        try:
+            path = json.loads(group_id)
+        except (TypeError, ValueError):
+            continue
+        if not (isinstance(path, list) and all(isinstance(p, str) for p in path)
+                and isinstance(variants, list) and all(isinstance(v, str) for v in variants)):
+            continue
+        valid = ((len(path) == 2 and path[0] == "phrases" and path[1] in _PHRASE_KEYS)
+                 or (len(path) == 3 and path[0] == "kinds" and path[1] in _BANK_KINDS
+                     and path[2] in ("ok", "err"))
+                 or (len(path) == 5 and path[0] == "errors" and path[2] == "languages"
+                     and path[3] in ("ru", "en") and path[4] in _ERROR_SPECS))
+        if not valid:
+            continue
+        node = bank
+        for part in path[:-1]:
+            if not isinstance(node.get(part), dict):
+                node[part] = {}
+            node = node[part]
+        node[path[-1]] = list(variants)
+
+
+# Ошибки чата: отдельные варианты для каждого режима и обоих языков.
+# Выдаются только с диска: во время сбоя новая модель не вызывается.
+_ERROR_SPECS = {
+    "models_unavailable": "You cannot provide an answer right now. Ask the user to try again later.",
+    "processing_error": "You could not process this message. Ask the user to try again.",
+    "reply_failed": "You could not put together an answer. Ask the user to try again or rephrase.",
+}
+_ERROR_FALLBACKS = {
+    "ru": {
+        "models_unavailable": ["Сейчас не получается ответить. Попробуй чуть позже.",
+                               "Пока не могу ответить. Напиши ещё раз немного позже."],
+        "processing_error": ["Не получилось обработать сообщение. Попробуй ещё раз.",
+                             "Что-то пошло не так с сообщением. Отправь его ещё раз."],
+        "reply_failed": ["Не получается сформулировать ответ. Попробуй спросить иначе.",
+                         "Ответ не сложился. Попробуй переформулировать сообщение."],
+    },
+    "en": {
+        "models_unavailable": ["I can't answer right now. Try again a little later.",
+                               "I'm unable to reply at the moment. Please try again later."],
+        "processing_error": ["I couldn't process your message. Please try again.",
+                             "Something went wrong with that message. Please send it again."],
+        "reply_failed": ["I couldn't put an answer together. Try rephrasing your message.",
+                         "I couldn't formulate a reply. Please try asking another way."],
+    },
+}
+
+
+def _error_profile(system_prompt: str, voice_examples=None) -> dict:
+    examples = voice_examples if isinstance(voice_examples, list) else []
+    voice = "\n".join(str(v)[:400] for v in examples[:6] if isinstance(v, str))
+    prompt = str(system_prompt or "").strip()
+    if voice:
+        prompt += "\n\nExamples of your voice:\n" + voice
+    digest = hashlib.sha256(f"{ERROR_SCHEMA_VERSION}:{prompt}".encode()).hexdigest()[:16]
+    return {"prompt": prompt, "prompt_hash": digest}
+
+
+def _error_profiles(system_prompt: str, modes=None, voice_examples=None) -> dict:
+    profiles = {"": _error_profile(system_prompt, voice_examples)}
+    for mode, data in (modes or {}).items():
+        if isinstance(data, dict) and data.get("system_prompt"):
+            profiles[str(mode)] = _error_profile(
+                data["system_prompt"], data.get("voice_examples") or voice_examples)
+    return profiles
+
+
+def _errors_ready(bank: dict, profiles: dict) -> bool:
+    entries = bank.get("errors") or {}
+    if not isinstance(entries, dict):
+        return False
+    for mode, profile in profiles.items():
+        entry = entries.get(mode) or {}
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("prompt_hash") != profile["prompt_hash"]:
+            return False
+        languages = entry.get("languages") or {}
+        if not isinstance(languages, dict) or any(
+                not isinstance(languages.get(lang), dict) for lang in ("ru", "en")):
+            return False
+        for lang in ("ru", "en"):
+            for key in _ERROR_SPECS:
+                edited = phrase_group_id(["errors", mode, "languages", lang, key]) in (bank.get("manual") or {})
+                if len(_error_variants(languages[lang].get(key), lang)) < (1 if edited else 2):
+                    return False
+    return True
+
+
+def _error_variants(raw, lang: str) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    seen = set()
+    for variant in raw[:8]:
+        if not isinstance(variant, str):
+            continue
+        text = " ".join(variant.split())
+        if (not text or len(text) > 320 or any(c in text for c in "{}[]")
+                or detect_language(text) != lang
+                or re.search(r"\b(?:api|llm|providers?|провайдер\w*)\b", text, re.I)):
+            continue
+        if text.casefold() not in seen:
+            cleaned.append(text)
+            seen.add(text.casefold())
+    return cleaned
+
+
+def error_reply(bot, key: str, *, user_id=None, chat_id=None,
+                lang: Optional[str] = None) -> str:
+    """Готовая реплика-ошибка текущего режима. Никаких сетевых вызовов.
+
+    Последняя выбранная реплика хранится по чату в том же банке: соседние
+    ошибки не повторяются и после перезапуска. Банк другого режима/языка
+    или прежнего характера не подставляется вместо актуального.
+    """
+    key = key if key in _ERROR_SPECS else "processing_error"
+    persona = getattr(bot, "persona", None)
+    mode = ""
+    try:
+        mode = persona.mode_for(user_id=user_id, chat_id=chat_id) or ""
+    except Exception as e:
+        logger.debug(f"[Flavor] режим реплики-ошибки не определён: {e}")
+    data = ((getattr(persona, "modes", None) or {}).get(mode) or {}) if mode else {}
+    sp = data.get("system_prompt") or getattr(persona, "system_prompt", "") or ""
+    voice = data.get("voice_examples") or (getattr(persona, "persona_data", None) or {}).get("voice_examples")
+    profile = _error_profile(sp, voice)
+    lang = lang if lang in _ERROR_FALLBACKS else persona_language(sp) or "ru"
+    context = getattr(bot, "context", "default")
+    chat = str(chat_id if chat_id is not None else user_id or "default")
+    fallback = _ERROR_FALLBACKS[lang][key]
+    try:
+        with _BANK_LOCK:
+            bank = _load_bank(context)
+            entry = (bank.get("errors") or {}).get(mode) or {}
+            candidates = []
+            manual = (bank.get("manual") or {}).get(
+                phrase_group_id(["errors", mode, "languages", lang, key]))
+            if isinstance(manual, list):
+                candidates = manual
+            elif entry.get("prompt_hash") == profile["prompt_hash"]:
+                candidates = ((entry.get("languages") or {}).get(lang) or {}).get(key) or []
+            candidates = _error_variants(candidates, lang)
+            last = (bank.get("last_errors") or {}).get(chat)
+            choices = [v for v in candidates if v.casefold() != str(last).casefold()]
+            text = random.choice(choices or [v for v in fallback if v != last])
+            recent = bank.setdefault("last_errors", {})
+            recent.pop(chat, None)
+            recent[chat] = text
+            # Ограничиваем служебную историю, не трогая историю диалога.
+            while len(recent) > 128:
+                recent.pop(next(iter(recent)))
+            _save_bank(context, bank)
+            return text
+    except Exception as e:
+        logger.debug(f"[Flavor] error_reply({key}) не удалась: {e}")
+        return random.choice(fallback)
 
 
 # ── Выдача реплики ─────────────────────────────────────────
@@ -640,11 +829,116 @@ def _generate_phrases(context: str, system_prompt: str, router) -> dict:
     return {"phrases": phrases} if phrases else {}
 
 
-def _generate_safe(context: str, system_prompt: str, router=None):
+def _generate_errors(context: str, profile: dict, router=None) -> dict:
+    """Один небольшой запрос на режим: три ситуации, ru/en, по 4 варианта."""
+    situations = "\n".join(f'- "{key}": {spec}' for key, spec in _ERROR_SPECS.items())
+    prompt = (
+        "Write short fallback replies in this persona's own voice, for times when "
+        "a normal answer cannot be produced. Return JSON only.\n\n"
+        f"Persona and CURRENT mode:\n{profile['prompt'][:7000]}\n\n"
+        f"Situations:\n{situations}\n\n"
+        "For EACH situation, write 4 different replies in Russian (ru) AND 4 in English (en). "
+        "Use the character's vocabulary, tone and manner of address. Keep each reply "
+        "to 1-2 short sentences (at most 300 characters). Say that you cannot answer or "
+        "process the message right now and invite a later retry/rephrasing as appropriate. "
+        "Do not invent a cause: no claims of sleeping, being busy, losing internet or "
+        "having performed an action. Do not promise to retry automatically or notify later. "
+        "No API, LLM, provider names, technical details, placeholders or service markers. "
+        "These are replies from the character, not descriptions of their behaviour. "
+        "The language of each ru/en section overrides the language of the persona prompt.\n"
+        'Format: {"ru": {"models_unavailable": ["..."], "processing_error": ["..."], '
+        '"reply_failed": ["..."]}, "en": {"models_unavailable": ["..."], '
+        '"processing_error": ["..."], "reply_failed": ["..."]}}'
+    )
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        if router is not None:
+            raw = router.get_response(
+                messages, temperature=0.8, max_tokens=2200, timeout=60.0,
+                force_provider=getattr(router, "answer_provider", None),
+                webchat_channel="cc_gen")
+        else:
+            raw = _google_cc_chat(context, channel="cc_gen").get_response(
+                messages, temperature=0.8, max_tokens=2200, timeout=150.0)
+        from app.features.web_llm import extract_json
+        parsed = extract_json(raw or "")
+        out = {}
+        for lang in ("ru", "en"):
+            section = parsed.get(lang) if isinstance(parsed, dict) else None
+            if not isinstance(section, dict):
+                continue
+            good = {}
+            for key in _ERROR_SPECS:
+                variants = section.get(key)
+                if not isinstance(variants, list):
+                    continue
+                cleaned = _error_variants(variants, lang)
+                if cleaned:
+                    good[key] = cleaned
+            if good:
+                out[lang] = good
+        if not out:
+            logger.warning(f"[Flavor] {context}: модель не вернула годных реплик-ошибок")
+        return out
+    except Exception as e:
+        logger.warning(f"[Flavor] {context}: генерация реплик-ошибок не удалась: {e}")
+        return {}
+
+
+def _bank_router(context: str, llm: dict):
+    """Создание персоны: роутер без BotInstance, памяти и эмбеддингов."""
+    from app.core.router import ModelRouter
+    router = ModelRouter(context=context)
+    router.set_persona_llm(
+        llm.get("primary"), llm.get("fallback"), llm.get("models"),
+        webchat=llm.get("webchat"), webchat_limits=llm.get("webchat_limits"),
+        webchat_modes=llm.get("webchat_mode"), exclude=llm.get("exclude"),
+        answer_provider=llm.get("answer_provider"))
+    return router
+
+
+def _generate_safe(context: str, system_prompt: str, router=None, *,
+                   profiles=None, include_cc=True, llm=None):
     try:
         with _GEN_LOCK:
-            parsed_k = _generate_kinds(context, system_prompt, router,
-                                       _OK_PER_KIND, _ERR_PER_KIND)
+            if router is None and llm is not None:
+                try:
+                    router = _bank_router(context, llm)
+                except Exception as e:
+                    logger.debug(f"[Flavor] {context}: роутер банка недоступен: {e}")
+            profiles = profiles or _error_profiles(system_prompt)
+            # Ошибки нужны всем персонам; сохраняем каждый режим сразу,
+            # не ожидая остальной (более объёмной) генерации CC.
+            for mode, profile in profiles.items():
+                with _BANK_LOCK:
+                    bank = _load_bank(context)
+                if _errors_ready(bank, {mode: profile}):
+                    continue
+                languages = _generate_errors(context, profile, router)
+                if languages:
+                    with _BANK_LOCK:
+                        bank = _load_bank(context)
+                        errors = bank.get("errors")
+                        if not isinstance(errors, dict):
+                            errors = bank["errors"] = {}
+                        entry = errors.get(mode) or {}
+                        if not isinstance(entry, dict) or entry.get("prompt_hash") != profile["prompt_hash"]:
+                            entry = {"prompt_hash": profile["prompt_hash"], "languages": {}}
+                        if not isinstance(entry.get("languages"), dict):
+                            entry["languages"] = {}
+                        for lang, values in languages.items():
+                            previous = entry["languages"].get(lang)
+                            entry["languages"][lang] = {
+                                **(previous if isinstance(previous, dict) else {}), **values}
+                        errors[mode] = entry
+                        _save_bank(context, bank)
+                    logger.info(f"[Flavor] {context}: реплики-ошибки готовы ({mode or 'обычный'})")
+            with _BANK_LOCK:
+                bank = _load_bank(context)
+            if not include_cc or (bank.get("kinds") and bank.get("phrases") and
+                    (bank.get("_meta") or {}).get("prompt_hash") == _prompt_hash(system_prompt)):
+                return
+            parsed_k = _generate_kinds(context, system_prompt, router, _OK_PER_KIND, _ERR_PER_KIND)
             parsed_p = _generate_phrases(context, system_prompt, router)
             kinds = (parsed_k or {}).get("kinds") or {}
             phrases = (parsed_p or {}).get("phrases") or {}
@@ -665,37 +959,71 @@ def _generate_safe(context: str, system_prompt: str, router=None):
     except Exception as e:
         logger.warning(f"[Flavor] генерация банка упала: {e}")
     finally:
-        _GEN_STARTED.discard(context)
+        with _GEN_STARTED_LOCK:
+            pending = _GEN_PENDING.pop(context, None)
+            if pending is None:
+                _GEN_STARTED.discard(context)
+                _GEN_SIGNATURES.pop(context, None)
+            else:
+                next_sp, next_router, options, signature = pending
+                _GEN_SIGNATURES[context] = signature
+        if pending is not None:
+            threading.Thread(
+                target=_generate_safe, args=(context, next_sp, next_router), kwargs=options,
+                daemon=True, name=f"flavor-gen-{context}").start()
 
 
 def ensure_flavor_bank(bot=None, context: str = None, system_prompt: str = None,
-                       background: bool = True):
-    """Банк flavor-фраз актуален (есть kinds и хэш system_prompt совпадает)?
-    Нет — фоновая генерация. Вызывается при старте бота и создании персоны."""
+                       background: bool = True, *, modes=None, voice_examples=None,
+                       include_cc: Optional[bool] = None, llm=None, router=None):
+    """Генерация ошибок для всех персон и CC-фраз при включённом управлении.
+
+    Запускается тем же заданием при создании/старте. У каждого режима свой
+    хэш характера и образцов голоса; готовые секции заново не генерируются.
+    """
     context = context or getattr(bot, "context", "default")
     sp = system_prompt
     if sp is None and bot is not None:
         sp = getattr(getattr(bot, "persona", None), "system_prompt", "") or ""
     if not (sp or "").strip():
         return
+    persona = getattr(bot, "persona", None)
+    if modes is None:
+        modes = getattr(persona, "modes", None)
+    if voice_examples is None:
+        voice_examples = (getattr(persona, "persona_data", None) or {}).get("voice_examples")
+    profiles = _error_profiles(sp, modes, voice_examples)
+    if include_cc is None:
+        include_cc = getattr(bot, "computer_control", None) is not None if bot is not None else True
     with _BANK_LOCK:
         bank = _load_bank(context)
-    if bank.get("kinds") and bank.get("phrases") and \
-            (bank.get("_meta") or {}).get("prompt_hash") == _prompt_hash(sp):
-        return  # актуален
-    # check-and-add в _GEN_STARTED делаем под одним _GEN_LOCK: иначе два
+    cc_ready = (not include_cc or (bank.get("kinds") and bank.get("phrases") and
+                (bank.get("_meta") or {}).get("prompt_hash") == _prompt_hash(sp)))
+    ready = cc_ready and _errors_ready(bank, profiles)
+    router = router or getattr(bot, "router", None)
+    options = dict(profiles=profiles, include_cc=include_cc, llm=llm)
+    signature = (tuple(sorted((mode, p["prompt_hash"]) for mode, p in profiles.items())),
+                 include_cc, _prompt_hash(sp))
+    # check-and-add в _GEN_STARTED делаем под коротким локом: иначе два
     # параллельных запуска ensure_flavor_bank(context) (например, две
     # персоны на одном контексте стартуют одновременно) проходят проверку
     # одновременно и оба запускают фоновую генерацию банка.
-    with _GEN_LOCK:
+    with _GEN_STARTED_LOCK:
         if context in _GEN_STARTED:
+            if signature != _GEN_SIGNATURES.get(context):
+                _GEN_PENDING[context] = (sp, router, options, signature)
+            else:
+                _GEN_PENDING.pop(context, None)
+            return
+        if ready:
             return
         _GEN_STARTED.add(context)
-    router = getattr(bot, "router", None)
+        _GEN_SIGNATURES[context] = signature
+        _GEN_PENDING.pop(context, None)
     if not background:
-        _generate_safe(context, sp, router)
+        _generate_safe(context, sp, router, **options)
         return
-    threading.Thread(target=_generate_safe, args=(context, sp, router),
+    threading.Thread(target=_generate_safe, args=(context, sp, router), kwargs=options,
                      daemon=True, name=f"flavor-gen-{context}").start()
     logger.info(f"[Flavor] {context}: банк устарел/отсутствует — "
                 "фоновая генерация")
@@ -704,7 +1032,7 @@ def ensure_flavor_bank(bot=None, context: str = None, system_prompt: str = None,
 # ── Фоновое пополнение (разнообразие) ─────────────────────
 
 def maybe_topup_flavor_bank(context: str, system_prompt: str, router,
-                            idle_ok: bool) -> bool:
+                            idle_ok: bool, *, persona=None) -> bool:
     """Банк старше FLAVOR_BANK_REFRESH_DAYS и пользователь неактивен →
     догенерировать порцию вариантов и слить с дедупликацией (пополняются
     только kinds — служебные phrases из начальной генерации достаточны).
@@ -713,6 +1041,17 @@ def maybe_topup_flavor_bank(context: str, system_prompt: str, router,
         return False
     with _BANK_LOCK:
         bank = _load_bank(context)
+    if persona is not None:
+        data = getattr(persona, "persona_data", None) or {}
+        modes = getattr(persona, "modes", None)
+        voice = data.get("voice_examples")
+        if not _errors_ready(bank, _error_profiles(system_prompt, modes, voice)):
+            from app.features.computer_control import config_enabled
+            ensure_flavor_bank(
+                context=context, system_prompt=system_prompt, modes=modes,
+                voice_examples=voice, router=router,
+                include_cc=config_enabled((data.get("features") or {}).get("computer_control", False)))
+            return False
     kinds = bank.get("kinds") or {}
     if not kinds:
         return False  # пустой банк — дело ensure_flavor_bank

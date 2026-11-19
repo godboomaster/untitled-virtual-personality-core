@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="ru" data-vpc-active="room">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="vpc-skin-contract" content="3" />
+<meta name="vpc-skin-name" content="Нетраннер" />
+<meta name="vpc-skin-author" content="Virtual Persona Core" />
+<meta name="vpc-skin-version" content="1.0" />
+<title>Нетраннер — room</title>
+<style>
+  /* «Нетраннер»: интерфейс взломщика без неона — плоские плашки со
+     срезанными углами, два чистых цвета-полюса (розовый — ты и действие,
+     бирюза — персона и система), штрихкоды и служебные коды как фактура,
+     узкий акцидентный шрифт капсом. Тёмная тема основная; светлая —
+     тот же макет, отпечатанный ризографом на бумаге. */
+  :root {
+    --bg: #0a0712;
+    --panel: #120c1f;
+    --panel2: #1b1230;
+    --ink: #ece6f7;
+    --muted: #a596c4;
+    --line: #3a2861;
+    --accent: #ff2e88;
+    --cyan: #31d6e0;
+    --on-accent: #12061a;
+    --persona-bg: #150f26;
+    --persona-ink: #ece6f7;
+    --user-bg: #2a0f24;
+    --user-ink: #ffe3f1;
+    --field: #0a0712;
+    --track: #1b1230;
+    --danger: #ff4b5c;
+    --scene: #120c1f;
+    --rw: 1px;
+    --bw: 2px;
+    --cut: 12px;
+    --f-disp: "DIN Condensed", "Avenir Next Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
+    --f-text: "Avenir Next", "Segoe UI", "Noto Sans", sans-serif;
+    --f-mono: "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+    --barcode: repeating-linear-gradient(90deg, currentColor 0 2px, transparent 2px 4px, currentColor 4px 5px, transparent 5px 8px, currentColor 8px 11px, transparent 11px 12px, currentColor 12px 13px, transparent 13px 16px);
+    --scrim: color-mix(in srgb, var(--bg) 72%, transparent);
+
+    --vpc-shell-bg: var(--bg);
+    --vpc-shell-panel: var(--panel);
+    --vpc-shell-text: var(--ink);
+    --vpc-shell-dim: var(--muted);
+    --vpc-shell-border: var(--line);
+    --vpc-shell-accent: var(--accent);
+    --vpc-shell-font: "Avenir Next", "Segoe UI", "Noto Sans", sans-serif;
+    --vpc-shell-font-disp: "DIN Condensed", "Avenir Next Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
+    --vpc-shell-font-mono: "SF Mono", Menlo, Consolas, monospace;
+    --vpc-shell-radius: 0px;
+    --vpc-shell-shadow: none;
+  }
+  html[data-theme="light"] {
+    --bg: #efebe2;
+    --panel: #f8f5ee;
+    --panel2: #e6e0d3;
+    --ink: #17121f;
+    --muted: #5b5468;
+    --line: #17121f;
+    --accent: #d1006b;
+    --cyan: #00808f;
+    --on-accent: #f8f5ee;
+    --persona-bg: #f8f5ee;
+    --persona-ink: #17121f;
+    --user-bg: #ffd9ea;
+    --user-ink: #17121f;
+    --field: #fffdf8;
+    --track: #e6e0d3;
+    --danger: #c4162a;
+    --scene: #e6e0d3;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-text);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+  }
+  [hidden] { display: none !important; }
+  [data-vpc-screen] { display: none; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .count { font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .sep { color: var(--muted); }
+  .head-avatar {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    font-family: var(--f-disp);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .head-id { flex: 1; min-width: 0; }
+  .head-name {
+    font-family: var(--f-disp);
+    font-size: 18px;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-sub {
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mark { flex: none; }
+  [data-collapsed]:not([data-expanded]) > [data-extra] { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  .card {
+    min-width: 0;
+    background: var(--panel);
+    border: var(--bw) solid var(--line);
+    padding: 14px 16px;
+  }
+  .card-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-family: var(--f-disp);
+    font-size: 15px;
+    line-height: 1.25;
+  }
+  .list { display: flex; flex-direction: column; }
+  .row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 0;
+    border-bottom: var(--rw) solid var(--line);
+  }
+  .list > .row:last-child, .list > .fact:last-child, .list > .ini:last-child { border-bottom: none; }
+  .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .tag {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .i-btn {
+    flex: none;
+    min-width: 24px;
+    padding: 3px 6px;
+    background: none;
+    border: var(--rw) solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.1;
+  }
+  .i-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .form { display: flex; gap: 6px; margin-top: 12px; }
+  .form--wrap { flex-wrap: wrap; }
+  .form input, .form select {
+    flex: 1 1 140px;
+    min-width: 0;
+    padding: 7px 9px;
+    background: var(--field);
+    border: var(--rw) solid var(--line);
+    border-radius: 0;
+    outline: none;
+  }
+  .form input.narrow { flex: 0 1 96px; }
+  .form button {
+    flex: none;
+    padding: 7px 12px;
+    background: none;
+    border: var(--bw) solid var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .form button:hover { background: var(--accent); color: var(--on-accent); }
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+
+  :root {
+    --figure: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 84'%3E%3Cpath d='M20 1a8 8 0 1 1 0 16a8 8 0 1 1 0-16zM8 54V30q0-9 9-9h6q9 0 9 9v24zM11 56h8v28h-8zM21 56h8v28h-8z'/%3E%3C/svg%3E");
+    --pet-cat: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 35'%3E%3Cpath d='M10 15L9 3l7 6q4-1 8 0l7-6-1 12q0 7-10 7q-10 0-10-7zM12 21q-6 13 0 14h16q6-1 0-14zM28 33q11 0 9-11h-2q1 9-7 9z'/%3E%3C/svg%3E");
+    --pet-crow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 35'%3E%3Cpath d='M5 16q2-7 10-7l5-3q4-3 8 0l7 2-6 2q2 6-2 12l-5 3 8 5-8-1-7-2q-9-2-10-11zM16 26l-1 8h2l1-8zM21 26l1 8h2l-1-8z'/%3E%3C/svg%3E");
+  }
+  html[data-vpc-active="room"] [data-vpc-screen="room"] { display: flex; }
+  .room { height: 100vh; width: 100%; flex-direction: column; overflow: hidden; }
+  .scene {
+    position: relative;
+    flex: 1 1 56%;
+    min-height: 240px;
+    overflow: hidden;
+    background: var(--scene);
+    border-bottom: var(--bw) solid var(--line);
+  }
+  .scene-bg { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; }
+  .scene-wall, .scene-floor, .scene-prop { position: absolute; z-index: 1; pointer-events: none; }
+  .scene-wall { inset: 0 0 24% 0; }
+  .scene-floor { left: 0; right: 0; bottom: 0; height: 24%; }
+  .scene:has(.scene-bg:not([hidden])) :is(.scene-wall, .scene-floor, .scene-prop) { display: none; }
+  .avatar {
+    position: absolute;
+    left: var(--vpc-x, 50%);
+    top: var(--vpc-y, 78%);
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transform: translate(-50%, -100%);
+    transition: left 1.2s ease, top 1.2s ease;
+    cursor: pointer;
+  }
+  .avatar-sprite { display: block; max-width: 120px; max-height: 140px; }
+  .avatar:has(.avatar-sprite:not([hidden])) .avatar-figure { display: none; }
+  .avatar-figure {
+    display: block;
+    width: 40px;
+    height: 84px;
+    background: var(--figure-color, var(--ink));
+    -webkit-mask: var(--figure) center / contain no-repeat;
+    mask: var(--figure) center / contain no-repeat;
+  }
+  .avatar[data-vpc-pose="away"] { opacity: .4; }
+  .avatar-plate {
+    order: -1;
+    margin-bottom: 6px;
+    display: grid;
+    place-items: center;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 6px;
+    font-family: var(--f-disp);
+    font-size: 14px;
+    line-height: 1;
+  }
+  .plate {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 4;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    max-width: calc(100% - 24px);
+    padding: 6px 10px;
+    background: var(--panel);
+    border: var(--bw) solid var(--line);
+    font-size: 12.5px;
+  }
+  .plate-name { font-family: var(--f-disp); font-weight: 600; }
+  .plate-what { color: var(--accent); }
+  .plate-dur { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+  .plate-dur:empty { display: none; }
+  .pet {
+    position: absolute;
+    right: 9%;
+    bottom: 7%;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .pet-label { padding: 0 5px; background: var(--panel); color: var(--ink); white-space: nowrap; }
+  .pet-label:empty { display: none; }
+  .pet-art {
+    display: block;
+    width: 40px;
+    height: 35px;
+    background: var(--pet, var(--ink));
+    -webkit-mask: var(--pet-cat) center / contain no-repeat;
+    mask: var(--pet-cat) center / contain no-repeat;
+  }
+  .pet[data-pet="crow"] .pet-art { -webkit-mask-image: var(--pet-crow); mask-image: var(--pet-crow); }
+  .stats-strip {
+    flex: none;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    background: var(--panel);
+    border-bottom: var(--bw) solid var(--line);
+  }
+  .stat { min-width: 0; padding: 8px 14px; border-right: var(--rw) solid var(--line); }
+  .stat:last-child { border-right: none; }
+  .stat-label {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .stat-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lists {
+    flex: 1 1 44%;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 14px;
+    padding: 14px;
+  }
+  .feed-row { display: flex; gap: 10px; padding: 5px 0; border-bottom: var(--rw) solid var(--line); }
+  .feed-row:last-child { border-bottom: none; }
+  .feed-time { flex: none; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  .feed-text { min-width: 0; overflow-wrap: anywhere; }
+  .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+  .inv { min-width: 0; padding: 8px 10px; border: var(--rw) solid var(--line); }
+  .inv-icon { font-family: var(--f-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .inv-name { margin-top: 2px; font-weight: 600; overflow-wrap: anywhere; }
+  .inv-desc { font-size: 11.5px; color: var(--muted); }
+  .inv-tag { margin-top: 4px; font-family: var(--f-mono); font-size: 10px; color: var(--muted); }
+  @media (max-width: 700px) {
+    .scene { min-height: 220px; }
+    .avatar-figure { width: 32px; height: 67px; }
+    .stats-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat:nth-child(2n) { border-right: none; }
+    .stat:nth-child(-n+2) { border-bottom: var(--rw) solid var(--line); }
+    .lists { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
+    .card { padding: 12px; }
+  }
+
+  .kicker, .ctx-fold summary {
+    font-family: var(--f-disp);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    color: var(--cyan);
+  }
+  .count { color: var(--accent); }
+  .count::before { content: '['; color: var(--muted); }
+  .count::after { content: ']'; color: var(--muted); }
+  .head-avatar {
+    background: var(--cyan);
+    color: var(--on-accent);
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+    font-weight: 700;
+  }
+  .head-name { font-size: 24px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; line-height: 1; padding-top: 3px; }
+  .head-sub { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+  .head-sub .head-model { color: var(--cyan); }
+  .mark { width: 66px; height: 24px; color: var(--muted); background: var(--barcode); }
+
+  .card {
+    border: none;
+    background: var(--panel);
+    box-shadow: inset 2px 0 0 var(--cyan);
+    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+  }
+  .card-title {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .card-title::after { content: ''; margin-left: auto; align-self: center; width: 48px; height: 12px; color: var(--line); background: var(--barcode); }
+  .row { border-bottom-color: var(--line); }
+  .tag { color: var(--cyan); }
+  .i-btn { border-color: var(--line); }
+  .i-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .form input, .form select { border: 1px solid var(--line); background: var(--field); }
+  .form button {
+    border: none;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-family: var(--f-disp);
+    font-size: 15px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  }
+  .form button:hover { background: var(--cyan); color: var(--on-accent); }
+
+  .room { background: var(--bg); }
+  /* Окно в мегаблок: сетка светящихся (плоских) окон соседних башен */
+  .scene { background: var(--scene); }
+  .scene-wall { inset: 0 0 26% 0; background: var(--panel); border-bottom: 2px solid var(--cyan); }
+  .scene-prop--a {
+    left: 6%;
+    top: 10%;
+    width: 46%;
+    height: 52%;
+    border: 2px solid var(--line);
+    background:
+      repeating-linear-gradient(90deg, transparent 0 10px, var(--bg) 10px 14px),
+      repeating-linear-gradient(0deg, transparent 0 8px, var(--bg) 8px 13px),
+      linear-gradient(90deg, var(--accent) 0 12%, var(--panel2) 12% 30%, var(--cyan) 30% 36%, var(--panel2) 36% 58%, #f2c14e 58% 64%, var(--panel2) 64% 82%, var(--accent) 82% 86%, var(--panel2) 86%);
+  }
+  .scene-prop--b {
+    right: 6%;
+    top: 14%;
+    width: 92px;
+    height: 30px;
+    color: var(--muted);
+    background: var(--barcode);
+  }
+  .scene-floor {
+    height: 26%;
+    background:
+      repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(0deg, var(--line) 0 1px, transparent 1px 16px),
+      var(--bg);
+  }
+  .avatar-figure { --figure-color: var(--cyan); }
+  .avatar-plate {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 700;
+    clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  }
+  .avatar[data-vpc-pose="sleep"] .avatar-figure { --figure-color: var(--muted); }
+  .plate {
+    border: none;
+    background: var(--bg);
+    box-shadow: inset 3px 0 0 var(--accent);
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+  }
+  .plate-name { font-family: var(--f-disp); font-size: 16px; letter-spacing: .08em; text-transform: uppercase; }
+  .plate-what { color: var(--cyan); }
+  .pet-art { --pet: var(--accent); }
+  .pet-label { font-family: var(--f-mono); font-size: 10px; background: var(--bg); color: var(--muted); }
+  .stats-strip { background: var(--bg); }
+  .stat-label { font-family: var(--f-disp); font-size: 13px; letter-spacing: .1em; color: var(--cyan); }
+  .stat-value { font-family: var(--f-mono); font-size: 13px; }
+  .lists { background: var(--bg); }
+  .inv { border: none; background: var(--panel2); clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%); }
+  .inv-icon { color: var(--accent); }
+  .inv-name { font-family: var(--f-disp); font-size: 16px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  .feed-time { color: var(--cyan); font-size: 11px; padding-top: 2px; }
+</style>
+</head>
+<body>
+
+<section class="room" data-vpc-screen="room">
+
+  <div class="scene" data-vpc="room-scene">
+    <img class="scene-bg" data-vpc="room-bg" alt="" hidden />
+    <div class="scene-wall" aria-hidden="true"></div>
+    <div class="scene-prop scene-prop--a" aria-hidden="true"></div>
+    <div class="scene-prop scene-prop--b" aria-hidden="true"></div>
+    <div class="scene-floor" aria-hidden="true"></div>
+
+    <div class="avatar" data-vpc="room-avatar" data-vpc-action="poke" data-vpc-label-title="poke">
+      <img class="avatar-sprite" data-vpc="room-sprite" alt="" hidden />
+      <span class="avatar-figure" aria-hidden="true"></span>
+      <span class="avatar-plate"><span data-vpc="persona-avatar">?</span></span>
+    </div>
+
+    <div class="plate">
+      <span class="plate-name" data-vpc="persona-name">…</span>
+      <span class="plate-what" data-vpc="room-pastime">…</span>
+      <span class="plate-dur" data-vpc="room-duration"></span>
+    </div>
+
+    <div class="pet" data-vpc="room-pet" hidden>
+      <i class="pet-art" aria-hidden="true"></i>
+      <span class="pet-label" data-vpc="room-pet-label"></span>
+    </div>
+  </div>
+
+  <div class="stats-strip">
+    <div class="stat">
+      <div class="stat-label" data-vpc-label="room-mood">Настроение</div>
+      <div class="stat-value" data-vpc="room-mood">…</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label" data-vpc-label="room-energy">Энергия</div>
+      <div class="stat-value" data-vpc="room-energy">…</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label" data-vpc-label="room-place">Место</div>
+      <div class="stat-value" data-vpc="room-place">…</div>
+    </div>
+    <div class="stat stat--env">
+      <div class="stat-label"><span data-vpc="local-time"></span></div>
+      <div class="stat-value"><span data-vpc="weather-temp"></span></div>
+    </div>
+  </div>
+
+  <div class="lists">
+    <div class="card">
+      <div class="card-title"><span data-vpc-label="room-feed">Пока тебя не было</span> <span class="count" data-vpc-count="feed">0</span></div>
+      <div class="list" data-vpc="room-feed"></div>
+      <template data-vpc="feed-item">
+        <div class="feed-row">
+          <span class="meta feed-time" data-vpc-field="time"></span>
+          <span class="feed-text" data-vpc-field="text"></span>
+        </div>
+      </template>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span data-vpc-label="inventory">Инвентарь</span> <span class="count" data-vpc-count="inventory">0</span></div>
+      <div class="inv-grid" data-vpc="room-inventory"></div>
+      <template data-vpc="inventory-item">
+        <div class="inv">
+          <div class="inv-icon" data-vpc-field="icon"></div>
+          <div class="inv-name" data-vpc-field="name"></div>
+          <div class="inv-desc" data-vpc-field="description"></div>
+          <div class="inv-tag" data-vpc-field="tag"></div>
+        </div>
+      </template>
+      <div class="form" data-vpc-form>
+        <input data-vpc-input="name" type="text" placeholder="название предмета" data-vpc-label-placeholder="item-name" />
+        <input data-vpc-input="icon" type="text" placeholder="глиф" data-vpc-label-placeholder="item-icon" class="narrow" />
+        <button type="button" data-vpc-action="add-inventory-item" data-vpc-label-title="add-item">+</button>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ==== VPC-BRIDGE:START ====
+     Служебный блок: при загрузке скина приложение ПЕРЕЗАПИШЕТ его
+     своей эталонной версией. Не редактировать, не удалять маркеры. -->
+<script>/* заглушка: приложение подставит сюда рабочий код моста */</script>
+<!-- ==== VPC-BRIDGE:END ==== -->
+
+</body>
+</html>

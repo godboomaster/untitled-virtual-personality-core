@@ -13,6 +13,7 @@ data/.
 """
 
 import errno
+import ipaddress
 import json
 import re
 import shutil
@@ -269,6 +270,56 @@ def host_without_port(value: str) -> str:
     if v.startswith("["):  # IPv6: [::1]:8000
         return v[1:v.find("]")] if "]" in v else v
     return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+# ── Эта машина ──
+# Запрос с этой же машины (свой фронт в браузере, панель, скрипты) идёт без
+# API_TOKEN: токен защищает ядро от сети — телефона, Pi, других компьютеров, —
+# а не от хозяина, которому иначе пришлось бы вписывать его в каждый новый
+# браузер. «Эта машина» — это:
+#  - адрес соединения — loopback. Его не подделать, в отличие от Host: по
+#    одному Host устройство в сети, назвавшись localhost, прошло бы как своё;
+#  - Host — локальное имя (DNS rebinding: домен атакующего на 127.0.0.1);
+#  - нет заголовков прокси: туннель или обратный прокси на этой же машине
+#    приносит запросы извне с её адреса;
+#  - браузер — только со своего фронта: Origin локальный (или явно
+#    перечисленный в API_CORS_ORIGINS). Без Origin браузер пускается, только
+#    если запрос со страницы самого ядра (Sec-Fetch-Site: same-origin):
+#    картинки и переходы со страниц чужих сайтов (в том числе в браузере бота)
+#    и адрес, набранный в адресной строке, идут с токеном. Без Sec-Fetch-Site
+#    — не браузер (curl, панель, скрипты): локальный процесс и так может всё.
+_PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip", "via",
+                  "cf-connecting-ip", "true-client-ip")
+
+
+def _loopback_peer(peer: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        # Не IP — TestClient ("testclient") или unix-сокет: решают Host и
+        # прочие проверки (uvicorn по TCP всегда даёт адрес)
+        return True
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 — привязка к "::"
+    return ip.is_loopback
+
+
+def from_this_machine(request, origins=frozenset()) -> bool:
+    """Запрос с этой машины (см. выше); origins — Origin из API_CORS_ORIGINS,
+    которым доверяют так же, как своему фронту (без "*")."""
+    client = request.client
+    if not _loopback_peer(client.host if client else ""):
+        return False
+    h = request.headers
+    if host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS:
+        return False
+    if any(k in h for k in _PROXY_HEADERS):
+        return False
+    origin = h.get("origin")
+    if origin is not None:
+        o = origin.strip().rstrip("/").lower()
+        return o in origins or re.fullmatch(LOOPBACK_ORIGIN_RE, o) is not None
+    return h.get("sec-fetch-site") in (None, "same-origin")
 
 
 class LocalOriginGuard:

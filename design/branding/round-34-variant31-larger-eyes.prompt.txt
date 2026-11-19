@@ -1,0 +1,5 @@
+Built-in image_gen. User-selected version 31: 51-slightly-wider-face-ghost.png. Enlarge only the two dark capsule eyes, preserving the chosen pre-cheek-edit head and all other details.
+
+Precise local edit to the supplied logo. THIS supplied image is the user's chosen version 31; preserve its head shape and all other design choices.
+Enlarge ONLY the TWO DARK EYES by approximately 20% in both height and width. Retain the same upright capsule shape, dark solid fill, symmetric placement and calm expression. Scale each eye around its existing center so the face retains its current balance. Leave enough white gap between the two eyes and generous white margins to the face outline. Do not introduce pupils, highlights, eyebrows, a mouth or other facial features.
+Keep the subtly horizontally widened head contour of this version exactly as it is, without the fuller cheeks from later versions. Preserve the flat face-to-ribbon boundary, thin narrow black ribbon, smooth offsets, slender straight-sided plain white body, sharp egg junction, both eggshell pieces, all cracks, facets, outlines, colors, positions, framing and white background. Only the eyes get larger.

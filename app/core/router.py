@@ -3,14 +3,25 @@ import logging
 import socket
 import threading
 import time
-from openai import OpenAI
+from openai import AsyncOpenAI, APITimeoutError
 from app.core.config import PROVIDER_CONFIGS, first_ready_provider, get_available_providers
 from app.core.thread_local_attr import ThreadLocalAttr
+from app.core import api_request, turn_cancel
 
 logger = logging.getLogger(__name__)
 
 # Провайдеры, о пропуске которых без модели уже предупредили (раз за процесс)
 _NO_MODEL_WARNED: set = set()
+
+_MIMO_REJECTION_TEXT = "The request was rejected because it was considered high risk"
+
+
+def _clean_provider_response(provider: str, answer: str | None) -> str | None:
+    if provider != "mimo" or not answer or _MIMO_REJECTION_TEXT not in answer:
+        return answer
+    logger.info("[Router] MiMo: удалена служебная фраза отказа из ответа")
+    return answer.replace(_MIMO_REJECTION_TEXT, "").strip() or None
+
 
 NO_PROVIDERS_TEXT = (
     "Не настроен ни один источник ответов. Добавьте ключ и модель провайдера в "
@@ -410,6 +421,8 @@ class ModelRouter:
         if not (self.model_overrides.get(provider) or cfg.get("model")):
             _warn_no_model(provider)
             return None
+        # Ход отменили (пока шли предыдущие шаги или провайдеры) — не звать
+        turn_cancel.check()
         # Провайдер с лимитом параллельности занят (фон/другой чат) — не ждём
         # и не ловим 403 concurrent: мгновенный фолбэк по цепочке
         sem = self._provider_sem(provider, cfg)
@@ -438,44 +451,64 @@ class ModelRouter:
         indices = [last_idx] + [i for i in range(len(keys)) if i != last_idx]
 
         for idx in indices:
-            api_key = keys[idx]
-            try:
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=cfg["base_url"],
-                    timeout=timeout
-                )
-                logger.debug(
-                    f"[LLM Request] {provider}/{model} "
-                    f"| key={idx + 1}/{len(keys)} "
-                    f"| max_tokens={max_tokens} | messages={len(messages)}"
-                )
-                response = client.chat.completions.create(
-                    model=model, messages=messages,
-                    temperature=cfg.get("temperature", temperature),
-                    max_tokens=max_tokens, top_p=cfg.get("top_p", top_p)
-                )
-                answer = response.choices[0].message.content
-                self._last_provider = provider
-                self._last_key_index[provider] = idx
-                logger.debug(f"[Response] {provider}/{model} key={idx + 1} | len={len(answer) if answer else 0}")
-                if answer:
-                    note_internet_ok()
-                return answer
-            except Exception as e:
-                logger.warning(
-                    f"{provider.upper()} key={idx + 1}/{len(keys)} ({model}) ошибка: {e}"
-                )
-                if _is_network_error(e):
-                    note_internet_suspect()  # досрочная фоновая проба
+            for attempt in range(2):
+                turn_cancel.check()
+                try:
+                    logger.debug(
+                        f"[LLM Request] {provider}/{model} "
+                        f"| key={idx + 1}/{len(keys)} | attempt={attempt + 1}/2 "
+                        f"| max_tokens={max_tokens} | messages={len(messages)}"
+                    )
+                    tok = turn_cancel.current()
+                    # Голосовые/отменяемые ответы читаем потоком, собирая
+                    # целиком; общий срок действует и на обычный JSON-ответ.
+                    answer = self._api_attempt(
+                        cfg, keys[idx], model, messages, temperature, max_tokens,
+                        top_p, timeout,
+                        on_token=(lambda delta: None) if tok is not None
+                        and getattr(tok, "stream_abort", False) else None)
+                    answer = _clean_provider_response(provider, answer)
+                    self._last_provider = provider
+                    self._last_key_index[provider] = idx
+                    logger.debug(f"[Response] {provider}/{model} key={idx + 1} | len={len(answer) if answer else 0}")
+                    if answer:
+                        note_internet_ok()
+                    return answer
+                except Exception as e:
+                    logger.warning(
+                        f"{provider.upper()} key={idx + 1}/{len(keys)} ({model}) ошибка: {e}"
+                    )
+                    if _is_network_error(e):
+                        note_internet_suspect()
+                    if attempt == 0 and isinstance(e, (api_request.APIAttemptTimeout, APITimeoutError)):
+                        logger.info(f"[Router] {provider}: таймаут — повтор 1/1")
+                        continue
+                    if attempt == 1:
+                        # Повтор тоже не ответил: сразу запасной провайдер,
+                        # а не ещё по две минуты на каждый оставшийся ключ.
+                        return None
+                    break  # ошибка ключа: следующий ключ, как прежде
 
         return None
+
+    @staticmethod
+    def _api_attempt(cfg: dict, api_key: str, model: str, messages: list,
+                     temperature: float, max_tokens: int, top_p: float,
+                     timeout: float, on_token=None) -> str | None:
+        return api_request.complete(
+            AsyncOpenAI, {"api_key": api_key, "base_url": cfg["base_url"]},
+            {"model": model, "messages": messages,
+             "temperature": cfg.get("temperature", temperature),
+             "max_tokens": max_tokens, "top_p": cfg.get("top_p", top_p),
+             "extra_body": cfg.get("extra_body")},
+            timeout, on_token=on_token)
 
     def _try_local(self, messages, temperature: float, max_tokens: int,
                    top_p: float, timeout: float, on_token=None) -> str | None:
         # Попытка ответа локальной моделью (Ollama); None — недоступна/не
         # ответила. on_token задан — ответ дополнительно отдаётся одним
-        # куском (стрим).
+        # куском (стрим). Посреди ответа не обрывается — отмена хода только до вызова.
+        turn_cancel.check()
         try:
             from app.core.local_router import get_local_router
             local = get_local_router()
@@ -560,6 +593,9 @@ class ModelRouter:
                     skip_api=(force_provider,))
             logger.info(f"[Router] назначенный провайдер {force_provider} "
                         "не ответил — обычная цепочка")
+            if force_provider in self.available:
+                # API уже исчерпал попытки — не звать его снова в цепочке.
+                provider_order = [p for p in provider_order if p != force_provider]
 
         # Нет интернета — веб-чаты и облако заведомо мертвы: сразу локальная
         # модель (Ollama), без минут таймаутов по мёртвым провайдерам. Не
@@ -693,6 +729,8 @@ class ModelRouter:
                 return answer
             logger.info(f"[Router] назначенный провайдер {force_provider} "
                         "не ответил — обычная цепочка")
+            if force_provider in self.available:
+                provider_order = [p for p in provider_order if p != force_provider]
 
         # Нет интернета — сразу локальная модель (Ollama), облачная цепочка
         # заведомо мертва. Не ответила — идём по обычной цепочке (вдруг probe
@@ -797,6 +835,7 @@ class ModelRouter:
         if not (self.model_overrides.get(provider) or cfg.get("model")):
             _warn_no_model(provider)
             return None
+        turn_cancel.check()
         sem = self._provider_sem(provider, cfg)
         if sem is not None and not sem.acquire(blocking=False):
             logger.info(f"{provider.upper()}: занят параллельным запросом — "
@@ -820,42 +859,51 @@ class ModelRouter:
         indices = [last_idx] + [i for i in range(len(keys)) if i != last_idx]
 
         for idx in indices:
-            parts: list = []
-            try:
-                client = OpenAI(
-                    api_key=keys[idx],
-                    base_url=cfg["base_url"],
-                    timeout=timeout
-                )
-                stream = client.chat.completions.create(
-                    model=model, messages=messages,
-                    temperature=cfg.get("temperature", temperature),
-                    max_tokens=max_tokens, top_p=cfg.get("top_p", top_p),
-                    stream=True,
-                )
-                for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        parts.append(delta)
+            for attempt in range(2):
+                turn_cancel.check()
+                parts: list = []
+
+                def receive(delta):
+                    parts.append(delta)
+                    # MiMo буферизуем: фраза отказа может быть разбита
+                    # между чанками и должна исчезнуть до отправки.
+                    if provider != "mimo":
                         on_token(delta)
-                answer = "".join(parts)
-                if not answer:
-                    continue  # пустой ответ — пробуем следующий ключ
-                self._last_provider = provider
-                self._last_key_index[provider] = idx
-                note_internet_ok()
-                return answer
-            except Exception as e:
-                logger.warning(
-                    f"{provider.upper()} key={idx + 1}/{len(keys)} ({model}) stream ошибка: {e}"
-                )
-                if _is_network_error(e):
-                    note_internet_suspect()
-                if parts:
-                    # Обрыв посередине стрима — лучше недописанный ответ, чем None
-                    return "".join(parts)
+
+                try:
+                    answer = self._api_attempt(
+                        cfg, keys[idx], model, messages, temperature, max_tokens,
+                        top_p, timeout, on_token=receive)
+                    answer = _clean_provider_response(provider, answer)
+                    if not answer:
+                        break  # пустой ответ — следующий ключ
+                    if provider == "mimo" and answer:
+                        on_token(answer)
+                    self._last_provider = provider
+                    self._last_key_index[provider] = idx
+                    note_internet_ok()
+                    return answer
+                except Exception as e:
+                    logger.warning(
+                        f"{provider.upper()} key={idx + 1}/{len(keys)} ({model}) stream ошибка: {e}"
+                    )
+                    if _is_network_error(e):
+                        note_internet_suspect()
+                    if parts:
+                        # Не дублируем уже начатый ответ новым запросом.
+                        answer = _clean_provider_response(provider, "".join(parts))
+                        if provider == "mimo" and answer:
+                            on_token(answer)
+                        if answer:
+                            self._last_provider = provider
+                            self._last_key_index[provider] = idx
+                        return answer
+                    if attempt == 0 and isinstance(e, (api_request.APIAttemptTimeout, APITimeoutError)):
+                        logger.info(f"[Router] {provider}: таймаут — повтор 1/1")
+                        continue
+                    if attempt == 1:
+                        return None
+                    break
 
         return None
 
@@ -987,6 +1035,7 @@ class ModelRouter:
         else:
             lock_timeout = None
         for site in (sites if sites is not None else self.webchat_sites):
+            turn_cancel.check()
             try:
                 key = site if channel == "main" else f"{site}#{channel}"
                 chat = self._webchat_instance(key, site, channel)

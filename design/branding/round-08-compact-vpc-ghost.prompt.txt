@@ -1,0 +1,17 @@
+Built-in image_gen. Compact ghost with V, P, C suggested through the same outer geometry. Style references: 07-ghost-sigil.png and 05-ghost-fold.png. Concept exploration; not integrated into the application.
+
+Use case: logo-brand.
+Asset type: one carefully simplified combined VPC/ghost icon, a new visual concept for Virtual Persona Core.
+Input image 1 (07-ghost-sigil.png): PRIMARY SHAPE REFERENCE. The user likes this simple compact black ghost with two eye slots, rounded top and asymmetric pointed hem.
+Input image 2 (05-ghost-fold.png): SECONDARY style reference for the soft upper silhouette and folded angular tails. Neither image is an edit target; develop a new integrated mark.
+
+The user rejected a wordmark-like design that looked like large interlocking V P C lettering with a ghost head stuck on top, and another design with giant white VPC carved across a ghost's stomach. DO NOT repeat those constructions.
+Primary request: one compact minimalist GHOST WHOSE ACTUAL CONTOUR INTEGRATES V, P AND C. Keep the ghost charming and quiet like the references. Three typographic decisions in one silhouette:
+1. P is suggested by the WHOLE silhouette: one long straight left side forms its upright, a broad round upper-right shoulder forms its bowl, and a shortened right body/tail leaves the P-like step at the lower right. The eyes remain in this broad round top. No standalone P printed or cut into the torso.
+2. V is visible in the two short pointed tails and their angular split at the bottom. Integrate this V shape into the floating hem, no extra large V placed to the left.
+3. C is a clean open crescent curve built into the RIGHT OUTER FLANK, using a small deliberate side opening/cut that shares its curve with the large rounded shoulder. It should be a structural feature of the contour, never a huge C printed on the body or an isolated floating letter.
+Use shared outer curves and negative space. Preserve a large uninterrupted solid upper body with EXACTLY TWO small vertical capsule eye holes. NO mouth, no third hole in the face, no big white lettering on the belly, no extra phantom head attached above letters. Upper ghost head flows directly into the rest of the mark. This is a simple ICON, not a typographic composition.
+Make the emblem roughly square, no wider than 1.05 times its height. Limit the geometry to the rounded head, two eye slots, two lower points, and one subtle right-side crescent opening. No delicate thin parts, no tangled strokes, no busy weaving, no redundant outlines. Ghost immediately recognizable; VPC discoverable on closer viewing but not through microscopic details.
+
+Presentation: a quiet landscape concept card, approximately 3:2 ratio, divided into two spacious equal panels. LEFT panel warm ivory #F4F0E7 with one large black #151817 emblem. RIGHT panel graphite #151817 with the EXACT SAME emblem in ivory, scaled down to a generous centered app icon size. Small exact wordmark "Virtual Persona" beneath each emblem, with tiny "CORE" below. Bottom-left discrete exact label "13 / COMPACT". Two applications of ONE identical mark, not two different proposals. No diagrams, letter annotations or explanatory copy.
+Style: flat, crisp vector-like graphic design, beautifully optically balanced. No gradients, grain, textures, lighting, 3D, shadows, glow, bevels, mockup objects, watermark.

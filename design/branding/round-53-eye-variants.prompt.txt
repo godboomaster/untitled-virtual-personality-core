@@ -1,0 +1,65 @@
+Built-in image_gen. Each variant is an independent edit of 76-longer-thinner-eyes-ghost.png.
+
+1 — Узкие овальные
+Output: 77-slender-oval-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: eye-design variant of the existing black-and-white ghost logo.
+Input image 1: sole edit target, 76-longer-thinner-eyes-ghost.png.
+Primary request: change ONLY the two eye marks. Replace both eyes with identical long, very slender vertical solid-black ELLIPSES, approximately 34 px wide and 220 px tall at the input image scale. The sides must curve continuously and gently taper toward the top and bottom, unlike the original straight-sided capsules. Keep the original eye centers and center-to-center spacing.
+Constraints: output a single complete logo in exactly the same full framing and aspect ratio as the input. Preserve everything outside the eye marks: the head outline and face size, the entire angular two-leaf collar on the left including small white separation cuts, body shape, jagged hem, white separator above the lower shell, both cracked eggshell pieces, all crack lines, all stroke weights, composition, proportions and white background. Remove the original eye marks completely before replacing them. Strict black and white. No mouth, eyebrows, nose, pupils, highlights, text, numbers, extra objects, shading or new details. Do not crop, rescale, recenter, redraw or restyle the logo.
+
+-----
+
+2 — Короткие овальные
+Output: 78-short-oval-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: eye-design variant of the existing black-and-white ghost logo.
+Input image 1: sole edit target, 76-longer-thinner-eyes-ghost.png.
+Primary request: change ONLY the two eye marks. Replace both eyes with identical compact upright solid-black oval eyes, approximately 52 px wide and 126 px tall at the input image scale. Rounded ends and gently curved sides. These must be clearly shorter than the original tall eyes. Keep the original eye centers and center-to-center spacing.
+Constraints: output a single complete logo in exactly the same full framing and aspect ratio as the input. Preserve everything outside the eye marks: the head outline and face size, the entire angular two-leaf collar on the left including small white separation cuts, body shape, jagged hem, white separator above the lower shell, both cracked eggshell pieces, all crack lines, all stroke weights, composition, proportions and white background. Remove the original eye marks completely before replacing them. Strict black and white. No mouth, eyebrows, nose, pupils, highlights, text, numbers, extra objects, shading or new details. Do not crop, rescale, recenter, redraw or restyle the logo.
+
+-----
+
+3 — Круглые
+Output: 79-round-dot-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: eye-design variant of the existing black-and-white ghost logo.
+Input image 1: sole edit target, 76-longer-thinner-eyes-ghost.png.
+Primary request: change ONLY the two eye marks. Replace both eyes with identical simple solid-black circular dots, approximately 62 px in diameter at the input image scale. Keep the original eye centers and center-to-center spacing. They should give a quiet, curious expression. No highlights or surrounding eye outlines.
+Constraints: output a single complete logo in exactly the same full framing and aspect ratio as the input. Preserve everything outside the eye marks: the head outline and face size, the entire angular two-leaf collar on the left including small white separation cuts, body shape, jagged hem, white separator above the lower shell, both cracked eggshell pieces, all crack lines, all stroke weights, composition, proportions and white background. Remove the original eye marks completely before replacing them. Strict black and white. No mouth, eyebrows, nose, pupils, highlights, text, numbers, extra objects, shading or new details. Do not crop, rescale, recenter, redraw or restyle the logo.
+
+-----
+
+4 — Прищуренные
+Output: 80-narrow-squint-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: eye-design variant of the existing black-and-white ghost logo.
+Input image 1: sole edit target, 76-longer-thinner-eyes-ghost.png.
+Primary request: change ONLY the two eye marks. Replace both eyes with identical short horizontal rounded black slits, approximately 78 px wide and 19 px tall at the input image scale. Keep them perfectly horizontal and level, with round ends and solid black fill. Keep the original eye centers and center-to-center spacing. A calm, relaxed squint, without eyebrows.
+Constraints: output a single complete logo in exactly the same full framing and aspect ratio as the input. Preserve everything outside the eye marks: the head outline and face size, the entire angular two-leaf collar on the left including small white separation cuts, body shape, jagged hem, white separator above the lower shell, both cracked eggshell pieces, all crack lines, all stroke weights, composition, proportions and white background. Remove the original eye marks completely before replacing them. Strict black and white. No mouth, eyebrows, nose, pupils, highlights, text, numbers, extra objects, shading or new details. Do not crop, rescale, recenter, redraw or restyle the logo.
+
+-----
+
+5 — Дуги
+Output: 81-happy-arc-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: eye-design variant of the existing black-and-white ghost logo.
+Input image 1: sole edit target, 76-longer-thinner-eyes-ghost.png.
+Primary request: change ONLY the two eye marks. Replace both eyes with identical upward-arching closed happy eyes: two simple smooth black inverted-U arches (∩), each approximately 78 px wide and 49 px high with a uniform 17 px stroke and rounded stroke ends. Each arch's peak is at the top and its two tips point down. Keep the pair balanced, centered around the original eye centers with the same center-to-center spacing. White inside each arch. No eyebrows.
+Constraints: output a single complete logo in exactly the same full framing and aspect ratio as the input. Preserve everything outside the eye marks: the head outline and face size, the entire angular two-leaf collar on the left including small white separation cuts, body shape, jagged hem, white separator above the lower shell, both cracked eggshell pieces, all crack lines, all stroke weights, composition, proportions and white background. Remove the original eye marks completely before replacing them. Strict black and white. No mouth, eyebrows, nose, pupils, highlights, text, numbers, extra objects, shading or new details. Do not crop, rescale, recenter, redraw or restyle the logo.
+
+-----
+
+6 — Слегка наклонённые
+Output: 82-inward-tilted-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: eye-design variant of the existing black-and-white ghost logo.
+Input image 1: sole edit target, 76-longer-thinner-eyes-ghost.png.
+Primary request: change ONLY the two eye marks. Replace both eyes with identical slender solid-black elongated capsules approximately 41 px wide and 184 px long at the input image scale, with rounded ends. Tilt them gently inward toward each other at the top by 10 degrees: the left eye slopes slightly up-right and the right eye slopes slightly up-left. Keep each eye centered on its original eye center and preserve center-to-center spacing. Keep the expression soft and curious, not aggressive.
+Constraints: output a single complete logo in exactly the same full framing and aspect ratio as the input. Preserve everything outside the eye marks: the head outline and face size, the entire angular two-leaf collar on the left including small white separation cuts, body shape, jagged hem, white separator above the lower shell, both cracked eggshell pieces, all crack lines, all stroke weights, composition, proportions and white background. Remove the original eye marks completely before replacing them. Strict black and white. No mouth, eyebrows, nose, pupils, highlights, text, numbers, extra objects, shading or new details. Do not crop, rescale, recenter, redraw or restyle the logo.

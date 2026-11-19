@@ -205,6 +205,18 @@ impl Supervisor {
         g.cfg.wake_listen.unwrap_or(g.api.wake_listen)
     }
 
+    /// Языки распознавания слушателя: настройка панели, иначе WAKE_LANG .env
+    pub fn wake_lang(&self) -> &'static str {
+        let g = self.lock();
+        config::wake_lang_choice(g.cfg.wake_lang.as_deref().unwrap_or(&g.api.wake_lang))
+    }
+
+    pub fn set_wake_lang(&self, lang: &str) -> Result<(), String> {
+        let mut cfg = self.config();
+        cfg.wake_lang = Some(config::wake_lang_choice(lang).to_string());
+        self.set_config(cfg)
+    }
+
     pub fn set_wake(&self, on: bool) -> Result<(), String> {
         let mut cfg = self.config();
         cfg.wake_listen = Some(on);
@@ -243,6 +255,15 @@ impl Supervisor {
 
     pub fn start(&self) {
         self.run_op(|s| s.start_all());
+    }
+
+    /// Для составного запуска из трея робота: дождаться создания процессов,
+    /// затем робот сам ждёт health и регистрацию устройства.
+    pub fn start_blocking(&self) {
+        let _op = lk(&self.op);
+        self.lock().busy = true;
+        self.start_all();
+        self.lock().busy = false;
     }
 
     pub fn stop(&self) {

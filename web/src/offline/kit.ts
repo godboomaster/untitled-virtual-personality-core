@@ -1,10 +1,13 @@
 import { api, ApiError, isNativeApp } from '../api';
 import { offlinePersonaList } from '../apiData';
-import type { OfflineKitResponse } from '../api';
+import type { OfflineKitResponse, ShortPrompt } from '../api';
 import { OfflineLlm } from './plugin';
-import { refreshMemory } from './memory';
+import { refreshLore, refreshMemory } from './memory';
 import { refreshSettingsCopy } from './settingsCopy';
 import { buildLocalKit, isLocalPersona, localPersona } from './localPersonas';
+import { BASE_KIT } from './baseKit';
+import { onPhoneLocationChange, phoneLocation } from './phoneEnv';
+import { withPendingShort } from './shortPrompt';
 import type { LocalPersona } from './localPersonas';
 
 /* Персона-кит на телефоне: характер, правила офлайна, факты, хвост
@@ -15,8 +18,10 @@ import type { LocalPersona } from './localPersonas';
    Android Keystore). Вся переписка и факты — отдельно и реже (memory.ts). */
 
 // fallback — запасной: кита с ноутбука нет, персона по имени и описанию;
-// local — собран на телефоне из YAML персоны, созданной без ядра (localPersonas.ts)
-export type OfflineKit = OfflineKitResponse & { fetched_at: number; fallback?: boolean; local?: boolean };
+// local — собран на телефоне из YAML персоны, созданной без ядра (localPersonas.ts);
+// standalone — общее в нём из базового кита приложения (baseKit.ts): ни одного
+// кита с ядра на телефоне нет — компьютера, скорее всего, нет вовсе
+export type OfflineKit = OfflineKitResponse & { fetched_at: number; fallback?: boolean; local?: boolean; standalone?: boolean };
 
 const PREFIX = 'vpc-offline-kit:';
 const KEYS_TTL_MS = 10 * 60_000;
@@ -58,12 +63,26 @@ function storedKit(persona: string): OfflineKit | null {
   }
 }
 
-/** Кит персоны: с ядра, а у созданной на телефоне — из её YAML. */
+/** Кит персоны: с ядра, а у созданной на телефоне — из её YAML; краткое
+ * описание, заданное или составленное без ядра, — поверх (shortPrompt.ts). */
 export function getKit(persona: string): OfflineKit | null {
   const kit = storedKit(persona);
-  if (kit) return kit;
+  if (kit) return withPendingShort(kit);
   const local = localPersona(persona);
-  return local ? localKit(local) : null;
+  return local ? withPendingShort(localKit(local)) : null;
+}
+
+/** Краткое описание в сохранённом ките — по ответу ядра (PUT/compose
+ * short-prompt), не дожидаясь нового кита. Кита нет — ничего. */
+export function patchKitShort(persona: string, r: ShortPrompt) {
+  const kit = storedKit(persona);
+  if (!kit) return;
+  const ready = r.status === 'ready' && !!r.text;
+  storeKit(persona, {
+    ...kit,
+    parts: { ...kit.parts, short: ready ? r.text : '' },
+    short_prompt: { source: r.source, status: r.status, at: r.at },
+  });
 }
 
 /** Записать кит персоны (с ядра или замену ему на время переноса). */
@@ -109,16 +128,45 @@ export function renameKit(from: string, to: string) {
 let donor: OfflineKit | null | undefined;
 const localMemo = new Map<string, { key: string; kit: OfflineKit }>();
 
-function donorKit(): OfflineKit | null {
-  if (donor !== undefined) return donor;
+/** Общее из базового кита приложения — кита с ядра на телефоне нет. Город
+ * для погоды — заданный на телефоне (phoneEnv.ts). */
+export function baseDonor(): OfflineKit {
+  const env = phoneLocation();
+  return {
+    version: BASE_KIT.version,
+    persona: '',
+    name: '',
+    generated_at: 0,
+    fetched_at: 0,
+    standalone: true,
+    system: '',
+    parts: { character: '', rules: BASE_KIT.rules_text, style: BASE_KIT.style, language: '' },
+    facts: [],
+    history: [],
+    env: env ? { ...env, codes: BASE_KIT.weather_codes } : null,
+    reminders: [],
+    reminders_enabled: true,
+    rules: BASE_KIT.rules,
+    notes: BASE_KIT.notes,
+    search_gate: BASE_KIT.search_gate,
+  };
+}
+
+// Сменился город на телефоне — киты персон с телефона соберутся заново
+onPhoneLocationChange(() => {
+  donor = undefined;
+});
+
+function donorKit(): OfflineKit {
+  if (donor) return donor;
   let best: OfflineKit | null = null;
   for (const id of kitPersonas()) {
     const k = storedKit(id);
     if (!k || k.local || k.fallback || k.version < 2 || !k.rules) continue;
     if (!best || k.fetched_at > best.fetched_at) best = k;
   }
-  donor = best;
-  return best;
+  donor = best ?? baseDonor();
+  return donor;
 }
 
 function uiLanguage(): string | null {
@@ -135,7 +183,7 @@ function uiLanguage(): string | null {
 function localKit(p: LocalPersona): OfflineKit {
   const from = donorKit();
   const lang = uiLanguage();
-  const key = `${p.yaml}\u0000${from?.persona ?? ''}:${from?.fetched_at ?? 0}\u0000${lang ?? ''}`;
+  const key = `${p.yaml}\u0000${from.persona}:${from.fetched_at}:${from.env?.city ?? ''}\u0000${lang ?? ''}`;
   const memo = localMemo.get(p.id);
   if (memo && memo.key === key) return memo.kit;
   const kit = buildLocalKit(p, from, lang);
@@ -228,6 +276,7 @@ export function refreshKit(persona: string): Promise<OfflineKit | null> {
       setKitError(persona, null);
       refreshed.forEach((fn) => fn(persona));
       await refreshMemory(persona, kit);
+      await refreshLore(persona, kit);
       if (Date.now() - (keysAt.get(persona) ?? 0) >= KEYS_TTL_MS) {
         try {
           const { providers } = await api.getOfflineProviders(persona);

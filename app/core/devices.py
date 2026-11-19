@@ -19,6 +19,7 @@ POST /api/devices/{id}/result. Ход персоны зовёт command() из �
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -39,11 +40,18 @@ _MAX_DEVICES = 16
 # Проверка остановки ядра во время ожидания (как в inbox)
 _STOP_POLL_SEC = 1.0
 _FILE = "devices.json"
+BODY_PROTECTED = frozenset({'camera.snapshot', 'head.turn', 'head.look'})
+
+
+def valid_body_status(value):
+    return (isinstance(value, dict) and value.get('state') in ('awake', 'asleep')
+            and isinstance(value.get('session'), str)
+            and re.fullmatch(r'[a-f0-9]{32}', value['session']) is not None)
 
 
 class DeviceError(Exception):
     """Команда не выполнена. code: unknown | unsupported | offline | timeout | failed;
-    detail — что сообщило само устройство (для failed)."""
+    detail — что сообщило само устройство (для failed). asleep — тело не активировано."""
 
     def __init__(self, code: str, detail: str = ""):
         super().__init__(f"{code}: {detail}" if detail else code)
@@ -117,10 +125,28 @@ def _public(d: dict, now: float) -> dict:
     return {"id": d["id"], "name": d["name"], "names": list(d.get("names") or []),
             "capabilities": list(d.get("capabilities") or []),
             "online": _online_locked(d["id"], now),
+            "body": dict(s['body']) if s and s.get('body') else None,
             "seen_sec": round(now - s["seen"]) if s else None}
 
 
-def register(device_id: str, name: str, names: list[str], capabilities: list[str]) -> dict:
+def _cancel_control_commands_locked(device_id: str, reason: str) -> None:
+    # A new connection must not inherit motion or shutdown from the previous one.
+    # Already taken commands may have moved; report failure, never claim no motion.
+    for cmd in list(_cmds.values()):
+        managed = ('body.wake' in (_registry().get(device_id, {}).get('capabilities') or [])
+                   or '_body_session' in cmd['args'])
+        control = cmd['action'] in ('head.turn', 'head.look', 'robot.poweroff', 'body.wake', 'body.sleep')
+        if cmd['device'] != device_id or not (control or (managed and cmd['action'] == 'camera.snapshot')) or cmd['done'].is_set():
+            continue
+        cmd['result'] = {'ok': False, 'error': reason}
+        cmd['done'].set()
+        try:
+            _queues.get(device_id, deque()).remove(cmd)
+        except ValueError:
+            pass
+
+
+def register(device_id: str, name: str, names: list[str], capabilities: list[str], body=None) -> dict:
     """Устройство представилось (при каждом своём запуске и переподключении)."""
     now = time.time()
     clean_names = []
@@ -141,7 +167,9 @@ def register(device_id: str, name: str, names: list[str], capabilities: list[str
                 reg.pop(oldest["id"], None)
             reg[device_id] = rec
             _save()
-        _seen[device_id] = {"seen": now, "waiting": False}
+        _cancel_control_commands_locked(device_id, 'device-command-cancelled-on-reconnect')
+        _seen[device_id] = {"seen": now, "waiting": False,
+                            'body': {'state': body['state'], 'session': body['session']} if valid_body_status(body) else None}
         out = _public(rec, now)
     logger.info(f"[Devices] «{rec['name']}» ({device_id}) на связи: {', '.join(caps) or 'без возможностей'}")
     return out
@@ -155,6 +183,18 @@ def forget(device_id: str) -> bool:
         _seen.pop(device_id, None)
         for cmd in _queues.pop(device_id, ()):
             _cmds.pop(cmd["id"], None)
+    return True
+
+
+def leave(device_id: str) -> bool:
+    """Устройство уходит само (служба выключена): сразу «не на связи», а не
+    ещё ONLINE_SEC после последнего опроса — команда не ждёт таймаута."""
+    with _lock:
+        if device_id not in _registry():
+            return False
+        _cancel_control_commands_locked(device_id, 'device-command-cancelled-on-disconnect')
+        _seen[device_id] = {"seen": 0.0, "waiting": False}
+    logger.info(f"[Devices] {device_id}: ушло со связи")
     return True
 
 
@@ -205,11 +245,34 @@ def command(device_id: str, action: str, args: Optional[dict] = None,
             raise DeviceError("unsupported")
         if not _online_locked(device_id, now):
             raise DeviceError("offline")
+        prepared = dict(args or {})
+        if action in ('body.wake', 'body.sleep'):
+            body = (_seen.get(device_id) or {}).get('body')
+            if not valid_body_status(body):
+                raise DeviceError('body-unknown')
+            prepared['_body_session'] = body['session']
+        if action in BODY_PROTECTED and 'body.wake' in (dev.get('capabilities') or []):
+            body = (_seen.get(device_id) or {}).get('body')
+            if not valid_body_status(body) or body['state'] != 'awake':
+                raise DeviceError('asleep')
+            prepared['_body_session'] = body['session']
+            if action == 'camera.snapshot':
+                prepared['_body_expires_at'] = now + 4
+        if action == 'body.sleep':
+            # Cancel commands the robot has not taken; an active bounded action
+            # finishes first. The client's session rejects old work after sleep.
+            q = _queues.get(device_id, deque())
+            for pending in list(q):
+                if pending['action'] in BODY_PROTECTED or pending['action'] == 'body.wake':
+                    pending['result'] = {'ok': False, 'error': 'body-sleep-cancelled-pending-action'}
+                    pending['done'].set()
+                    q.remove(pending)
         cmd = {"id": uuid.uuid4().hex[:16], "device": device_id, "action": action,
-               "args": dict(args or {}), "created": now, "taken": False,
+               "args": prepared, "created": now, "taken": False,
                "done": threading.Event(), "result": None}
         _cmds[cmd["id"]] = cmd
-        _queues.setdefault(device_id, deque()).append(cmd)
+        q = _queues.setdefault(device_id, deque())
+        q.appendleft(cmd) if action == 'body.sleep' else q.append(cmd)
         _wake(device_id)
     t0 = time.time()
     if not cmd["done"].wait(timeout):
@@ -264,8 +327,11 @@ async def next_commands(device_id: str, wait: float,
     секунд (не больше MAX_WAIT_SEC) — до команды, остановки ядра или обрыва
     соединения. None — устройство не представилось (нужен hello)."""
     with _lock:
-        if device_id not in _registry():
+        rec = _registry().get(device_id)
+        if rec is None:
             return None
+        if 'body.wake' in (rec.get('capabilities') or []) and not valid_body_status((_seen.get(device_id) or {}).get('body')):
+            return None  # A restarted core needs a fresh hello before renewing physical control.
     _note(device_id, waiting=False)
     taken = _take(device_id)
     wait = min(max(wait, 0.0), MAX_WAIT_SEC)
@@ -306,13 +372,19 @@ async def next_commands(device_id: str, wait: float,
 
 
 def complete(device_id: str, command_id: str, ok: bool, data: Optional[dict] = None,
-             image: Optional[bytes] = None, error: Optional[str] = None) -> bool:
+             image: Optional[bytes] = None, error: Optional[str] = None, body=None) -> bool:
     """Итог команды от устройства. False — команду уже сняли или она не его."""
     _note(device_id, waiting=False)
     with _lock:
         cmd = _cmds.get(command_id)
         if cmd is None or cmd["device"] != device_id or cmd["done"].is_set():
             return False
+        status = body
+        if status is None and ok and cmd['action'] in ('body.wake', 'body.sleep'):
+            expected = 'awake' if cmd['action'] == 'body.wake' else 'asleep'
+            status = data if isinstance(data, dict) and data.get('state') == expected else None
+        if valid_body_status(status):
+            _seen[device_id]['body'] = {'state': status['state'], 'session': status['session']}
         cmd["result"] = {"ok": bool(ok), "data": data or {}, "image": image, "error": error}
         cmd["done"].set()
     return True

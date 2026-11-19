@@ -13,8 +13,10 @@ import Icon from '../components/icons';
 import PersonaColorPicker from '../components/PersonaColorPicker';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import { clearPersonaAvatar, fileToAvatarDataUrl, setPersonaAvatar, usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from '../components/PersonaAvatar';
 import { useNarrowScreen } from '../useNarrowScreen';
 import { forgetLocalPersona } from '../offline/personaSync';
+import { isStandalone } from '../standalone';
 
 export default function Personas() {
   const { t } = useI18n();
@@ -174,15 +176,14 @@ export default function Personas() {
             <div className="persona-card-head">
               {/* Аватар: своя картинка или буква; клик — загрузить/заменить */}
               <div className="persona-avatar-wrap">
-                {/* Аватар хранит ядро — у персоны с телефона его пока негде хранить */}
+                {/* Аватар персоны с телефона — на телефоне, на ядро уйдёт с ней */}
                 <button
                   type="button"
                   className="persona-avatar-btn"
-                  title={p.local ? undefined : t('personas.setAvatar')}
-                  disabled={!!p.local}
+                  title={t('personas.setAvatar')}
                   onClick={() => pickAvatar(p.id)}
                 >
-                  {avatars[p.id] ? <img src={avatars[p.id]} alt={p.name} /> : <span>{p.name.charAt(0)}</span>}
+                  <PersonaAvatar persona={p} followWithin=".persona-card" />
                   <span className="persona-avatar-overlay">
                     <Icon name="camera" size={18} />
                   </span>
@@ -227,13 +228,13 @@ export default function Personas() {
 
             {p.local && (
               <p className={'persona-local-note' + (p.local.status === 'error' ? ' persona-local-note--error' : '')} role="status">
-                {p.local.status === 'error' ? t('personas.localError', { msg: p.local.error ?? '' }) : t('personas.localNote')}
+                {p.local.status === 'error' ? t('personas.localError', { msg: p.local.error ?? '' }) : t(isStandalone() ? 'personas.localNote.standalone' : 'personas.localNote')}
               </p>
             )}
 
             <div className="persona-card-block">
               <div className="persona-card-label">
-                {'// '}
+                {t('ui.commentPrefix')}
                 {t('personas.features')} · {p.features.length}
                 <InfoButton helpKey="persona.features" />
               </div>

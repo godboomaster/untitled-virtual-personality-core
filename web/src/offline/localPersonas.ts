@@ -22,6 +22,9 @@ export interface LocalPersona {
   status: LocalPersonaStatus; // pending — ждёт ядра; error — ядро не приняло (400/422)
   error?: string; // ответ ядра при error — на карточке персоны
   color?: string | null;
+  // встроенная в приложение (bundledPersonas.ts): та же есть на ядре — при
+  // переносе переписка ложится в неё, а не в копию «_2»
+  bundled?: boolean;
 }
 
 // Персона из списка (ApiPersona) с пометкой «только на телефоне»
@@ -207,6 +210,39 @@ export function addLocalPersona(yaml: string, existingIds: string[], now = Date.
   return persona;
 }
 
+const BUNDLED_SEEDED_KEY = 'vpc-bundled-seeded';
+
+/** Телефон без компьютера: встроенные персоны — один раз (удалённая
+ * пользователем не возвращается). existingIds — уже известные (снимок с ядра). */
+export function ensureBundledPersonas(bundled: Record<string, string>, existingIds: string[], now = Date.now() / 1000): string[] {
+  let seeded: string[] = [];
+  try {
+    seeded = JSON.parse(localStorage.getItem(BUNDLED_SEEDED_KEY) || '[]') as string[];
+  } catch {
+    seeded = [];
+  }
+  const taken = new Set([...existingIds, ...localPersonas().map((p) => p.id)].map((x) => x.toLowerCase()));
+  const added: string[] = [];
+  for (const [id, yaml] of Object.entries(bundled)) {
+    if (seeded.includes(id)) continue;
+    seeded.push(id);
+    if (taken.has(id.toLowerCase())) continue;
+    try {
+      const p = addLocalPersona(yaml, existingIds, now);
+      save(localPersonas().map((x) => (x.id === p.id ? { ...x, bundled: true } : x)));
+      added.push(p.id);
+    } catch {
+      /* YAML не прошёл проверки — без неё */
+    }
+  }
+  try {
+    localStorage.setItem(BUNDLED_SEEDED_KEY, JSON.stringify(seeded));
+  } catch {
+    /* хранилище недоступно */
+  }
+  return added;
+}
+
 /** Перенос на ядро: id занят — новый id в YAML и в записи. */
 export function renameLocalPersona(from: string, to: string): LocalPersona | null {
   const list = localPersonas();
@@ -295,6 +331,7 @@ export function buildLocalKit(p: LocalPersona, donor: OfflineKit | null, lang?: 
     generated_at: p.created_at,
     fetched_at: 0,
     local: true,
+    ...(donor?.standalone ? { standalone: true } : {}),
     system: [character, rules, style, language].filter(Boolean).join('\n\n'),
     parts: {
       character,

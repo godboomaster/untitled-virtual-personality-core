@@ -15,6 +15,10 @@ export interface HitMask {
   rows: number;
   cols: number;
   alpha: Uint8Array;
+  /** Макушка: самая высокая строка фигуры по всем ракурсам — доля стороны
+      клетки от её верха (над ней в кадре прозрачно; облачко портрета на
+      рабочем столе встаёт над ней, а не над верхом кадра) */
+  top: number;
 }
 
 export async function buildMask(data: PortraitData): Promise<HitMask | null> {
@@ -33,7 +37,27 @@ export async function buildMask(data: PortraitData): Promise<HitMask | null> {
   const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
   const alpha = new Uint8Array(canvas.width * canvas.height);
   for (let i = 0; i < alpha.length; i++) alpha[i] = px[i * 4 + 3];
-  return { rows, cols, alpha };
+  return { rows, cols, alpha, top: crown(alpha, rows, cols) };
+}
+
+// Самая высокая строка фигуры в клетках листа, доля стороны клетки
+function crown(alpha: Uint8Array, rows: number, cols: number): number {
+  const width = cols * CELL;
+  let best = CELL;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      for (let y = 0; y < best; y++) {
+        const row = (r * CELL + y) * width + c * CELL;
+        let solid = false;
+        for (let x = 0; x < CELL && !solid; x++) solid = alpha[row + x] >= SOLID;
+        if (solid) {
+          best = y;
+          break;
+        }
+      }
+    }
+  }
+  return best >= CELL ? 0 : best / CELL;
 }
 
 /** Точка (u, v) — доли стороны клетки (r, c) от её левого верхнего угла — на фигуре? */

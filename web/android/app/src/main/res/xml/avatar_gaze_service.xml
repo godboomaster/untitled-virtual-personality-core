@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- «Аватар: куда вы нажимаете» (AvatarGazeService): только прямоугольник
+     нажатого элемента на экране — аватар поверх приложений смотрит туда.
+     И открыта ли клавиатура — по типам окон (typeWindowsChanged).
+     Подписка на события меняется из кода: пока аватара нет — ни одного.
+     canRetrieveWindowContent — без него у события нет источника (а значит,
+     и места на экране); содержимое окон служба не обходит -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewClicked|typeViewLongClicked|typeViewTextChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/avatar_gaze_desc"
+    android:notificationTimeout="50" />

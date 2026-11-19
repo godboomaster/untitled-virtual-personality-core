@@ -2,17 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { api } from '../api';
 import type { NoteEntry } from '../api';
-import { usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from './PersonaAvatar';
+import Icon from './icons';
 import { confirmDialog } from '../dialogStore';
 import { useI18n } from '../i18n';
 import type { Persona } from '../mockData';
+import { localNotes, newNoteId, saveLocalNotes } from '../offline/localNotes';
 
 /* Заметки пользователя на главной: своя книжка у каждой персоны (персона
    пишет в неё по «запиши в заметки …» в чате и читает по «что у меня в
    заметках?»). Здесь — выбор персоны, список (свежие сверху), добавление,
    правка и удаление. Файл книжки общий с ботом — он мог дописать заметку
    из чата, поэтому список перечитывается раз в полминуты и при возврате на
-   вкладку. Без бэкенда — моковые заметки, как в остальном прототипе. */
+   вкладку. Без бэкенда — моковые заметки, как в остальном прототипе.
+   Телефон без связи с ядром (phone) — книжка телефона (offline/
+   localNotes.ts): уйдёт в ядро при связи. */
 
 const POLL_MS = 30_000;
 // Длинная заметка свёрнута до нескольких строк
@@ -44,12 +48,12 @@ interface NotesWidgetProps {
   live: boolean; // данные с бэкенда
   mock: boolean; // прототип без бэкенда — моковые заметки
   noLink: boolean; // бэкенд есть, ядро не на связи
+  phone?: boolean; // телефон без связи с ядром — заметки на телефоне
   counts?: Record<string, number>; // число заметок персон из сводки главной
 }
 
-export default function NotesWidget({ personas, live, mock, noLink, counts }: NotesWidgetProps) {
+export default function NotesWidget({ personas, live, mock, noLink, phone = false, counts }: NotesWidgetProps) {
   const { t, lang } = useI18n();
-  const avatars = usePersonaAvatars();
   const locale = lang === 'ru' ? 'ru-RU' : 'en-US';
 
   const [picked, setPicked] = useState<string | null>(readPick);
@@ -78,10 +82,13 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
       setList((prev) => {
         if (!prev || prev.pid !== p) return prev;
         const next = fn(prev.items);
-        if (!live) mockNotes.set(p, next);
+        if (!live) {
+          if (phone) saveLocalNotes(p, next);
+          else mockNotes.set(p, next);
+        }
         return { pid: p, items: next };
       }),
-    [live],
+    [live, phone],
   );
 
   // Моки: заметки только у первой персоны (у остальных книжка пустая)
@@ -119,7 +126,7 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
   loadRef.current = () => {
     if (!pid) return;
     if (!live) {
-      setList(mock ? { pid, items: [...mockFor(pid)] } : null);
+      setList(phone ? { pid, items: localNotes(pid) } : mock ? { pid, items: [...mockFor(pid)] } : null);
       return;
     }
     const seq = ++reqSeq.current;
@@ -142,7 +149,7 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onFocus);
     };
-  }, [pid, live, mock]);
+  }, [pid, live, mock, phone]);
 
   const pick = (id: string) => {
     setPicked(id);
@@ -154,7 +161,8 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
     if (!text || !pid || busy) return;
     if (!live) {
       const now = Date.now() / 1000;
-      updateList(pid, (prev) => [{ id: `mock-${Date.now()}`, text, created_at: now, updated_at: null, author_name: '', owner: true, source: 'home' }, ...prev]);
+      const id = phone ? newNoteId() : `mock-${Date.now()}`;
+      updateList(pid, (prev) => [{ id, text, created_at: now, updated_at: null, author_name: '', owner: true, source: 'home' }, ...prev]);
       setDraft('');
       return;
     }
@@ -257,7 +265,7 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
                   onClick={() => pick(p.id)}
                 >
                   <span className="notes-persona-avatar">
-                    {avatars[p.id] ? <img src={avatars[p.id]} alt="" /> : p.name.charAt(0)}
+                    <PersonaAvatar persona={p} decorative followWithin=".notes-personas" />
                   </span>
                   <span className="notes-persona-name">{p.name}</span>
                   {n !== undefined && n > 0 && <span className="notes-persona-count">{n}</span>}
@@ -266,7 +274,7 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
             })}
           </div>
 
-          {noLink && !live ? (
+          {noLink && !live && !phone ? (
             <div className="notes-empty">{t('notes.noLink')}</div>
           ) : (
             <>
@@ -345,11 +353,11 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
                         {!n.owner && n.author_name && <span className="note-author">{t('notes.by', { name: n.author_name })}</span>}
                         {!isEditing && (
                           <span className="note-actions">
-                            <button type="button" className="btn btn--icon" title={t('common.edit')} onClick={() => setEditing({ id: n.id, text: n.text })}>
-                              ✎
+                            <button type="button" className="btn btn--icon btn--square" title={t('common.edit')} aria-label={t('common.edit')} onClick={() => setEditing({ id: n.id, text: n.text })}>
+                              <Icon name="pencil" size={16} />
                             </button>
-                            <button type="button" className="btn btn--icon" title={t('common.delete')} onClick={() => void remove(n)}>
-                              ✕
+                            <button type="button" className="btn btn--icon btn--square" title={t('common.delete')} aria-label={t('common.delete')} onClick={() => void remove(n)}>
+                              <Icon name="trash" size={16} />
                             </button>
                           </span>
                         )}
@@ -358,7 +366,7 @@ export default function NotesWidget({ personas, live, mock, noLink, counts }: No
                   );
                 })}
               </ul>
-              <div className="notes-hint">{t('notes.hint')}</div>
+              <div className="notes-hint">{t(phone ? 'notes.hintPhone' : 'notes.hint')}</div>
             </>
           )}
         </>

@@ -3,11 +3,12 @@
    работают на моковых данных (прототипный режим). */
 
 import { useEffect, useReducer } from 'react';
-import { api, ApiError, isNativeApp } from './api';
+import { api, ApiError, isLinkMode, isNativeApp } from './api';
 import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
 import { saveProvidersCopy } from './offline/settingsCopy';
 import { localApiPersona, localPersonas, onLocalPersonasChange } from './offline/localPersonas';
+import { rememberCoreId } from './coreId';
 import type { LocalApiPersona } from './offline/localPersonas';
 
 // Коды фич, известные UI (подписи — fb.* в словарях i18n)
@@ -82,10 +83,11 @@ function readSnapshot(): ApiPersona[] {
   }
 }
 
-/** Запуск без ноутбука: список персон из снимка. false — снимка нет. */
-export function seedOfflinePersonas(): boolean {
+/** Запуск без ноутбука: список персон из снимка. false — снимка нет.
+ * empty — и без него (телефон без компьютера: персоны только свои). */
+export function seedOfflinePersonas(empty = false): boolean {
   const list = readSnapshot();
-  if (!list.length && !localPersonas().length) return false;
+  if (!empty && !list.length && !localPersonas().length) return false;
   cache = list.map(mapPersona);
   listeners.forEach((l) => l());
   return true;
@@ -97,6 +99,19 @@ export function offlinePersonaList(): { id: string; name: string; description: s
   const out = readSnapshot().map((p) => ({ id: p.id, name: p.name, description: p.description || '' }));
   const have = new Set(out.map((p) => p.id));
   for (const p of localPersonas()) if (!have.has(p.id)) out.push({ id: p.id, name: p.name, description: p.description });
+  return out;
+}
+
+/** Персоны из снимка и с телефона целиком (с features: trigger_words —
+ * имена для голосовой активации без компьютера). */
+export function offlinePersonasFull(): ApiPersona[] {
+  const out = readSnapshot();
+  const have = new Set(out.map((p) => p.id));
+  for (const p of localPersonas()) {
+    if (have.has(p.id)) continue;
+    const { local: _local, ...persona } = localApiPersona(p);
+    out.push(persona);
+  }
   return out;
 }
 
@@ -213,16 +228,29 @@ export function useApiOnline(): boolean {
 // /api/health — раз в 15 с, пока вкладка видна; ответ дольше 5 с — нет связи.
 // «Нет связи» — только после двух неудач подряд (вторая проверка через 3 с):
 // ядро бывает занято секунды (создание персоны при первом открытии чата), а
-// на телефоне «нет связи» включает ответы без ноутбука (web/src/offline)
+// на телефоне «нет связи» включает ответы без ноутбука (web/src/offline).
+// Телефон открывается, не дожидаясь ядра (BootGate), — пока связи нет,
+// проверка раз в 5 с: запущенное ядро подхватится через секунды (по каналу
+// VPC Link — как обычно, чтобы не долбить посредника)
 
 export type CoreHealth = 'ok' | 'down' | 'unknown';
+// Для шапки: первая проверка или проверка по нажатию после «нет связи» — «ищу»
+export type CoreLink = 'searching' | 'ok' | 'down';
 
-const HEALTH_POLL_MS = 15_000;
+const HEALTH_TICK_MS = 5_000;
+const HEALTH_SLOW_TICKS = 3; // на связи — каждый третий тик (15 с)
 const HEALTH_TIMEOUT_MS = 5_000;
 const HEALTH_RECHECK_MS = 3_000;
 let health: CoreHealth = 'unknown';
 let healthTimer: number | null = null;
+let healthTicks = 0;
 let healthFails = 0;
+let healthBusy = false;
+let healthManual = false; // проверка по нажатию на шапку
+let healthManualAt = 0;
+// «Ищу» по нажатию — не короче: отказ от выключенного ядра приходит мгновенно,
+// и подпись мелькнула бы незаметно
+const HEALTH_MANUAL_MIN_MS = 800;
 const healthListeners = new Set<() => void>();
 
 function setHealth(next: CoreHealth) {
@@ -232,21 +260,56 @@ function setHealth(next: CoreHealth) {
 }
 
 function checkHealth() {
-  if (document.hidden) return;
+  if (document.hidden || healthBusy) return;
+  healthBusy = true;
   const ctl = new AbortController();
   const timer = window.setTimeout(() => ctl.abort(), HEALTH_TIMEOUT_MS);
+  let recheck = false;
   api
     .health({ signal: ctl.signal })
-    .then(() => {
+    .then((r) => {
       healthFails = 0;
+      // Id своего ядра — найти его, если сменится адрес (coreMove.ts)
+      rememberCoreId(r?.id);
       setHealth('ok');
     })
     .catch(() => {
       healthFails += 1;
       if (healthFails >= 2 || health === 'down') setHealth('down');
-      else window.setTimeout(checkHealth, HEALTH_RECHECK_MS);
+      else recheck = true;
     })
-    .finally(() => window.clearTimeout(timer));
+    .finally(() => {
+      window.clearTimeout(timer);
+      healthBusy = false;
+      if (recheck) {
+        window.setTimeout(checkHealth, HEALTH_RECHECK_MS);
+      } else if (healthManual) {
+        window.setTimeout(() => {
+          healthManual = false;
+          healthListeners.forEach((fn) => fn());
+        }, Math.max(0, HEALTH_MANUAL_MIN_MS - (Date.now() - healthManualAt)));
+      }
+    });
+}
+
+function healthTick() {
+  healthTicks += 1;
+  const fast = health !== 'ok' && isNativeApp() && !isLinkMode();
+  if (fast || healthTicks % HEALTH_SLOW_TICKS === 0) checkHealth();
+}
+
+/** Проверить связь сейчас (нажатие на статус в шапке): пока идёт — «ищу». */
+export function recheckCore() {
+  if (healthBusy || healthManual) return;
+  healthManual = true;
+  healthManualAt = Date.now();
+  healthListeners.forEach((fn) => fn());
+  checkHealth();
+  // Вкладка скрыта — проверки не будет, «ищу» не должно залипнуть
+  if (!healthBusy) {
+    healthManual = false;
+    healthListeners.forEach((fn) => fn());
+  }
 }
 
 const onHealthVisibility = () => {
@@ -264,7 +327,7 @@ export function useCoreHealth(): CoreHealth {
     healthListeners.add(force);
     if (healthTimer == null) {
       checkHealth();
-      healthTimer = window.setInterval(checkHealth, HEALTH_POLL_MS);
+      healthTimer = window.setInterval(healthTick, HEALTH_TICK_MS);
       document.addEventListener('visibilitychange', onHealthVisibility);
     }
     return () => {
@@ -277,6 +340,14 @@ export function useCoreHealth(): CoreHealth {
     };
   }, []);
   return health;
+}
+
+/** Связь с ядром для шапки: ищу (первая проверка, проверка по нажатию) / на
+ * связи / нет связи. */
+export function useCoreLink(): CoreLink {
+  const h = useCoreHealth();
+  if (h === 'unknown' || (h === 'down' && healthManual)) return 'searching';
+  return h;
 }
 
 // ── Провайдеры LLM с бэкенда (общий кеш, как у персон) ───────────────

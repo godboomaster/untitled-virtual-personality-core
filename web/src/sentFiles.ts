@@ -36,20 +36,25 @@ export interface SavedFile {
 }
 
 export async function saveSentFile(file: SentFile): Promise<SavedFile> {
-  const blob = await fetchSentFile(file);
+  return saveBlob(file.name, await fetchSentFile(file));
+}
+
+/** Сохранить файл: в браузере — скачивание, в приложении на телефоне —
+ * «Загрузки/Virtual Persona» (файлы лора, YAML режимов). */
+export async function saveBlob(name: string, blob: Blob): Promise<SavedFile> {
   const mime = blob.type || 'application/octet-stream';
   if (!isNativeApp()) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = file.name;
+    a.download = name;
     a.click();
     // Освобождаем ссылку, когда браузер её уже забрал
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     return { mime };
   }
   const p = native();
-  const { id } = await p.begin({ name: file.name, mime });
+  const { id } = await p.begin({ name, mime });
   try {
     for (let off = 0; off < blob.size; off += CHUNK) {
       const part = await blob.slice(off, off + CHUNK).arrayBuffer();

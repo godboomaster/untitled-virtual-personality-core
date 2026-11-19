@@ -1,12 +1,18 @@
+import logging
 import os
+import re
+import threading
 import time
+from contextlib import contextmanager
 
 import yaml
 from typing import Optional, List, Dict
 
-from app.core import timeutil
+from app.core import persona_modes, timeutil
 from app.core.addons import CORE_PERSONAS_DIR, find_persona_file, persona_dirs
 from app.core.language import detect_dialogue_language, response_language_note
+
+logger = logging.getLogger(__name__)
 
 
 def _format_msg_ts(ts) -> str:
@@ -85,16 +91,76 @@ def persona_prompt(persona, chat_id=None, user_id=None) -> str:
 # Собеседник веба по умолчанию: от него пишет приложение ядра
 WEB_DEFAULT_USER = "web_user"
 
-# Режимы персоны по собеседнику — файлы <персона>_modes/<режим>.yaml рядом с
-# YAML персоны (в любой папке персон, как она сама): master — особому
-# собеседнику (special_users), mortal — остальным. В файле свой
-# system_prompt (и, если надо, short_prompt — краткое описание для Gemma
-# телефона) вместо общего; файла режима нет — общий. Папка не YAML верхнего
-# уровня — в список персон не попадает
-PERSONA_MODES = ("master", "mortal")
+# Режимы персоны — файлы <персона>_modes/<режим>.yaml рядом с YAML персоны
+# (в любой папке персон, как она сама). По собеседнику: master — особому
+# (special_users), mortal — остальным. Любой другой файл — режим по
+# триггеру: имя-обращение, ключевое слово, настроение (app/core/persona_modes).
+# В файле свой system_prompt (и, если надо, short_prompt — краткое описание
+# для Gemma телефона) вместо общего; файла режима нет — общий. Память,
+# история и факты у режимов общие — это та же персона. Папка не YAML
+# верхнего уровня — в список персон не попадает
+PERSONA_MODES = persona_modes.ADDRESSEE_MODES
 
-# Как часто заглядывать в YAML за свежей заморозкой (features.muted)
+# Как часто заглядывать в YAML за свежей заморозкой (features.muted) и в
+# папку режимов за правками
 _MUTED_RECHECK_SEC = 5.0
+
+# Заметка модели о режиме: инструкции режима — в начале системного блока,
+# а в истории — её ответы в другом режиме (модель тянет их тон)
+MODE_NOTE = (
+    "YOUR MODE NOW: \"{label}\" — the persona instructions at the top describe "
+    "you in this mode. You are still the same persona: the same memories, facts "
+    "and conversation history. Some of your replies in the history below may "
+    "have been written in another mode — keep what was said and agreed, but do "
+    "not copy their tone or manner."
+)
+MODE_BACK_NOTE = (
+    "YOUR MODE NOW: your usual self — the persona instructions at the top. "
+    "Your recent replies in the history below were written in your \"{label}\" "
+    "mode — keep what was said and agreed, but do not copy their tone or manner."
+)
+# Ответы другого режима в истории помечены (ModeLog): модель знает, что
+# сказано, но не берёт их за образец своего голоса
+MODE_NOW = ("YOUR MODE NOW: \"{label}\" — the persona instructions at the top describe "
+            "you in this mode. You are still the same persona, with the same memories.")
+MODE_NOW_BASE = "YOUR MODE NOW: your usual self — the persona instructions at the top."
+MODE_TAG = "[in your \"{label}\" mode]"
+MODE_TAG_BASE = "[as your usual self]"
+MODE_TAGGED_NOTE = (
+    "Some of your earlier replies in the history below are tagged {tags} — you "
+    "wrote them in a different mode than the one you are in now. They are part of "
+    "the conversation: remember what was said and agreed. But they are NOT your "
+    "voice now — do not imitate their tone, wording, sentence length or manner. "
+    "Speak only as the persona instructions at the top describe you now. Do NOT "
+    "put such tags into your own reply."
+)
+# Образцы голоса (voice_examples в YAML персоны или режима) — в конце
+# системного блока, ближе к месту генерации
+VOICE_NOTE = (
+    "HOW YOU SOUND NOW — a few lines in your current voice. A reference for tone, "
+    "rhythm and manner only: do not repeat them, do not reuse their content.\n{lines}"
+)
+VOICE_EXAMPLES_MAX = 8
+# Ход сразу после смены режима: последний ответ в истории — другого режима,
+# и модель тянет его тон дальше, несмотря на ноту наверху. Тогда к реплике
+# пользователя — короткая заметка приложения (ближе всего к месту ответа);
+# так у любого провайдера, в том числе у веб-чатов и модели телефона
+MODE_TURN_NOTE = ("(Note from the app, not from the user: you are {now} now. Your last replies "
+                  "above were written in another mode — do not continue their tone. Answer in "
+                  "your current voice{like}, in the language of the user's message.)")
+_CYRILLIC_RE = re.compile(r"[а-яё]", re.I)
+_LATIN_RE = re.compile(r"[a-z]", re.I)
+
+
+def voice_like(examples: List[str], text: str) -> str:
+    """Образец голоса к заметке хода — на письменности реплики (кириллица или
+    латиница): образец на другом языке уводил ответ на него. Нет такого — ""."""
+    cyr = bool(_CYRILLIC_RE.search(text or ""))
+    for v in examples:
+        if (bool(_CYRILLIC_RE.search(v)) if cyr else (bool(_LATIN_RE.search(v)) and not _CYRILLIC_RE.search(v))):
+            return f', in the tone of "{v}" (tone only — never repeat these words)'
+    return ""
+VOICE_EXAMPLE_CHARS = 400
 
 # Правила к результатам веб-поиска и к строке окружения — общие для промпта
 # ядра и ответов телефона без ноутбука (app/api/offline_api.py: кит)
@@ -163,14 +229,33 @@ class PersonaLayer:
         # chat_id → кто последним писал в чат (BotInstance, по STM): адресат
         # сообщений, что персона пишет сама, когда известен только чат
         self.speaker_of = None
+        # Режимы по триггеру: включённые по чатам (bind_mode_state — файл в
+        # данных контекста бота), настроение чата (BotInstance: state engine)
+        self._mode_state = persona_modes.ModeState()
+        # Когда какой режим был в чате — пометить в истории ответы другого
+        self._mode_log = persona_modes.ModeLog()
+        self.mood_of = None
+        # Ключ чата → режим, из которого он вышел этим ходом (заметка модели)
+        self._switched_from: Dict[str, str] = {}
+        # Ключ чата текущего хода (turn_scope): промпт и настройки без явного
+        # чата — его
+        self._turn = threading.local()
 
-    def get_settings(self) -> dict:
-        # Значения по умолчанию, если не указаны в yaml
-        return {
+    def get_settings(self, chat_id=None, user_id=None) -> dict:
+        # Значения по умолчанию, если не указаны в yaml; режим по триггеру
+        # (его settings) — поверх. Чат не назван — чат текущего хода
+        out = {
             "temperature": self.settings.get("temperature", 0.7),
             "max_tokens": self.settings.get("max_tokens", 2000),
             "top_p": self.settings.get("top_p", 0.9)
         }
+        mode = self.trigger_mode(self._mode_key(chat_id, user_id))
+        over = (self.modes.get(mode) or {}).get("settings") if mode else None
+        if isinstance(over, dict):
+            for key in out:
+                if over.get(key) is not None:
+                    out[key] = over[key]
+        return out
     
     def _load_persona(self, name: str) -> Dict:
         # YAML ищется в папке пользователя, app/personas и папках персон аддонов
@@ -294,36 +379,265 @@ class PersonaLayer:
     def _load_modes(self, name: str) -> Dict[str, Dict]:
         """Файлы режимов <name>_modes/<режим>.yaml — каждый из первой папки
         персон, где он есть. Без system_prompt — режима нет."""
-        modes: Dict[str, Dict] = {}
-        for mode in PERSONA_MODES:
-            for d in persona_dirs():
-                path = d / f"{name}_modes" / f"{mode}.yaml"
-                if not path.is_file():
-                    continue
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = yaml.safe_load(f)
-                except Exception as e:
-                    print(f"Режим «{mode}» персоны '{name}' не прочитан ({path}): {e}")
-                    break
-                if isinstance(data, dict) and str(data.get("system_prompt") or "").strip():
-                    modes[mode] = data
-                break
+        dirs = persona_dirs()
+        self._modes_sig = persona_modes.signature(name, dirs)
+        self._modes_checked_at = time.monotonic()
+        modes = persona_modes.load_modes(name, dirs)
+        self._mode_triggers = persona_modes.trigger_modes(modes)
         return modes
 
+    def _refresh_modes(self) -> None:
+        """Правка файлов режимов — без перезапуска: папки сверяются не чаще
+        раза в _MUTED_RECHECK_SEC (Telegram-боты — другой процесс)."""
+        now = time.monotonic()
+        if now - getattr(self, "_modes_checked_at", float("-inf")) < _MUTED_RECHECK_SEC:
+            return
+        self._modes_checked_at = now
+        try:
+            dirs = persona_dirs()
+            sig = persona_modes.signature(self.persona_name, dirs)
+            if sig == getattr(self, "_modes_sig", None):
+                return
+            modes = persona_modes.load_modes(self.persona_name, dirs)
+        except Exception:
+            return
+        # Сначала режимы, потом их триггеры: параллельный ход не увидит
+        # триггер режима, которого ещё нет в self.modes
+        self.modes = modes
+        self._mode_triggers = persona_modes.trigger_modes(modes)
+        self._modes_sig = sig
+        logger.info(f"[PersonaMode] {self.persona_name}: режимы перечитаны — "
+                    f"{', '.join(sorted(modes)) or 'нет'}")
+
+    def _triggers(self) -> Dict[str, "persona_modes.Triggers"]:
+        if not hasattr(self, "_mode_triggers"):
+            return {}  # заготовка без __init__
+        self._refresh_modes()
+        return self._mode_triggers
+
+    def bind_mode_state(self, data_root, context: str) -> None:
+        """Включённые режимы чатов — в data/<контекст>/persona_mode.json
+        (BotInstance: контекст его памяти)."""
+        self._mode_state = persona_modes.ModeState(persona_modes.state_path(data_root, context))
+        self._mode_log = persona_modes.ModeLog(persona_modes.log_path(data_root, context))
+
+    def _mode_key(self, chat_id=None, user_id=None) -> Optional[str]:
+        # Ключ чата — как у STM (chat_id, иначе user_id); не назван — ход
+        if chat_id is not None:
+            return str(chat_id)
+        if user_id is not None:
+            return str(user_id)
+        turn = getattr(self, "_turn", None)
+        return getattr(turn, "key", None) if turn is not None else None
+
+    @contextmanager
+    def turn_scope(self, key):
+        """Ход чата key: get_settings()/prompt_for() без чата — его режим."""
+        turn = getattr(self, "_turn", None)
+        if turn is None:
+            yield
+            return
+        prev = getattr(turn, "key", None)
+        turn.key = None if key is None else str(key)
+        try:
+            yield
+        finally:
+            turn.key = prev
+
+    def _chat_mood(self, key):
+        get = getattr(self, "mood_of", None)
+        if key is None or not callable(get):
+            return None
+        try:
+            return get(key)
+        except Exception:
+            return None
+
+    def trigger_mode(self, key) -> Optional[str]:
+        """Режим по триггеру у чата key сейчас (включённый или по
+        настроению); None — нет."""
+        triggers = self._triggers()
+        if not triggers or key is None:
+            return None
+        state = self._mode_state.get(key)
+        mood = self._chat_mood(key) if any(t.mood for t in triggers.values()) else None
+        return persona_modes.effective(triggers, state.get("active"), mood)
+
+    def mode_names(self) -> List[str]:
+        """Имена режимов по триггеру (обращение ими включает режим): Telegram
+        отвечает на них в группе, голосовой слушатель будит персону."""
+        out: List[str] = []
+        for t in self._triggers().values():
+            out += [n for n in t.names if n not in out]
+        return out
+
+    def mode_label(self, mode: str) -> str:
+        data = (getattr(self, "modes", None) or {}).get(mode) or {}
+        return str(data.get("name") or mode).strip() or mode
+
+    def observe_turn(self, key, text: str, called_as: Optional[str] = None,
+                     base_names=()) -> Optional[str]:
+        """Реплика пользователя в чате key — включить/снять режим по имени
+        или ключевому слову (persona_modes.decide). Возврат — режим чата
+        на этот ход. called_as — имя, которым позвали голосом или в Telegram
+        (из текста его уже срезали)."""
+        triggers = self._triggers()
+        if key is None:
+            return None
+        key = str(key)
+        state = self._mode_state.get(key)
+        if not triggers:
+            if state:
+                self._mode_state.put(key, {})
+            self._switched_from.pop(key, None)
+            return None
+        active = persona_modes.decide(triggers, state.get("active"), text or "",
+                                      called_as=called_as, base_names=base_names)
+        mood = self._chat_mood(key) if any(t.mood for t in triggers.values()) else None
+        mode = persona_modes.effective(triggers, active, mood)
+        prev = str(state.get("last") or "")
+        if prev and prev != (mode or "") and prev in triggers:
+            self._switched_from[key] = prev
+        else:
+            self._switched_from.pop(key, None)
+        entry = {"active": active} if active else {}
+        if mode:
+            entry["last"] = mode
+        self._mode_state.put(key, entry)
+        self._note_mode_used(key, mode)
+        if (mode or "") != prev:
+            via = (active or {}).get("via") if active and active.get("mode") == mode else "mood"
+            logger.info(f"[PersonaMode] {self.persona_name} | чат {key}: "
+                        f"{prev or 'обычный'} → {mode or 'обычный'}" + (f" ({via})" if mode else ""))
+        return mode
+
+    def _note_mode_used(self, key, mode: Optional[str]) -> None:
+        # Персона отвечает в чате key в режиме mode — в журнал (у персоны с
+        # режимами по триггеру; без них помечать в истории нечего)
+        log = getattr(self, "_mode_log", None)
+        if log is None or key is None or not self._triggers():
+            return
+        log.note(key, mode or "")
+
+    def note_mode_at(self, key, mode: Optional[str], ts: float) -> None:
+        """Ответ в чате key в момент ts был в режиме mode (офлайн-переписка
+        с телефона: он отвечал режимом из кита)."""
+        log = getattr(self, "_mode_log", None)
+        if log is None or key is None or not self._triggers():
+            return
+        log.note(key, mode or "", ts=ts)
+
+    def mode_kit(self, key, limit: int = 60) -> Optional[dict]:
+        """Для телефона без ядра (кит, app/api/offline_api.py): режим чата
+        сейчас и журнал режимов — чтобы он сам пометил в истории ответы
+        другого режима, как prepare_messages. Режимов у персоны нет — None."""
+        if key is None or not self._triggers():
+            return None
+        cur = self.trigger_mode(key) or ""
+        self._note_mode_used(key, cur)
+        rows = self._mode_log.rows(key, limit) if getattr(self, "_mode_log", None) is not None else []
+        ids = set(self.modes or {}) | {m for _, m in rows if m}
+        return {
+            "current": cur,
+            "log": rows,
+            # Пометка ответа каждого режима ("" — обычный)
+            "tags": {"": MODE_TAG_BASE, **{m: MODE_TAG.format(label=self.mode_label(m)) for m in sorted(ids)}},
+            # Есть пометки: строка «режим сейчас» и правило (тег — {tags});
+            # нет — обычная заметка о режиме
+            "now": MODE_NOW.format(label=self.mode_label(cur)) if cur else MODE_NOW_BASE,
+            "tagged": MODE_TAGGED_NOTE,
+            "note": self.mode_note(chat_id=key).strip(),
+            # К реплике пользователя, если последний ответ — другого режима;
+            # {like} — образец голоса на языке реплики (телефон выберет сам)
+            "turn": self.mode_turn_note(cur),
+        }
+
+    def history_mode(self, key, ts) -> Optional[str]:
+        """В каком режиме написан ответ чата key в момент ts ("" — обычный);
+        None — не известно."""
+        log = getattr(self, "_mode_log", None)
+        return log.mode_at(key, ts) if log is not None else None
+
+    def mode_turn_note(self, mode: Optional[str], text: Optional[str] = None) -> str:
+        """Заметка к реплике на ходу сразу после смены режима (MODE_TURN_NOTE):
+        кто персона сейчас и образец её голоса на языке реплики (voice_like).
+        text None — шаблон с {like} (телефон подставит сам по реплике)."""
+        now = f'in your "{self.mode_label(mode)}" mode' if mode else "your usual self again"
+        like = "{like}" if text is None else voice_like(self.voice_examples(mode or None), text)
+        return MODE_TURN_NOTE.format(now=now, like=like)
+
+    def voice_examples(self, mode: Optional[str]) -> List[str]:
+        """Образцы голоса (voice_examples) режима mode, нет их у режима —
+        персоны; строки, обрезанные по длине."""
+        data = (getattr(self, "modes", None) or {}).get(mode) if mode else None
+        raw = (data or {}).get("voice_examples") if data else None
+        if not raw:
+            raw = (getattr(self, "persona_data", None) or {}).get("voice_examples")
+        items = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+        out = []
+        for x in items:
+            if isinstance(x, (str, int, float)) and not isinstance(x, bool):
+                line = " ".join(str(x).split())[:VOICE_EXAMPLE_CHARS]
+                if line and line not in out:
+                    out.append(line)
+        return out[:VOICE_EXAMPLES_MAX]
+
+    def set_mode(self, key, mode: Optional[str]) -> bool:
+        """«/mode»: mode — включить вручную (до другого триггера), "" —
+        обычный (и настроение не решает), None — снять ручной выбор."""
+        triggers = self._triggers()
+        if key is None or (mode and mode not in triggers):
+            return False
+        key = str(key)
+        state = self._mode_state.get(key)
+        entry = {k: v for k, v in state.items() if k != "active"}
+        if mode is not None:
+            entry["active"] = {"mode": mode, "via": "manual", "since": time.time()}
+        self._mode_state.put(key, entry)
+        return True
+
+    def manual_mode(self, key) -> Optional[str]:
+        # Ручной выбор чата: id режима, "" — «обычный», None — выбора нет
+        active = self._mode_state.get(key).get("active") if key is not None else None
+        if isinstance(active, dict) and active.get("via") == "manual":
+            return str(active.get("mode") or "")
+        return None
+
+    def mode_since(self, key) -> dict:
+        # Запись включённого режима чата (для «/mode»): via, since, until
+        active = self._mode_state.get(key).get("active") if key is not None else None
+        return dict(active) if isinstance(active, dict) else {}
+
+    def mode_note(self, chat_id=None, user_id=None) -> str:
+        """Заметка модели: в каком режиме персона сейчас; вышла из режима
+        этим ходом — что прежние ответы были в нём."""
+        key = self._mode_key(chat_id, user_id)
+        mode = self.trigger_mode(key)
+        if mode:
+            return "\n\n" + MODE_NOTE.format(label=self.mode_label(mode))
+        prev = getattr(self, "_switched_from", {}).get(key) if key is not None else None
+        if prev:
+            return "\n\n" + MODE_BACK_NOTE.format(label=self.mode_label(prev))
+        return ""
+
     def mode_for(self, user_id=None, chat_id=None) -> Optional[str]:
-        """Режим собеседника (адресат — как addressee_note): master — особый
-        пользователь, mortal — остальные; None — файла этого режима у персоны
-        нет, говорит общим system_prompt."""
+        """Режим этого чата: по триггеру (имя, ключевое слово, настроение —
+        persona_modes), иначе по собеседнику (адресат — как addressee_note):
+        master — особый пользователь, mortal — остальные; None — файла этого
+        режима у персоны нет, говорит общим system_prompt."""
+        mode = self.trigger_mode(self._mode_key(chat_id, user_id))
+        if mode:
+            return mode
         if not getattr(self, "modes", None):
             return None
         mode = "master" if self.special_user(addressee_id(self, chat_id, user_id)) else "mortal"
         return mode if mode in self.modes else None
 
     def prompt_for(self, user_id=None, chat_id=None) -> str:
-        """system_prompt для этого собеседника: файла его режима, иначе общий."""
+        """system_prompt для этого чата и собеседника: файла его режима, иначе общий."""
         mode = self.mode_for(user_id, chat_id)
-        return str(self.modes[mode]["system_prompt"]) if mode else self.system_prompt
+        data = (getattr(self, "modes", None) or {}).get(mode) if mode else None
+        return str(data["system_prompt"]) if data else self.system_prompt
 
     @staticmethod
     def _special_names(su: Dict) -> List[str]:
@@ -419,7 +733,8 @@ class PersonaLayer:
                          living_context: Optional[str] = None,
                          help_style_context: Optional[str] = None,
                          conversation_style_context: Optional[str] = None,
-                         computer_control_context: Optional[str] = None) -> List[Dict]:
+                         computer_control_context: Optional[str] = None,
+                         chat_id: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -472,6 +787,34 @@ Use the information from the uploaded files in your answer if the user mentions 
         special_note = ""
         if user_id:
             special_note = self._get_special_user_note(user_id, history) or ""
+
+        # Режим по триггеру: в каком режиме персона сейчас (или вышла из
+        # него этим ходом) — история общая, а тон прежних ответов другой.
+        # Ответы другого режима в истории помечены (по журналу режимов):
+        # тогда нота говорит про метки — пока такие ответы есть в истории,
+        # а не только на ходу смены
+        mode_key = self._mode_key(chat_id, user_id)
+        cur_mode = self.trigger_mode(mode_key) or ""
+        self._note_mode_used(mode_key, cur_mode)
+        tags: Dict[int, str] = {}
+        for i, msg in enumerate((history or [])[:-1]):
+            if msg.get("role") != "assistant":
+                continue
+            was = self.history_mode(mode_key, msg.get("timestamp"))
+            if was is not None and was != cur_mode:
+                tags[i] = MODE_TAG.format(label=self.mode_label(was)) if was else MODE_TAG_BASE
+        # Последний ответ в истории — другого режима: заметка к реплике
+        last_reply = max((i for i, m in enumerate((history or [])[:-1]) if m.get("role") == "assistant"), default=None)
+        turn_note = (self.mode_turn_note(cur_mode, user_message)
+                     if last_reply is not None and last_reply in tags else "")
+        mode_note = self.mode_note(chat_id, user_id)
+        if tags:
+            used = ", ".join(sorted(set(tags.values())))
+            head = (MODE_NOW.format(label=self.mode_label(cur_mode)) if cur_mode else MODE_NOW_BASE)
+            mode_note = "\n\n" + head + " " + MODE_TAGGED_NOTE.format(tags=used)
+        voice = self.voice_examples(cur_mode or None)
+        if voice:
+            mode_note += "\n\n" + VOICE_NOTE.format(lines="\n".join(f"- {v}" for v in voice))
 
         # Окружение пользователя: город, его локальное время и погода (одна строка)
         env_note = ""
@@ -579,7 +922,7 @@ Use the information from the uploaded files in your answer if the user mentions 
         ) or ""
 
         messages = [
-            {"role": "system", "content": self.prompt_for(user_id) + context_block + env_note + timestamps_note + todo_note + notes_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + special_note + conv_style_note + language_note},
+            {"role": "system", "content": self.prompt_for(user_id, chat_id) + context_block + env_note + timestamps_note + todo_note + notes_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + mode_note + special_note + conv_style_note + language_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)
@@ -590,8 +933,10 @@ Use the information from the uploaded files in your answer if the user mentions 
         # Каждое сообщение (и пользователя, и бота) помечается временем отправки —
         # модель видит, когда была каждая реплика: «[15.08 14:32] [Имя (ID:1)]: …».
         if history and len(history) > 1:
-            for msg in history[:-1]:
+            for i, msg in enumerate(history[:-1]):
                 prefix = _ts_prefix(msg.get("timestamp"))
+                if i in tags:
+                    prefix = f"{prefix}{tags[i]} "
                 if msg["role"] == "user":
                     name = msg.get("user_name", "User")
                     uid = msg.get("sender_id", "")
@@ -604,6 +949,9 @@ Use the information from the uploaded files in your answer if the user mentions 
         # Перед основным ответом вставляем текст из сообщения, на которое пользователь ответил
         if reply_context:
             user_message = f"[Reply to message: {reply_context}]\n{user_message}"
+
+        if turn_note:
+            user_message = f"{user_message}\n\n{turn_note}"
 
         # Последнее (текущее) сообщение — всегда с именем, ID отправителя и меткой времени
         now_prefix = _ts_prefix(time.time())
@@ -626,4 +974,5 @@ Use the information from the uploaded files in your answer if the user mentions 
         self.system_prompt = self.persona_data.get("system_prompt", "")
         self.modes = self._load_modes(persona_name)
         self.settings = self.persona_data.get("settings", {})
+        self._switched_from = {}
         return True

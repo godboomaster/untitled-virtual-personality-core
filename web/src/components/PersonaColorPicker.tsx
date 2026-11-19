@@ -3,7 +3,8 @@ import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
 
-/* Выбор цвета метки персоны (карточка «Персоны»): кнопка-образец и HUD-поповер
+/* Выбор цвета: метка персоны (карточка «Персоны»), цвет слоя в редакторе
+   кадров. Кнопка-образец (или кнопка с подписью, залитая цветом) и HUD-поповер
    с палитрой и полем HEX. Системный color-picker браузера не используем —
    выбивается из дизайна. Поповер — порталом в body, позиция fixed от кнопки
    (карточка с transform при hover утащила бы его за собой). */
@@ -20,15 +21,26 @@ const PALETTE = [
 const HEX_RE = /^#[0-9a-f]{6}$/i;
 const POPOVER_WIDTH = 232;
 
+// Подпись на заливке цветом: чёрная или белая, что читается лучше
+const inkOn = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#000000' : '#ffffff';
+};
+
 interface PersonaColorPickerProps {
   color: string | null | undefined;
   // Сохранить цвет; null — вернуть цвет по умолчанию. Reject — показать ошибку
   onChange: (color: string | null) => Promise<void>;
   className?: string;
+  label?: string; // подпись кнопки и поповера, если цвет не у персоны
+  resetLabel?: string; // кнопка сброса
+  text?: string; // подпись на самой кнопке: кнопка заливается выбранным цветом
+  hint?: string; // всплывающая подсказка, если подписи label мало
 }
 
-export default function PersonaColorPicker({ color, onChange, className }: PersonaColorPickerProps) {
+export default function PersonaColorPicker({ color, onChange, className, label, resetLabel, text, hint }: PersonaColorPickerProps) {
   const { t } = useI18n();
+  const title = label ?? t('personas.color');
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
   const [hex, setHex] = useState('');
@@ -102,9 +114,10 @@ export default function PersonaColorPicker({ color, onChange, className }: Perso
       <button
         ref={btnRef}
         type="button"
-        className={'persona-icon-btn color-picker-btn' + (open ? ' persona-icon-btn--on' : '') + (className ? ` ${className}` : '')}
-        title={t('personas.color')}
-        aria-label={t('personas.color')}
+        className={text ? className : 'persona-icon-btn color-picker-btn' + (open ? ' persona-icon-btn--on' : '') + (className ? ` ${className}` : '')}
+        style={text && color ? { background: color, borderColor: color, color: inkOn(color) } : undefined}
+        title={hint ?? title}
+        aria-label={title}
         aria-expanded={open}
         onClick={() => {
           if (open) return close();
@@ -113,7 +126,7 @@ export default function PersonaColorPicker({ color, onChange, className }: Perso
           setOpen(true);
         }}
       >
-        <span className="color-picker-swatch" style={{ background: color ?? 'transparent' }} />
+        {text ?? <span className="color-picker-swatch" style={{ background: color ?? 'transparent' }} />}
       </button>
       {open &&
         pos &&
@@ -122,10 +135,10 @@ export default function PersonaColorPicker({ color, onChange, className }: Perso
             ref={popRef}
             className="color-popover"
             role="dialog"
-            aria-label={t('personas.color')}
+            aria-label={title}
             style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: POPOVER_WIDTH }}
           >
-            <div className="color-popover-title">{t('personas.color')}</div>
+            <div className="color-popover-title">{title}</div>
             <div className="color-popover-grid">
               {PALETTE.map((c, i) => (
                 <button
@@ -167,9 +180,9 @@ export default function PersonaColorPicker({ color, onChange, className }: Perso
                 OK
               </button>
             </div>
-            {error && <div className="color-popover-error">// {error}</div>}
+            {error && <div className="color-popover-error">{t('ui.commentPrefix')}{error}</div>}
             <button type="button" className="color-popover-reset" disabled={busy} onClick={() => void apply(null)}>
-              {t('personas.colorReset')}
+              {resetLabel ?? t('personas.colorReset')}
             </button>
           </div>,
           document.body,

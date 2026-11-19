@@ -12,8 +12,8 @@
 side). Веб-чаты не ответили — мягкий откат на Ollama, если она доступна. OCR
 остаётся только за Ollama: веб-чату не отдать картинку.
 
-Роутер один на процесс (Ollama и вкладки side общие), персона задаёт только
-выбор движков: get_local_router(context) — вид роутера, привязанный к
+Роутер один на процесс, но вкладки и история side изолированы по контексту
+персоны: get_local_router(context) — вид роутера, привязанный к
 персоне (bind_persona). Без привязки — дефолт LOCAL_LLM_BACKEND из env
 (ollama) для всех задач.
 
@@ -223,7 +223,7 @@ class LocalLLMRouter:
         self._client = httpx.Client(timeout=timeout)
         self._last_check = 0.0  # для периодической пере-проверки в is_available()
         self._available = self._check_available()
-        self._webchats: dict = {}  # сайт -> ленивый WebChatLLM (канал side)
+        self._webchats: dict = {}  # (контекст персоны, сайт) -> WebChatLLM side
         self._rot_lock = threading.Lock()  # счётчики очереди «rotate»
 
         if self._available:
@@ -371,12 +371,13 @@ class LocalLLMRouter:
             except Exception:
                 pass
 
-    def _get_webchat(self, site: Optional[str] = None):
+    def _get_webchat(self, site: Optional[str] = None,
+                     persona: Optional[str] = None):
         """WebChatLLM для локальных задач: сайт (None — первый включённый из
-        WEBCHAT_SITES), канал «side» — отдельный чат и квота. Контекст
-        «default»: вкладка side на сайт одна на процесс, общая для всех
-        персон (там короткие служебные вызовы — персональный контент
-        инициатив/LTM у персон идёт в своих чатах, см. ModelRouter(context=...)).
+        WEBCHAT_SITES), канал «side» в контексте персоны. И кэш инстансов,
+        и сохранённые адреса чатов разделены по персонам: служебные вызовы
+        содержат их мир, дневник и диалоги. Общий default разрешён только
+        вызовам без персоны; его старую историю персонам не наследуем.
         None — сайта нет."""
         try:
             from app.features.web_llm import ADAPTERS, WebChatLLM
@@ -387,12 +388,14 @@ class LocalLLMRouter:
                 site = sites[0]
             if site not in ADAPTERS:
                 return None
-            chat = self._webchats.get(site)
+            context = str(persona) if persona else "default"
+            key = (context, site)
+            chat = self._webchats.get(key)
             if chat is None:
                 # setdefault атомарен: два первых параллельных вызова не
                 # создают два инстанса (две вкладки на одном side-чате)
                 chat = self._webchats.setdefault(
-                    site, WebChatLLM(site, channel="side"))
+                    key, WebChatLLM(site, context=context, channel="side"))
             return chat
         except Exception as e:
             logger.debug(f"[LocalLLM] Веб-чат для локальных задач недоступен: {e}")
@@ -486,7 +489,7 @@ class LocalLLMRouter:
         backend, sites = self._resolve_task(task, persona, advance=True)
         if backend == "webchat":
             for site in sites:
-                chat = self._get_webchat(site)
+                chat = self._get_webchat(site, persona=persona)
                 if chat is None:
                     continue
                 try:

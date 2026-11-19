@@ -133,9 +133,9 @@ def test_route():
     orig = server_mod._api_token
     server_mod._api_token = "s3cr3t"
     try:
-        # С API_TOKEN токен нужен и по localhost (адрес в сети отсекает ещё
-        # и список разрешённых хостов API_ALLOWED_HOSTS — здесь он не проверяется)
-        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
+        # Телефон в сети с API_TOKEN (с этой машины токен не нужен; Host
+        # локальный — список API_ALLOWED_HOSTS здесь не проверяется)
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
         auth = {"Authorization": "Bearer s3cr3t"}
         _reset_inbox(inbox)
 

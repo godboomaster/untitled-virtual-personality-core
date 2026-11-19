@@ -4,19 +4,44 @@
 
 import type { RoomAvatarPreset } from '../mockData';
 
-export const headShapes: { id: RoomAvatarPreset['head']; glyph: string }[] = [
-  { id: 'circle', glyph: '●' },
-  { id: 'square', glyph: '■' },
-  { id: 'hex', glyph: '⬡' },
-  { id: 'diamond', glyph: '◆' },
+// Формы головы в порядке кнопок конструктора (кнопка — силуэт формы,
+// room/avatarHead HeadShapeIcon); порядок исходных четырёх не менять —
+// по нему же выбирается форма по умолчанию (roomModel.defaultAvatarFor)
+export const headShapes: { id: RoomAvatarPreset['head'] }[] = [
+  { id: 'circle' },
+  { id: 'square' },
+  { id: 'hex' },
+  { id: 'diamond' },
+  { id: 'squircle' },
+  { id: 'hexv' },
+  { id: 'octagon' },
+  { id: 'pent' },
+  { id: 'capsule' },
+  { id: 'screen' },
+  { id: 'can' },
 ];
 
-export const eyeOptions = ['◉ ◉', '▪ ▪', '— —', '◠ ◠', '✦ ✦'];
-
-export const accessoryOptions = ['antenna', 'ears', 'halo', 'none'] as const;
+// Аксессуары: индекс — RoomAvatarPreset.accessory; первые четыре — исходные
+// (по ним выбирается облик по умолчанию), остальные добавлены 04.11.2026.
+// Рисунок — room/avatarHead accessoryDraw
+export const accessoryOptions = ['antenna', 'ears', 'halo', 'none', 'twin', 'spring', 'headphones', 'tophat', 'bow', 'sprout'] as const;
 
 // Оттенки серого для корпуса аватара
 export const avatarShades = ['#1c1c1c', '#4a4a4a', '#8f8f8f', '#c9c9c9'];
+
+// Антенна и нимб там, где нет CSS-переменных темы (картинки, окно портрета
+// на рабочем столе): лежат и на светлом, и на тёмном
+export const NEUTRAL_ACCENT = '#8a8a8a';
+
+// Цвета фигуры по оттенку корпуса
+export function avatarTone(config: RoomAvatarPreset) {
+  return {
+    shade: avatarShades[config.shade] ?? avatarShades[1],
+    // На светлых оттенках глаза тёмные, на тёмных — светлые
+    eyeColor: config.shade >= 2 ? '#1c1c1c' : '#eae8e1',
+    stroke: config.shade >= 2 ? '#5a5a5a' : '#8f8f8f',
+  };
+}
 
 // Точка «ступней» SVG-фигуры в долях её бокса (стоя и сидя)
 export const FIGURE_ANCHOR = { x: 0.5, y: 0.97 };

@@ -1,0 +1,10 @@
+Built-in image_gen. Edit target: 43-collar-offset-ghost.png. Move the sideways steps into the solid black bottom of the neck ribbon and remove intervening white body shoulders.
+
+Precise local correction to the supplied ghost-and-egg logo. Edit ONLY the connection between the black neck ribbon and white body.
+
+The user clarifies that the little sideways steps must start DIRECTLY FROM THE BOTTOM OF THE BLACK RIBBON, not from little white body shoulders.
+Make the collar base a small solid BLACK T-shaped transition: the existing narrow black neck band continues down to a single straight horizontal lower edge, with a short black extension to the left and right at that bottom. Each extension is only about one existing outline-stroke width. From the OUTER ENDS of that black base, the straight sloping body outlines immediately descend toward the shell.
+
+CRITICAL: the whole short horizontal shoulder/step region must be SOLID BLACK and continuously connected to the neck ribbon. Fill/remove the small WHITE notches/white ledges currently visible between the ribbon sides and the body outlines. The white fabric must begin completely BELOW this continuous black ribbon base; it must not rise up beside the ribbon into the sideways step. No additional white neck, no little white bridge or white shoulder patch between the black ribbon and the stepped body edges.
+
+Keep the sideways extension modest and symmetrical. Keep the body sides straight and its interior plain white, with no folds. Preserve the head, eyes, head outline, collar's upper part, sharp body-to-shell zigzag, eggshells, cracks, colors, facets, composition, scale and white background. No text, annotations or new details.

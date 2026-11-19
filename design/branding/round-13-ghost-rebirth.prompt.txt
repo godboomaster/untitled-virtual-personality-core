@@ -1,0 +1,15 @@
+Built-in image_gen. Rebirth theme: an ascending phoenix formed by the lower-notch negative space of approved ghost bases 05 and 07. Concept exploration, not integrated into the application.
+
+Use case: logo-brand.
+Asset type: logo cutout exploration on the explicit theme REBIRTH for Virtual Persona Core.
+Input image 1: EDIT TARGET A, approved ghost variant 05 ORIGAMI. Keep its broad rounded rectangular black body, two rounded-square eye holes, short left foot, long angled right tail.
+Input image 2: EDIT TARGET B, approved ghost variant 07 RIBBON. Keep its taller arched black body, two upright capsule eye holes, long left tail and short right tail.
+User direction: redesign the LOWER NOTCH with a "REBIRTH" theme. The project gives an inanimate fictional persona a continuing living existence.
+Chosen concept: a small ascending PHOENIX formed by the background-colored NEGATIVE SPACE of the lower notch. It embodies being born anew.
+
+Change ONLY the lower third / open notch. The upper heads and eyes stay untouched and the two original ghosts remain clearly recognizable. Sculpt the open bottom gap into a highly simplified rising bird: a small upright central head/body, two broad upward-sweeping wings forming a confident open V, and a single short tapered tail that remains OPENLY CONNECTED to the background below. No enclosed pictogram on the belly. The bird is the cutout itself, never a separate printed bird or badge. The original solid ghost tails flank the new white rising-bird shape.
+The phoenix must be visibly a bird in a moment of ascent and awakening, not a flame, plant, letter Y, star, ECG or generic AI sparkle. Make the two wings distinct and elegant, with at most ONE broad angular feather division per wing. Tiny simple head and a restrained suggested beak, no eyes on the small bird and no thin feather lines. No nest, ashes, sun, fire, detailed bird illustration, heraldic crest, skull or fantasy ornament.
+Keep the bird cutout subtle yet identifiable, occupying about the lowest 25–30% of the ghost, safely below its eye holes with ample solid black torso between. Minimal bold logo geometry, broad readable cutout, no hairline details. This is a compact software icon, not an illustration of a full phoenix.
+Create a polished landscape 3:2 concept sheet on solid warm ivory #F4F0E7. Two equal columns: ghost 05 on LEFT, ghost 07 on RIGHT, equal perceived size. Solid near-black #151817 marks and ivory negative space, strictly MONOCHROME. Small labels "05 / ORIGAMI" and "07 / RIBBON" beneath. A small exact wordmark "Virtual Persona" with tiny spaced "CORE" centered at bottom. Small top-left concept title exactly "24 / REBIRTH".
+Preserve the stylistic distinction between the two original ghosts; apply the same phoenix idea to both. Generous whitespace, clean optical balance.
+Flat crisp vector-like artwork. No gradients, textures, grain, highlights, shadows, glow, 3D, watermark, extra symbols or explanatory diagrams.

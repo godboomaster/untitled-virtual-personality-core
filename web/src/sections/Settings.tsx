@@ -10,12 +10,15 @@ import { refetchProviders, useApiOnline, useApiProviders, refetchPersonaLlm, use
 import { WEB_HIDDEN_FEATURES } from '../mockData';
 import { useOfflineMode } from '../offline/state';
 import { getSettingsCopy, savePersonaConfigCopy } from '../offline/settingsCopy';
+import PhoneChainCard from '../offline/PhoneChainCard';
+import { saveChain } from '../offline/personaChain';
 
 /* Настройки персоны (вкладка в досье): провайдеры, параметры генерации,
    фичи. При доступном бэкенде — реальные: ключи/active из .env, генерация
    и фичи пишутся в YAML персоны (фичи применяются после перезапуска).
    Телефон без связи с ядром — копия с телефона, только посмотреть (нет
-   копии — пояснение). Без бэкенда вовсе — статичный мок-прототип. */
+   копии — пояснение); цепочка провайдеров персоны — своя на телефоне, её
+   можно менять (PhoneChainCard). Без бэкенда вовсе — статичный мок-прототип. */
 
 const featureHelpKeys: Record<string, HelpKey> = {
   web_search: 'settings.feature.web_search',
@@ -433,6 +436,8 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
       })
       .then(() => {
         flashSaved('llm');
+        // Цепочку поменяли на ядре — телефон без связи снова будет как здесь
+        saveChain(personaId, null);
         setLlmExclude(savedExclude);
         setLlmInit({ primary: llmPrimary, fallback: llmFallback, exclude: savedExclude });
         setWcLimitsInit({ ...wcLimits });
@@ -484,6 +489,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   if (offlineMode && !copy) {
     return (
       <div className={embedded ? undefined : 'section'}>
+        {personaId && <PhoneChainCard personaId={personaId} />}
         <div className="card">
           <p className="field-hint">{t('settings.offlineNoCopy')}</p>
         </div>
@@ -506,7 +512,10 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
         <p className="field-hint">{t('settings.offlineCopy', { date: copyDate(copy.at) })}</p>
       )}
 
-      {/* Провайдеры */}
+      {/* Провайдеры; без связи с ядром — цепочка персоны на телефоне, её можно менять */}
+      {offlineMode && personaId ? (
+        <PhoneChainCard personaId={personaId} />
+      ) : (
       <div className="card">
         <h2 className="card-title">
           {t('settings.providers')}
@@ -968,6 +977,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                     .updatePersonaConfig(personaId!, { llm: { primary: null, fallback: [], exclude: [] } })
                     .then(() => {
                       flashSaved('llm');
+                      saveChain(personaId!, null);
                       setLlmInit({ primary: null, fallback: [], exclude: [] });
                       refetchPersonaLlm(personaId!);
                       refetchLocalTasks();
@@ -987,6 +997,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
           <InfoButton helpKey="settings.gemma" />
         </div>
       </div>
+      )}
 
       {/* Параметры генерации */}
       <div className="card">
@@ -1116,7 +1127,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
             <button className="btn btn--primary" onClick={saveFeatures} disabled={!featuresDirty}>
               {savedCard === 'features' ? '✓' : t('common.save')}
             </button>
-            {restartNote && <div className="field-hint">// {t('settings.restartRequired')}</div>}
+            {restartNote && <div className="field-hint">{t('ui.commentPrefix')}{t('settings.restartRequired')}</div>}
           </>
         )}
       </div>

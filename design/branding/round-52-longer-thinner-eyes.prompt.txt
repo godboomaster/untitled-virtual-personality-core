@@ -1,0 +1,7 @@
+Built-in image_gen. Edit target: 75-user-two-leaf-collar-ghost.png.
+
+Use case: precise-object-edit
+Asset type: existing black-and-white ghost logo.
+Input image 1: the sole edit target, 75-user-two-leaf-collar-ghost.png.
+Primary request: change ONLY the two solid black vertical capsule eyes. Make BOTH eyes visibly longer vertically and thinner horizontally: approximately 25% greater height and 30% narrower width than the existing eyes. Keep each eye centered at its original center, keep their center-to-center spacing unchanged, and keep the two eyes identical, upright and parallel. Preserve smooth rounded capsule ends and solid black fill.
+Constraints: preserve every other detail of the original logo and its full framing: the exact head outline, body shape, angular collar with exactly two leaves on the left and its small white separation cuts, the jagged bottom hem, the white gap above the lower shell, both cracked eggshell pieces, cracks, stroke weights, proportions, position, white background and original canvas aspect ratio. Do not redraw, simplify, crop, recenter or restyle anything outside the eyes. No additional objects, text, shadows or colors. Output the complete logo, with only the eye dimensions changed.

@@ -4,7 +4,11 @@
 Логика:
 1. Периодическая проверка — бот раз в N минут анализирует память и решает, писать ли
 2. Внутренний монолог — LLM смотрит последние сообщения и решает, есть ли повод написать
-3. Вероятностная отправка — не каждый монолог приводит к сообщению
+3. Писать ли — решается ДО генерации: гейты и вероятностный кубик (неудачный
+   бросок вызова модели не стоит, темп отправок прежний); модель позвали, а
+   она промолчала — чат отдыхает адаптивный порог. Вторая попытка рефлексией
+   после промолчавшего монолога — пункт «Экономии нейронки»
+   (app/core/llm_economy)
 
 Конфигурация в YAML persona:
   proactive:
@@ -42,7 +46,7 @@ from app.core.presence import web_presence
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 from app.features.chat_dossier import ChatDossier
 from app.core.local_router import get_local_router
-from app.core import startup_quiet
+from app.core import llm_economy, startup_quiet
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +153,8 @@ class ProactiveConfig:
     # Локальная модель как бинарный SILENCE-фильтр перед основной — экономит
     # вызовы, но маленькие модели (3B и меньше) на этой субъективной задаче
     # («стоит ли что-то сказать?») почти всегда отвечают SILENCE, и основная
-    # модель не получает шанса даже при initiative_probability=1.0 (вероятность
-    # проверяется ПОСЛЕ генерации). Включать только после проверки локальной
-    # модели на этом промпте.
+    # модель не получает шанса даже при initiative_probability=1.0. Включать
+    # только после проверки локальной модели на этом промпте.
     use_local_prefilter: bool = False
 
     @staticmethod
@@ -619,6 +622,42 @@ class ProactiveMessaging:
     def _get_last_initiative_time(self, chat_id: str) -> float:
         with self._lock:
             return self._last_initiative_time.get(chat_id, 0)
+
+    # ── отдых чата после «нечего сказать» (app/core/llm_economy) ──
+    # Модель позвали, а она промолчала (SILENCE) — следующая попытка не на
+    # следующей проверке, а через адаптивный порог молчания: иначе тот же чат
+    # тратил вызов модели каждые check_interval_minutes. Новая реплика в
+    # чате (метка последнего сообщения сдвинулась) отдых снимает.
+
+    def _backoffs(self) -> Dict[str, Tuple[float, float]]:
+        # chat_id -> (до какого времени отдых, метка последнего сообщения на
+        # тот момент); setdefault — заготовки без __init__ (тесты). Без лока:
+        # запись/чтение/удаление ключа — одиночные операции dict, а запись
+        # целиком (кортеж) — одна
+        return self.__dict__.setdefault("_initiative_backoff", {})
+
+    def _back_off(self, chat_id: str, why: str):
+        minutes = min(self._calculate_adaptive_threshold(chat_id, log=False), MAX_SILENCE_MINUTES)
+        self._backoffs()[chat_id] = (time.time() + minutes * 60,
+                                     float(self.get_last_message_time(chat_id) or 0))
+        logger.info(f"[Proactive] Чат {chat_id}: {why} — следующая попытка "
+                    f"не раньше чем через {minutes:.0f} мин")
+
+    def _backed_off(self, chat_id: str) -> bool:
+        entry = self._backoffs().get(chat_id)
+        if not entry:
+            return False
+        until, last_msg = entry
+        if time.time() >= until or float(self.get_last_message_time(chat_id) or 0) > last_msg:
+            self._backoffs().pop(chat_id, None)
+            return False
+        return True
+
+    def _monolog_due(self, chat_id: str) -> bool:
+        # Тот же порог, что сам монолог проверяет без bypass_silence
+        # (_generate_initiative): раньше него модель не зовётся вовсе
+        last = self.get_last_message_time(chat_id)
+        return bool(last) and (time.time() - last) / 60 >= self.config.silence_threshold_minutes
 
     def _mark_initiative_sent(self, chat_id: str, initiative_type=None,
                               multi_turn_message: Optional[str] = None,
@@ -1379,18 +1418,25 @@ class ProactiveMessaging:
         else:
             rule_lang = f"7. {user_language_line(None)}\n"
 
+        choice_rules = (
+            "2. Decide: is there a reason to write? Do you need this dialogue?\n"
+            "3. If you decide to write — write a short thought (1-2 sentences).\n"
+            "4. If you decide to stay silent — answer exactly one word: SILENCE\n"
+        )
+        reflection_context = (
+            "This is your INNER SELF-REFLECTION. You are thinking to yourself.\n"
+            "Your answer is not a question to the user, but your own thought "
+            "that you decide whether to voice or keep to yourself.\n\n"
+        )
+        reflection_role = "You are analyzing your memory and deciding whether to message the user first.\n\n"
         system_prompt = (
             f"{persona_text}\n\n"
             f"---\n"
-            f"You are analyzing your memory and deciding whether to message the user first.\n\n"
-            f"This is your INNER SELF-REFLECTION. You are thinking to yourself.\n"
-            f"Your answer is not a question to the user, but your own thought "
-            f"that you decide whether to voice or keep to yourself.\n\n"
+            f"{reflection_role}"
+            f"{reflection_context}"
             f"Rules:\n"
             f"1. Analyze the recent messages, your memory, and the silence duration.\n"
-            f"2. Decide: is there a reason to write? Do you need this dialogue?\n"
-            f"3. If you decide to write — write a short thought (1-2 sentences).\n"
-            f"4. If you decide to stay silent — answer exactly one word: SILENCE\n"
+            f"{choice_rules}"
             f"5. Do NOT write 'Hi', 'How are you' — that is meaningless.\n"
             f"6. Write in first person, in your usual style.\n"
             f"{rule_lang}"
@@ -1461,9 +1507,11 @@ class ProactiveMessaging:
             f"{silence_hours:.1f} hours have passed since the last message.{ignore_context}",
             f"User: {user_name}",
             "",
-            "Analyze and decide: do you want to say something? "
-            "If yes — write your thought (1-2 sentences). "
-            "If no — write SILENCE."
+            (
+                "Analyze and decide: do you want to say something? "
+                "If yes — write your thought (1-2 sentences). "
+                "If no — write SILENCE."
+            )
             + (f" Write the thought in {language_name(user_lang)}." if user_lang else ""),
         ])
 
@@ -1501,7 +1549,10 @@ class ProactiveMessaging:
             if not bypass_silence and silence_hours < threshold_hours:
                 return None
 
-            messages = self._build_monolog_prompt(recent, stm_messages, user_name, silence_hours, chat_id, initiative_type)
+            messages = self._build_monolog_prompt(
+                recent, stm_messages, user_name, silence_hours, chat_id,
+                initiative_type,
+            )
 
             settings = self.persona.get_settings()
 
@@ -1635,6 +1686,9 @@ class ProactiveMessaging:
         last_initiative = self._get_last_initiative_time(chat_id)
         if time.time() - last_initiative < self.config.check_interval_minutes * 60:
             return False
+        # Чат отдыхает после SILENCE/неудачного броска — скоринг не нужен
+        if self._backed_off(chat_id):
+            return False
         return True
 
     # ── гейт хода пользователя (app/core/turn_gate.py) ──
@@ -1666,7 +1720,7 @@ class ProactiveMessaging:
         return web_presence.is_active(self.context, chat_id)
 
     async def _commit_and_send(self, chat_id: str, message: str, topic_id,
-                               mark: Tuple[Optional[int], float]):
+                               mark: Tuple[Optional[int], float], manual: bool = False):
         """Запись инициативы в STM и доставка → (отправлено, epoch коммита).
 
         С гейтом: коммит в STM ПЕРВЫМ, атомарно с проверкой «хода нет и
@@ -1676,10 +1730,18 @@ class ProactiveMessaging:
         откатывается (пользователь сообщения не видел)."""
         # Дешёвая предпроверка (и единственная без гейта): вкладка открылась /
         # пользователь писал за время генерации
-        if self._user_spoke_since(chat_id, mark):
+        if self._user_spoke_since(chat_id, mark) and not manual:
             logger.info(f"[Proactive] Чат {chat_id}: пользователь активен после "
                         "старта генерации — инициатива отброшена")
             return False, None
+        # STM emits its said-feed hook during commit, before WebInboxSender
+        # labels the delivery. Preserve the initiative kind so the desktop
+        # avatar shows its hover marker instead of immediately speaking it.
+        try:
+            from app.api import said
+            said.expect_kind(self.context.removeprefix("api_"), chat_id, message, "initiative")
+        except Exception:
+            pass
         gate = self.turn_gate
         commit_epoch = None
         entry = None
@@ -1704,6 +1766,35 @@ class ProactiveMessaging:
         if gate is None:
             self.memory.add_message("assistant", message, user_id=chat_id, chat_id=chat_id)
         return True, commit_epoch
+
+    @scoped_by(lambda self, chat_id, *a, **k: chat_id)
+    async def trigger_once(self, chat_id: str, user_name: str = "user") -> Optional[str]:
+        """One manual initiative for the local desktop portrait."""
+        if not self.config.enabled or self._turn_busy(chat_id):
+            return None
+        initiative_type = self._select_initiative_type(chat_id)
+        mark = self._generation_mark(chat_id)
+        message = await asyncio.to_thread(
+            self._generate_initiative, chat_id, chat_id, user_name,
+            initiative_type, True,
+        )
+        if not message:
+            message = await asyncio.to_thread(
+                self._generate_reflection_initiative, chat_id, initiative_type,
+            )
+        if not message or self._is_similar_to_recent(message, chat_id):
+            return None
+        message = _strip_markdown(message)
+        success, commit_epoch = await self._commit_and_send(
+            chat_id, message, self._get_topic_for_chat(chat_id), mark, manual=True,
+        )
+        if not success:
+            return None
+        self._mark_initiative_sent(chat_id, initiative_type, multi_turn_message=message,
+                                   epoch=commit_epoch)
+        self._add_to_history(chat_id, message, initiative_type)
+        self._increment_daily_count(chat_id)
+        return message
 
     def _should_send_initiative(self, chat_id: str) -> bool:
         # Проверяет все условия перед отправкой.
@@ -1744,6 +1835,10 @@ class ProactiveMessaging:
 
         last_initiative = self._get_last_initiative_time(chat_id)
         if time.time() - last_initiative < self.config.check_interval_minutes * 60:
+            return False
+
+        # После SILENCE/неудачного броска чат отдыхает полный порог молчания
+        if self._backed_off(chat_id):
             return False
 
         return True
@@ -1792,6 +1887,26 @@ class ProactiveMessaging:
                                     initiative_type=state.get("type"))
                                 self._clear_multi_turn_wait(chat_id)
 
+                    # «Экономия нейронки»: вторая попытка рефлексией после
+                    # промолчавшего монолога — только пунктом настроек
+                    reflect_after_silence = llm_economy.enabled("proactive_reflection")
+                    # Монолог зовёт модель только после своего порога молчания
+                    # (silence_threshold_minutes); раньше (адаптивный порог
+                    # бывает короче) он молчит без вызова, и инициативу пишет
+                    # рефлексия — это единственный вызов, он остаётся
+                    monolog_due = self._monolog_due(chat_id)
+
+                    # Писать ли — решается ДО генерации: вероятностный кубик с
+                    # учётом feedback. Неудачный бросок не стоит вызова модели
+                    # (раньше текст генерировался каждую проверку и после
+                    # выбрасывался). Темп прежний: следующий бросок — на
+                    # следующей проверке
+                    effective_prob = self._get_effective_probability(chat_id)
+                    if random.random() > effective_prob:
+                        logger.info(f"[Proactive] Вероятность {effective_prob} не прошла "
+                                    f"для {chat_id} — монолог не генерируем")
+                        continue
+
                     initiative_type = self._select_initiative_type(chat_id)
                     logger.info(f"[Proactive] Чат {chat_id}: тип инициативы={initiative_type.value}")
 
@@ -1826,8 +1941,10 @@ class ProactiveMessaging:
                         logger.info(f"[Proactive] Чат {chat_id}: пользователь активен — без рефлексии")
                         continue
 
-                    # Если нет сообщения -- генерируем рефлексию на основе типа
-                    if not message:
+                    # Нет сообщения — рефлексия по типу: до порога монолога (он
+                    # модель не звал) — всегда, после промолчавшего монолога —
+                    # только пунктом «Экономии нейронки» proactive_reflection
+                    if not message and (not monolog_due or reflect_after_silence):
                         reflection = await asyncio.to_thread(
                             self._generate_reflection_initiative, chat_id, initiative_type
                         )
@@ -1836,17 +1953,14 @@ class ProactiveMessaging:
                             logger.info(f"[Proactive] Чат {chat_id}: рефлексия по типу {initiative_type.value}")
 
                     if not message:
+                        # Модель звалась (монолог или рефлексия) и промолчала —
+                        # чат отдыхает
+                        self._back_off(chat_id, "модель промолчала")
                         continue
 
                     # Проверяем на дубликат по содержимому
                     if self._is_similar_to_recent(message, chat_id):
                         logger.warning(f"[Proactive] Чат {chat_id}: сообщение похоже на недавние, пропускаем")
-                        continue
-
-                    # Вероятностная отправка с учетом feedback
-                    effective_prob = self._get_effective_probability(chat_id)
-                    if random.random() > effective_prob:
-                        logger.info(f"[Proactive] Монолог сгенерирован, но вероятность {effective_prob} не прошла для {chat_id}")
                         continue
 
                     topic_id = self._get_topic_for_chat(chat_id)
@@ -1908,6 +2022,11 @@ class ProactiveMessaging:
         if not self._in_initiative_hours():
             logger.info("[Proactive] Сигнал состояния вне окна самоинициативы — молчим")
             return
+        # Чат отдыхает после SILENCE/неудачного броска — сигнал тоже ждёт,
+        # иначе он звал бы модель каждый тик жизни, пока отправка не удастся
+        if self._backed_off(chat_id):
+            logger.info(f"[Proactive] Сигнал состояния {chat_id}: чат отдыхает после молчания — молчим")
+            return
         if not self._should_send_initiative(chat_id):
             # Стандартные гейты не прошли (лимит/интервал) — но для сигнала
             # состояния допускаем более короткое молчание, чем adaptive-порог:
@@ -1953,12 +2072,16 @@ class ProactiveMessaging:
             )
             if not message and self._user_spoke_since(chat_id, mark):
                 return
-            if not message:
+            if not message and llm_economy.enabled("proactive_reflection"):
                 message = await asyncio.to_thread(
                     self._generate_reflection_initiative, chat_id,
                     InitiativeType.STATE_CHANGE
                 )
-            if not message or self._is_similar_to_recent(message, chat_id):
+            if not message:
+                # Модель промолчала — сигнал не повторяется каждый тик жизни
+                self._back_off(chat_id, "монолог по сигналу состояния промолчал")
+                return
+            if self._is_similar_to_recent(message, chat_id):
                 return
 
             topic_id = self._get_topic_for_chat(chat_id)
@@ -2042,7 +2165,7 @@ class ProactiveMessaging:
                     await asyncio.to_thread(
                         flavor_text.maybe_topup_flavor_bank,
                         self.context, self.persona.system_prompt, self.router,
-                        True)
+                        True, persona=self.persona)
             except Exception as _fe:
                 logger.debug(f"[Proactive] пополнение flavor-банка: {_fe}")
 

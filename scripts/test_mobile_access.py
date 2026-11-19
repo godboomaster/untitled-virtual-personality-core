@@ -34,21 +34,22 @@ def section(title):
     print(f"\n── {title} ──")
 
 
-def _request(host: str, extra: dict | None = None):
+def _request(host: str, extra: dict | None = None, peer: str = "127.0.0.1"):
     from starlette.requests import Request
     headers = [(b"host", host.encode())]
     headers += [(k.lower().encode(), v.encode()) for k, v in (extra or {}).items()]
     return Request({"type": "http", "method": "GET", "path": "/api/personas",
-                    "headers": headers})
+                    "headers": headers, "client": (peer, 50000)})
 
 
-def _auth(server_mod, host: str, token: str | None = None, extra: dict | None = None):
+def _auth(server_mod, host: str, token: str | None = None, extra: dict | None = None,
+          peer: str = "127.0.0.1"):
     # → HTTP-статус отказа require_auth или 200, если пропустил
     from fastapi import HTTPException
     from fastapi.security import HTTPAuthorizationCredentials
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token) if token else None
     try:
-        asyncio.run(server_mod.require_auth(_request(host, extra), creds))
+        asyncio.run(server_mod.require_auth(_request(host, extra, peer), creds))
         return 200
     except HTTPException as e:
         return e.status_code
@@ -70,6 +71,9 @@ def test_remote_needs_token():
               _auth(server_mod, "my-mac.example.net") == 403)
         check("адрес в сети без токена — 403", _auth(server_mod, "192.168.1.5:8000") == 403)
         check("пустой Host без токена — 403", _auth(server_mod, "") == 403)
+        # Host подставить может кто угодно — решает адрес соединения
+        check("устройство в сети с Host: localhost без токена — 403",
+              _auth(server_mod, "localhost:8000", peer="192.168.1.20") == 403)
         # Обратный прокси мог оставить Host = 127.0.0.1 — запрос
         # всё равно удалённый: его выдаёт X-Forwarded-For / Forwarded
         check("через прокси (X-Forwarded-For) по 127.0.0.1 — 403",
@@ -84,8 +88,12 @@ def test_remote_needs_token():
               _auth(server_mod, "my-mac.example.net") == 401)
         check("с API_TOKEN: неверный — 401",
               _auth(server_mod, "my-mac.example.net", "nope") == 401)
-        check("с API_TOKEN: localhost без токена — тоже 401",
-              _auth(server_mod, "localhost:8000") == 401)
+        check("с API_TOKEN: эта машина без токена — пропускает (токен — для сети)",
+              _auth(server_mod, "localhost:8000") == 200)
+        check("с API_TOKEN: устройство в сети с Host: localhost без токена — 401",
+              _auth(server_mod, "localhost:8000", peer="192.168.1.20") == 401)
+        check("с API_TOKEN: адресная строка браузера без токена — 401",
+              _auth(server_mod, "localhost:8000", extra={"Sec-Fetch-Site": "none"}) == 401)
         check("с API_TOKEN: через прокси и верный токен — пропускает",
               _auth(server_mod, "127.0.0.1:8000", "s3cr3t",
                     extra={"X-Forwarded-For": "100.101.102.103"}) == 200)
@@ -138,9 +146,14 @@ def test_api_token_endpoint():
 
         server_mod._api_token = "s3cr3t"
         good = {"Authorization": "Bearer s3cr3t"}
-        check("с API_TOKEN: без токена — 401", client.get("/api/token").status_code == 401)
-        check("с API_TOKEN: неверный — 401",
-              client.get("/api/token", headers={"Authorization": "Bearer nope"}).status_code == 401)
+        # Телефон в сети с Host этой машины: решает адрес соединения
+        lan = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
+        check("с API_TOKEN: из сети без токена — 401", lan.get("/api/token").status_code == 401)
+        check("с API_TOKEN: из сети с неверным — 401",
+              lan.get("/api/token", headers={"Authorization": "Bearer nope"}).status_code == 401)
+        r = client.get("/api/token", headers={"Origin": "http://localhost:5173"})
+        check("с API_TOKEN: свой фронт на этой машине — токен без токена (показать для телефона)",
+              r.status_code == 200 and r.json() == {"token": "s3cr3t"})
         r = client.get("/api/token", headers=good)
         check("с API_TOKEN и верным токеном — 200 и сам токен",
               r.status_code == 200 and r.json() == {"token": "s3cr3t"}

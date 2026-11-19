@@ -9,7 +9,8 @@ LivingPersona — оркестратор «живой» персоны.
 
 Единый фоновый цикл:
   каждые tick_interval_minutes:
-    - тик состояния для каждого известного чата
+    - тик состояния для каждого известного чата, где пользователь писал
+      за LIFE_ACTIVE_DAYS дней (остальные — пунктом «Экономии нейронки»)
     - офлайн-событие мира по расписанию events_per_day
     - внешние стимулы по расписанию 1-3 дня (только real_world, жёсткий gate)
     - при score > порога: сигнал в существующий proactive-модуль
@@ -40,7 +41,7 @@ from app.core.state_engine import StateEngine, INITIATIVE_THRESHOLD
 from app.core.world_engine import WorldEngine
 from app.core.offline_summarizer import OfflineSummarizer
 from app.core.presence import web_presence
-from app.core import room, timeutil
+from app.core import llm_economy, room, timeutil
 from app.core.relationship import RelationshipMemory
 from app.core.language import (
     detect_dialogue_language, persona_language, user_language_line,
@@ -56,10 +57,19 @@ logger = logging.getLogger(__name__)
 INACTIVE_SILENCE_HOURS = 72
 INACTIVE_TICK_FACTOR = 6
 
+# «Экономия нейронки» (app/core/llm_economy, пункт life_inactive_chats):
+# жизнь чата (тики состояния, события мира, дневник) идёт, только пока
+# пользователь писал в него за последние LIFE_ACTIVE_DAYS дней — по метке
+# ЕГО реплики, а не ответов/инициатив персоны. Забытые и тестовые чаты
+# выпадают сами; пункт включён — по-старому (прореживание выше)
+LIFE_ACTIVE_DAYS = 3
+
 # Диалог → состояние/мир/отношения: ОДИН локальный вызов («урожай диалога»)
 # вместо трёх разрозненных (NPC-детекция, mood, моменты) на одни и те же
-# реплики. Планировщик: каждые HARVEST_MIN_MESSAGES сообщений пользователя
-# или по таймеру HARVEST_INTERVAL_SEC (что раньше)
+# реплики. Планировщик: каждые HARVEST_MIN_MESSAGES сообщений пользователя;
+# таймер HARVEST_INTERVAL_SEC (что раньше) — только пунктом «Экономии
+# нейронки» harvest_timer: в медленном чате он срабатывал почти на каждое
+# сообщение
 HARVEST_INTERVAL_SEC = 600
 HARVEST_MIN_MESSAGES = 10
 
@@ -159,7 +169,7 @@ _HARVEST_PROMPT = """Analyze the dialogue fragment between the character ({perso
 
 RULES:
 - new_npcs/new_places — NEW characters/places of the world around the interlocutors (friends, colleagues, cafes, cities) that are not in the known lists; NOT the interlocutors themselves
-- mood_impact — how the lines affected the CHARACTER's state (warmth/interest towards them — plus, harshness/neglect — minus); a neutral conversation — 0.0 and ""
+- mood_impact — how the lines affected the CHARACTER's state (warmth/interest towards them — plus, harshness/neglect — minus); a neutral conversation — 0.0 and ""{own_emotions}
 - moments/topics/stance_changes — only NEW things that are not in the known lists; the character expressed or reconsidered an opinion → stance_changes
 - if something is absent — empty lists/zero delta (this is normal)
 
@@ -301,6 +311,10 @@ class LivingPersona:
         # Язык чата по его STM (bot.chat_user_language): (chat_id) -> lang.
         # Фолбэк, когда языка нет ни в кеше, ни в файле
         self.get_chat_user_language: Optional[Callable[[str], Optional[str]]] = None
+        # Свои эмоции персоны с условием «по настроению» (живое лицо, app/api/
+        # portrait_api.mood_names): (chat_id) -> «имя — когда; …» или None.
+        # Их имена — теги mood, которые выбирают урожай диалога и тик
+        self.get_own_emotions: Optional[Callable[[str], Optional[str]]] = None
         # Планировщик урожая диалога: chat_id -> ts последнего вызова /
         # сообщений пользователя с последнего вызова
         self._harvest_at = BoundedCache(max_entries=MAX_CHAT_KEYS)
@@ -352,6 +366,10 @@ class LivingPersona:
         self.get_last_message_time: Optional[Callable[[str], float]] = None
         # Время последней proactive-инициативы чата: (chat_id) -> float
         self.get_last_initiative_time: Optional[Callable[[str], float]] = None
+        # Время последней реплики ПОЛЬЗОВАТЕЛЯ в чате: (chat_id) -> float
+        # (0 — не писал). Ставит BotInstance; без него неактивные чаты не
+        # отсекаются (LIFE_ACTIVE_DAYS)
+        self.get_last_user_activity: Optional[Callable[[str], float]] = None
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -364,7 +382,7 @@ class LivingPersona:
         # In-memory: обнуляются при рестарте процесса; снапшот — get_state_for_ui,
         # дневная история — metrics_log.jsonl (_persist_metrics_daily)
         self.metrics = {
-            "ticks_total": 0, "ticks_throttled": 0,
+            "ticks_total": 0, "ticks_throttled": 0, "ticks_inactive": 0,
             "initiative_signals": 0, "events_generated": 0,
             "episodes_written": 0, "screenwriter_runs": 0,
         }
@@ -493,7 +511,8 @@ class LivingPersona:
             logger.debug(f"[Living] Отношения не обновлены: {e}")
 
         # Урожай диалога (один локальный вызов на NPC + mood + моменты):
-        # раз в HARVEST_MIN_MESSAGES реплик пользователя или по таймеру
+        # раз в HARVEST_MIN_MESSAGES реплик пользователя (по таймеру — только
+        # пунктом harvest_timer)
         cid = str(chat_id)
         msgs_n = self._harvest_msgs.get(cid, 0) + 1
         self._harvest_msgs[cid] = msgs_n
@@ -503,12 +522,25 @@ class LivingPersona:
         # копятся, урожай случится по первому сообщению в неактивности
         if web_presence.is_active(self.context, cid):
             return
-        if msgs_n >= HARVEST_MIN_MESSAGES or (msgs_n >= 1 and now - last >= HARVEST_INTERVAL_SEC):
+        due = msgs_n >= HARVEST_MIN_MESSAGES or (
+            llm_economy.enabled("harvest_timer")
+            and msgs_n >= 1 and now - last >= HARVEST_INTERVAL_SEC)
+        if due:
             self._harvest_msgs[cid] = 0
             self._harvest_at[cid] = now
             threading.Thread(target=self._harvest_in_dialog, args=(cid, messages),
                              daemon=True,
                              name=f"living-harvest-{self.context}").start()
+
+    def own_emotions(self, chat_id: str) -> Optional[str]:
+        # Свои эмоции-настроения чата (get_own_emotions); поломка — без них
+        if self.get_own_emotions is None or self.primitive:
+            return None
+        try:
+            return self.get_own_emotions(str(chat_id)) or None
+        except Exception as e:
+            logger.debug(f"[Living] Свои эмоции не собраны: {e}")
+            return None
 
     def _harvest_in_dialog(self, chat_id: str, messages: List[dict]):
         # Поток не наследует контекст: область диалога — явно (свой тред
@@ -549,6 +581,7 @@ class LivingPersona:
         # Язык разбираемого диалога; нет букв — язык чата
         user_lang = (detect_dialogue_language("", messages)
                      or self.chat_language(chat_id))
+        own = self.own_emotions(chat_id) if self.config.state_enabled else None
         try:
             response = local.get_response(
                 messages=[
@@ -560,6 +593,10 @@ class LivingPersona:
                         known_moments=known_moments, known_topics=known_topics,
                         known_stances=known_stances,
                         dialog="\n".join(lines),
+                        own_emotions=(
+                            "\n- the character has their own named emotions (name — when): "
+                            f"{own}; when one of them fits, mood_impact.tag is its exact name"
+                            if own else ""),
                         language_line=user_language_line(user_lang))},
                 ],
                 temperature=0.2,
@@ -760,10 +797,11 @@ class LivingPersona:
 
     def _place_room_items(self, pc: Optional[dict] = None):
         """Новые предметы инвентаря без размещения → где они в комнате.
-        LLM (задача room_placement) — не больше одного предмета за тик;
-        модель недоступна или room_llm_placement: false — эвристика «на
-        стол» для всех сразу (без вызовов). Удалённые предметы лениво
-        выбрасываются из размещений."""
+        LLM (задача room_placement) — не больше одного предмета за тик, и
+        только пунктом «Экономии нейронки» room_llm_placement при
+        room_llm_placement персоны; иначе (или модель недоступна) —
+        эвристика «на стол» для всех сразу (без вызовов). Удалённые
+        предметы лениво выбрасываются из размещений."""
         if self.inventory_manager is None:
             return
         try:
@@ -780,6 +818,7 @@ class LivingPersona:
         if pending:
             local = get_local_router(self.context)
             use_llm = (getattr(self.config, "room_llm_placement", True)
+                       and llm_economy.enabled("room_llm_placement")
                        and local.is_available(task="room_placement"))
             if use_llm:
                 name = pending[0]
@@ -969,6 +1008,21 @@ class LivingPersona:
                 pass
         return [c for c in chats if c]
 
+    def _chat_inactive(self, chat_id: str) -> bool:
+        """True — пользователь не писал в чат LIFE_ACTIVE_DAYS дней (или не
+        писал вовсе): тик, события мира и дневник этому чату не нужны.
+        Пункт «Экономии нейронки» life_inactive_chats или нет источника
+        метки (заготовки без бота) — фильтра нет."""
+        # getattr — заготовки без __init__ (тесты)
+        source = getattr(self, "get_last_user_activity", None)
+        if source is None or llm_economy.enabled("life_inactive_chats"):
+            return False
+        try:
+            last = float(source(chat_id) or 0)
+        except Exception:
+            return False
+        return time.time() - last > LIFE_ACTIVE_DAYS * 86400
+
     def _chat_throttled(self, chat_id: str) -> bool:
         """True — чат неактивен давно, тик прореживаем.
         Чаты без метки активности (свежие/неизвестные) не прореживаются."""
@@ -1031,6 +1085,11 @@ class LivingPersona:
             # Пользователь сидит в веб-вкладке этого чата — тик (и вся его
             # побочка: суммаризация, скоринг инициативы) ждёт, пока он уйдёт
             if web_presence.is_active(self.context, chat_id):
+                continue
+            # Пользователь давно не писал (забытый/тестовый чат) — жизнь не
+            # тикает: ни тика, ни события мира, ни дневника
+            if self._chat_inactive(chat_id):
+                self.metrics["ticks_inactive"] = self.metrics.get("ticks_inactive", 0) + 1
                 continue
             if self._chat_throttled(chat_id):
                 self.metrics["ticks_throttled"] += 1
@@ -1122,6 +1181,11 @@ class LivingPersona:
                 if self.config.world_enabled else [])
         last_fact = (self.world_engine.last_world_fact(chat_id)
                      if self.config.world_enabled else "")
+
+        # Свои эмоции-настроения: тик выбирает тег mood и из них
+        own = self.own_emotions(chat_id)
+        if own:
+            pc = {**(pc or {}), "own_emotions": own}
 
         want_score = self.on_initiative_signal is not None
         if want_score and self.pre_initiative_gate is not None:

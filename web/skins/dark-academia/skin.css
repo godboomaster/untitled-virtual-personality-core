@@ -99,8 +99,7 @@ html[data-skin='dark-academia'] body {
 html[data-skin='dark-academia'] .detroit-bg,
 html[data-skin='dark-academia'] .corner,
 html[data-skin='dark-academia'] .home-title.glitch::before,
-html[data-skin='dark-academia'] .home-title.glitch::after,
-html[data-skin='dark-academia'] .barcode {
+html[data-skin='dark-academia'] .home-title.glitch::after {
   display: none;
 }
 
@@ -1992,8 +1991,7 @@ html[data-skin='dark-academia'] .home-feed-empty {
   color: var(--da-mist);
 }
 
-/* Модули консоли */
-html[data-skin='dark-academia'] .home-dossier,
+/* Лента событий и карточки-ссылки */
 html[data-skin='dark-academia'] .home-feed,
 html[data-skin='dark-academia'] .link-card {
   clip-path: none;
@@ -2003,42 +2001,17 @@ html[data-skin='dark-academia'] .link-card {
   box-shadow: none;
 }
 
-html[data-skin='dark-academia'] .home-dossier:hover,
 html[data-skin='dark-academia'] .link-card:hover {
   background: var(--da-slate-2);
   border-color: var(--da-mist-lo);
   transform: none;
 }
 
-html[data-skin='dark-academia'] .home-dossier h3 {
-  font-family: var(--font-disp);
-  font-weight: 400;
-  font-size: 16px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--da-bone);
-}
-
-html[data-skin='dark-academia'] .home-dossier p {
-  font-size: 13.5px;
-  color: var(--da-mist-hi);
-}
-
-html[data-skin='dark-academia'] .home-dossier-index,
-html[data-skin='dark-academia'] .home-dossier-foot,
 html[data-skin='dark-academia'] .home-feed-persona,
 html[data-skin='dark-academia'] .home-feed-time {
   font-size: 11px;
   letter-spacing: 0.12em;
   color: var(--da-mist);
-}
-
-html[data-skin='dark-academia'] .home-dossier-foot {
-  border-top: 1px solid var(--da-line-soft);
-}
-
-html[data-skin='dark-academia'] .home-dossier-foot .go {
-  color: var(--da-bone);
 }
 
 html[data-skin='dark-academia'] .home-foot-stencil,
@@ -2081,10 +2054,6 @@ html[data-skin='dark-academia'] .home-term-titlebar .lights i:first-child,
 html[data-skin='dark-academia'] .start-guide-dlg-titlebar .lights i:first-child {
   background: var(--da-blood);
   border-color: var(--da-blood);
-}
-
-html[data-skin='dark-academia'] .home-term-line .bright {
-  color: var(--da-bone);
 }
 
 /* Курсор не мигает — медленно тлеет */
@@ -3428,4 +3397,14 @@ html[data-skin='dark-academia'] .voice-chat-note {
     font-size: 9.5px;
     letter-spacing: 0.08em;
   }
+}
+
+/* ===== Тихая иерархия: чуть светлее служебный текст, тонкий свет на кромке ===== */
+html[data-skin='dark-academia'][data-theme] {
+  --da-mist-lo: #788d91;
+  --text-muted: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .card {
+  box-shadow: inset 0 1px 0 rgba(232, 226, 213, 0.035);
 }

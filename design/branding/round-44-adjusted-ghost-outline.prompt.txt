@@ -1,0 +1,5 @@
+Built-in image_gen. Edit target: 63-thinner-ghost-outline.png. Slightly thicken only the ghost outlines while retaining the eggshell, eyes, ribbon and white separator.
+
+Precise local stroke-weight adjustment to the supplied black-and-white ghost-and-cracked-egg logo.
+Make ONLY the GHOST'S OUTLINE slightly thicker than in this supplied version, increasing its current line thickness by approximately 12–15%. Apply this modest increase uniformly to the head perimeter, two straight body sides and angular lower zigzag hem. Keep their exact paths, shapes, sizes and positions. The result should be between the last thin version and the earlier heavy outline, closer to this thin version.
+Do NOT alter the filled eyes or neck ribbon. Keep ALL EGGSHELL OUTLINES AND CRACKS at their current thickness and geometry. Preserve the narrow WHITE STRIP separating the ghost's zigzag hem from the shell rim, keeping it clearly visible. Preserve all proportions, composition, pure black ink, white interiors and white background. No folds, shading, added details, text or other changes.

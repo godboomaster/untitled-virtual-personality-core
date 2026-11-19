@@ -1,6 +1,9 @@
 import { registerPlugin } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { api, getApiToken, getApiUrl, isLinkMode, isNativeApp } from './api';
+import { offlinePersonasFull } from './apiData';
+import { onLocalPersonasChange } from './offline/localPersonas';
+import { isStandalone } from './standalone';
 import { getKit } from './offline/kit';
 import type { HistoryLine } from './offline/prompt';
 import { replyOffline } from './offline/reply';
@@ -54,9 +57,9 @@ export interface WakeStatus {
 }
 
 interface WakeWordPlugin {
-  start(opts: { baseUrl: string; token: string }): Promise<{ started: boolean; reason?: 'mic-denied' }>;
+  start(opts: Connection): Promise<{ started: boolean; reason?: 'mic-denied' }>;
   stop(): Promise<void>;
-  configure(opts: { baseUrl: string; token: string }): Promise<void>;
+  configure(opts: Connection): Promise<void>;
   status(): Promise<WakeStatus>;
   openOverlaySettings(): Promise<void>;
   offlineReply(opts: { id: string; text: string }): Promise<void>;
@@ -72,14 +75,26 @@ interface OfflineAsk {
   action?: PhoneActionReport; // команда телефону уже исполнена службой
 }
 
-// Услышано, пока окна приложения не было
+// Услышано, пока окна приложения не было (или написано в окне «Написать»
+// виджета портрета, когда ядро не отвечало)
 interface PendingVoice {
   persona: string;
   message: string;
   ts: number;
+  action?: PhoneActionReport; // команда телефону уже исполнена
 }
 
+// Адрес ядра или телефон без компьютера: тогда имена персон (trigger_words)
+// службе даёт приложение, отвечает телефон
+type Connection = { baseUrl: string; token: string } | { standalone: true; personas: unknown[] };
+
 const WakeWord = registerPlugin<WakeWordPlugin>('WakeWord');
+
+function connection(): Connection | null {
+  if (isStandalone()) return { standalone: true, personas: offlinePersonasFull() };
+  if (isLinkMode() || !getApiUrl()) return null;
+  return { baseUrl: getApiUrl(), token: getApiToken() };
+}
 
 /** Переключатель есть: приложение на телефоне. */
 export function wakeAvailable(): boolean {
@@ -88,7 +103,7 @@ export function wakeAvailable(): boolean {
 
 export type WakeResult = 'ok' | 'mic-denied' | 'error';
 
-/** Переключатель в «Настройки» → «Подключение»: включение спрашивает
+/** Переключатель во вкладке «Подключение»: включение спрашивает
  * микрофон (и уведомления на Android 13+) и запускает службу. */
 export async function setWakeWord(on: boolean): Promise<WakeResult> {
   if (!isNativeApp()) return 'error';
@@ -96,9 +111,10 @@ export async function setWakeWord(on: boolean): Promise<WakeResult> {
     await WakeWord.stop().catch(() => {});
     return 'ok';
   }
-  if (isLinkMode() || !getApiUrl()) return 'error';
+  const conn = connection();
+  if (!conn) return 'error';
   try {
-    const r = await WakeWord.start({ baseUrl: getApiUrl(), token: getApiToken() });
+    const r = await WakeWord.start(conn);
     return r.started ? 'ok' : r.reason === 'mic-denied' ? 'mic-denied' : 'error';
   } catch {
     return 'error';
@@ -115,14 +131,14 @@ export function openOverlaySettings(): Promise<void> {
 }
 
 /** Запуск приложения (ядро ответило): включено — служба получает свежие
- * адрес и токен и (пере)запускается; канал VPC Link — служба не нужна. */
+ * адрес и токен и (пере)запускается; канал VPC Link — служба не нужна. Без
+ * компьютера — свежий список персон (создали или удалили на телефоне). */
 export function syncWakeWord() {
   if (!isNativeApp()) return;
   void WakeWord.status()
     .then((s) => {
       if (!s.enabled) return;
-      if (isLinkMode() || !getApiUrl()) return WakeWord.configure({ baseUrl: '', token: '' });
-      return WakeWord.configure({ baseUrl: getApiUrl(), token: getApiToken() });
+      return WakeWord.configure(connection() ?? { baseUrl: '', token: '' });
     })
     .catch(() => {});
 }
@@ -159,6 +175,12 @@ async function voiceReply(persona: string, text: string, action?: PhoneActionRep
  * оно (чат отправит очередь), нет — ответ без него. */
 export function initWakeOffline() {
   if (!isNativeApp()) return;
+  // Без компьютера имена знает только приложение: персону создали или
+  // удалили — служба слушает новые
+  onLocalPersonasChange(() => {
+    if (isStandalone()) syncWakeWord();
+  });
+  if (isStandalone()) syncWakeWord();
   void WakeWord.addListener('offlineAsk', (e) => {
     void voiceReply(e.persona, e.message, e.action).then((text) => WakeWord.offlineReply({ id: e.id, text }));
   }).catch(() => {});
@@ -175,7 +197,7 @@ export function initWakeOffline() {
       for (const [persona, list] of byPersona) {
         const last = core ? null : list[list.length - 1];
         for (const it of list) if (it !== last) addOfflineMessage(persona, { role: 'user', text: it.message, source: 'queued' });
-        if (last) await voiceReply(persona, last.message);
+        if (last) await voiceReply(persona, last.message, last.action);
       }
     })
     .catch(() => {});

@@ -4,7 +4,9 @@
   {"mode": "off"} — выключено (по умолчанию)
   {"mode": "manual" | "geo", "city": str, "lat": float, "lon": float}
 
-Погода — Open-Meteo (бесплатно, без ключа), геокодинг города — Open-Meteo
+Погода — Open-Meteo (бесплатно, без ключа); если он не отвечает (часть
+провайдеров РФ режет его адрес на Hetzner) — MET Norway (api.met.no, тоже без
+ключа), его символы погоды переводятся в WMO-коды. Геокодинг города — Open-Meteo
 Geocoding, обратный геокодинг (geo-режим) — Nominatim (OSM). Строка окружения
 кешируется на 30 минут: get_env_line() вызывается на каждое сообщение.
 """
@@ -35,6 +37,20 @@ _cache: dict = {"key": None, "ts": 0.0, "line": None}
 _LOCATION_LOCK = threading.Lock()
 
 _TIMEOUT = httpx.Timeout(8.0, connect=5.0)
+# Open-Meteo обычно подключается за доли секунды; не ждём его 5 с, когда есть
+# запасной источник — строка погоды собирается прямо перед ответом персоны
+_OPEN_METEO_TIMEOUT = httpx.Timeout(8.0, connect=2.0)
+# После сбоя сети Open-Meteo пропускаем на полчаса и сразу идём в MET Norway
+_OPEN_METEO_RETRY = 30 * 60
+_open_meteo_down_until = 0.0
+
+# MET Norway требует User-Agent с названием приложения и контактом, а
+# координаты — не точнее 4 знаков (иначе 403)
+_METNO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
+_METNO_HEADERS = {
+    "User-Agent": "virtual-persona-core/1.0 "
+                  "github.com/godboomaster/untitled-virtual-personality-core",
+}
 
 # WMO Weather interpretation codes → short English description
 _WMO_DESC = {
@@ -44,10 +60,26 @@ _WMO_DESC = {
     56: "light freezing drizzle", 57: "freezing drizzle",
     61: "light rain", 63: "rain", 65: "heavy rain",
     66: "light freezing rain", 67: "freezing rain",
+    # 68/69/83/84 — дождь со снегом (WMO 4677); Open-Meteo их не отдаёт,
+    # приходят из перевода символов MET Norway
+    68: "light sleet", 69: "sleet",
     71: "light snow", 73: "snow", 75: "heavy snow", 77: "snow grains",
     80: "light showers", 81: "showers", 82: "heavy showers",
+    83: "light sleet showers", 84: "sleet showers",
     85: "light snowfall", 86: "snowfall",
     95: "thunderstorm", 96: "thunderstorm with hail", 99: "thunderstorm with heavy hail",
+}
+
+# Символ MET Norway (без суффикса _day/_night/_polartwilight) → WMO-код.
+# Все варианты «…andthunder» — гроза (95), см. _metno_code
+_METNO_WMO = {
+    "clearsky": 0, "fair": 1, "partlycloudy": 2, "cloudy": 3, "fog": 45,
+    "lightrain": 61, "rain": 63, "heavyrain": 65,
+    "lightrainshowers": 80, "rainshowers": 81, "heavyrainshowers": 82,
+    "lightsleet": 68, "sleet": 69, "heavysleet": 69,
+    "lightsleetshowers": 83, "sleetshowers": 84, "heavysleetshowers": 84,
+    "lightsnow": 71, "snow": 73, "heavysnow": 75,
+    "lightsnowshowers": 85, "snowshowers": 85, "heavysnowshowers": 86,
 }
 
 _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -122,15 +154,77 @@ def set_geo(lat: float, lon: float) -> dict | None:
     return save_location({"mode": "geo", "city": city, "lat": float(lat), "lon": float(lon)})
 
 
-def _fetch_weather_line(cfg: dict) -> str | None:
-    """Строка 'Город: +7°C (ощущается +5°C), дождь, ветер 4 м/с' (без времени —
-    время/дата добавляются отдельно в get_env_line)."""
-    with httpx.Client(timeout=_TIMEOUT) as client:
+def _from_open_meteo_or_metno(open_meteo, metno, what: str):
+    """open_meteo(), а при сбое сети или ответа — metno(). После сбоя Open-Meteo
+    полчаса не трогаем; ошибка MET Norway уходит вызывающему."""
+    global _open_meteo_down_until
+    if time.time() >= _open_meteo_down_until:
+        try:
+            result = open_meteo()
+        except (httpx.HTTPError, ValueError) as e:
+            _open_meteo_down_until = time.time() + _OPEN_METEO_RETRY
+            logger.warning(f"[Env] Open-Meteo недоступен ({str(e) or type(e).__name__}) — "
+                           f"{what} берём у MET Norway, Open-Meteo снова через "
+                           f"{_OPEN_METEO_RETRY // 60} мин")
+        else:
+            if result is not None:
+                return result
+    return metno()
+
+
+def _metno_code(symbol) -> int | None:
+    # Символ MET Norway ("lightrain", "partlycloudy_night", …) → WMO-код
+    if not isinstance(symbol, str) or not symbol:
+        return None
+    base = symbol.split("_", 1)[0]
+    if "thunder" in base:
+        return 95
+    return _METNO_WMO.get(base)
+
+
+def _metno_points(cfg: dict) -> list[dict]:
+    """Ряд MET Norway: [{"time", "temp", "feels", "wind", "code", "prob"}],
+    первая точка — текущий час. time — стенные часы пользователя (naive, как
+    timeutil.now(); API отдаёт UTC), wind — м/с, code — WMO ближайшего часа,
+    prob — вероятность осадков (обычно есть только в Скандинавии)."""
+    with httpx.Client(timeout=_TIMEOUT, headers=_METNO_HEADERS) as client:
+        r = client.get(_METNO_URL, params={
+            "lat": round(float(cfg["lat"]), 4), "lon": round(float(cfg["lon"]), 4),
+        })
+        r.raise_for_status()
+        series = ((r.json() or {}).get("properties") or {}).get("timeseries") or []
+    points = []
+    for entry in series:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            moment = datetime.fromisoformat(str(entry.get("time")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if moment.tzinfo is None:
+            continue
+        data = entry.get("data") or {}
+        inst = (data.get("instant") or {}).get("details") or {}
+        next_hour = data.get("next_1_hours") or {}
+        points.append({
+            "time": timeutil.from_ts(moment.timestamp()),
+            "temp": inst.get("air_temperature"),
+            "feels": inst.get("apparent_air_temperature"),
+            "wind": inst.get("wind_speed"),
+            "code": _metno_code((next_hour.get("summary") or {}).get("symbol_code")),
+            "prob": (next_hour.get("details") or {}).get("probability_of_precipitation"),
+        })
+    return points
+
+
+def _current_open_meteo(cfg: dict) -> dict | None:
+    with httpx.Client(timeout=_OPEN_METEO_TIMEOUT) as client:
         r = client.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
                 "latitude": cfg["lat"], "longitude": cfg["lon"],
                 "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m",
+                "wind_speed_unit": "ms",  # по умолчанию км/ч
                 "timezone": "auto",
             },
         )
@@ -138,19 +232,37 @@ def _fetch_weather_line(cfg: dict) -> str | None:
         cur = (r.json() or {}).get("current") or {}
     if not cur:
         return None
+    return {
+        "temp": cur.get("temperature_2m"), "feels": cur.get("apparent_temperature"),
+        "code": cur.get("weather_code"), "wind": cur.get("wind_speed_10m"),
+    }
+
+
+def _current_metno(cfg: dict) -> dict | None:
+    points = _metno_points(cfg)
+    return points[0] if points else None
+
+
+def _fetch_weather_line(cfg: dict) -> str | None:
+    """Строка 'Город: +7°C (ощущается +5°C), дождь, ветер 4 м/с' (без времени —
+    время/дата добавляются отдельно в get_env_line)."""
+    cur = _from_open_meteo_or_metno(
+        lambda: _current_open_meteo(cfg), lambda: _current_metno(cfg), "погоду")
+    if not cur:
+        return None
 
     parts = []
-    temp = cur.get("temperature_2m")
+    temp = cur.get("temp")
     if temp is not None:
         t_str = f"{temp:+.0f}°C"
-        app = cur.get("apparent_temperature")
-        if app is not None and abs(app - temp) >= 2:
-            t_str += f" (feels like {app:+.0f}°C)"
+        feels = cur.get("feels")
+        if feels is not None and abs(feels - temp) >= 2:
+            t_str += f" (feels like {feels:+.0f}°C)"
         parts.append(t_str)
-    weather = _WMO_DESC.get(cur.get("weather_code"))
+    weather = _WMO_DESC.get(cur.get("code"))
     if weather:
         parts.append(weather)
-    wind = cur.get("wind_speed_10m")
+    wind = cur.get("wind")
     if wind is not None and wind >= 3:  # м/с; слабый ветер не упоминаем
         parts.append(f"wind {wind:.0f} m/s")
     if not parts:
@@ -162,6 +274,7 @@ def _fetch_weather_line(cfg: dict) -> str | None:
 _PRECIP_CODES = {
     51, 53, 55, 56, 57,                      # морось
     61, 63, 65, 66, 67,                      # дождь
+    68, 69, 83, 84,                          # дождь со снегом
     71, 73, 75, 77,                          # снег
     80, 81, 82, 85, 86,                      # ливни
 }
@@ -181,9 +294,32 @@ def fetch_forecast(cfg: dict, hours: int = 12) -> dict | None:
        "hours": [{"time": datetime, "code": int|None,
                   "temp": float|None, "precip_prob": int|None}]}
     Времена — локальные naive datetime (Open-Meteo с timezone=auto; запуск
-    локальный, часовой пояс машины совпадает с местом пользователя).
-    None — прогноз недоступен (сеть/ответ без почасовых данных)."""
-    with httpx.Client(timeout=_TIMEOUT) as client:
+    локальный, часовой пояс машины совпадает с местом пользователя; у MET
+    Norway — UTC, переведённые в пояс пользователя).
+    None — прогноз недоступен (ответ без почасовых данных); сбой сети у обоих
+    источников — исключение."""
+    return _from_open_meteo_or_metno(
+        lambda: _forecast_open_meteo(cfg, hours), lambda: _forecast_metno(cfg, hours),
+        "прогноз")
+
+
+def _forecast_metno(cfg: dict, hours: int) -> dict | None:
+    points = _metno_points(cfg)
+    if not points:
+        return None
+    cur = points[0]
+    horizon = cur["time"] + timedelta(hours=hours)
+    out_hours = [
+        {"time": p["time"], "code": p["code"], "temp": p["temp"], "precip_prob": p["prob"]}
+        for p in points[1:] if cur["time"] < p["time"] <= horizon
+    ]
+    if not out_hours:
+        return None
+    return {"current_code": cur["code"], "current_temp": cur["temp"], "hours": out_hours}
+
+
+def _forecast_open_meteo(cfg: dict, hours: int) -> dict | None:
+    with httpx.Client(timeout=_OPEN_METEO_TIMEOUT) as client:
         r = client.get(
             "https://api.open-meteo.com/v1/forecast",
             params={

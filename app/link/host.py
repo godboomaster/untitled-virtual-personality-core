@@ -238,6 +238,10 @@ async def ensure_started() -> LinkHost:
                             api_token=os.getenv("API_TOKEN", ""))
             await host.start()
             _host = host
+            # Канал виден из сети — телефон найдёт ноутбук и широковещательным
+            # запросом (app/link/discovery.py)
+            from app.link import discovery
+            await discovery.ensure_started()
         return _host
 
 

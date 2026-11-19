@@ -353,3 +353,316 @@ mod idle {
         None
     }
 }
+
+/// Окну можно стоять и выше строки меню: macOS сама прижимает окна под неё
+/// (NSWindow constrainFrameRect:toScreen:), а голову портрета можно задвинуть
+/// за верх экрана. Метод переопределяется у класса окна tao (TaoWindow) —
+/// значит, у всех окон панели: окно панели и так ставится под значком в трее
+pub fn allow_offscreen(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if let Ok(ns) = window.ns_window() {
+        offscreen::allow(ns);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+#[cfg(target_os = "macos")]
+mod offscreen {
+    use std::ffi::{c_char, c_void, CStr};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    #[link(name = "objc")]
+    extern "C" {
+        fn object_getClass(obj: *mut c_void) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn class_addMethod(cls: *mut c_void, sel: *mut c_void, imp: *const c_void, types: *const c_char) -> bool;
+    }
+
+    extern "C" fn keep_frame(_this: *mut c_void, _sel: *mut c_void, rect: Rect, _screen: *mut c_void) -> Rect {
+        rect
+    }
+
+    pub fn allow(ns_window: *mut c_void) {
+        let sel = CStr::from_bytes_with_nul(b"constrainFrameRect:toScreen:\0").unwrap();
+        let types =
+            CStr::from_bytes_with_nul(b"{CGRect={CGPoint=dd}{CGSize=dd}}@:{CGRect={CGPoint=dd}{CGSize=dd}}@\0").unwrap();
+        // Второй раз class_addMethod ничего не делает: метод у класса уже свой
+        unsafe {
+            let cls = object_getClass(ns_window);
+            class_addMethod(cls, sel_registerName(sel.as_ptr()), keep_frame as *const c_void, types.as_ptr());
+        }
+    }
+}
+
+/// Зажата ли основная кнопка мыши (по всей системе): портрет на рабочем столе
+/// идёт за курсором, пока она зажата. Узнать нельзя — None
+pub fn primary_button_down() -> Option<bool> {
+    mouse::primary_down()
+}
+
+#[cfg(target_os = "macos")]
+mod mouse {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+
+    // kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft
+    const COMBINED_SESSION: i32 = 0;
+    const BUTTON_LEFT: u32 = 0;
+
+    pub fn primary_down() -> Option<bool> {
+        Some(unsafe { CGEventSourceButtonState(COMBINED_SESSION, BUTTON_LEFT) })
+    }
+}
+
+#[cfg(windows)]
+mod mouse {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetAsyncKeyState(vkey: i32) -> i16;
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+
+    const VK_LBUTTON: i32 = 0x01;
+    const VK_RBUTTON: i32 = 0x02;
+    const SM_SWAPBUTTON: i32 = 23;
+
+    pub fn primary_down() -> Option<bool> {
+        // GetAsyncKeyState видит кнопки физически: поменяли местами (левша) —
+        // основная правая
+        let vk = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 { VK_RBUTTON } else { VK_LBUTTON };
+        Some(unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0)
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+mod mouse {
+    pub fn primary_down() -> Option<bool> {
+        None
+    }
+}
+
+/// Окно другой программы на экране: id и рамка, логические px (как у окон
+/// панели: верхний левый угол основного монитора — 0, y вниз)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WinRect {
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Видимые обычные окна других программ — спереди назад (по z-порядку): по
+/// ним портрет ходит и на них сидит. Свои окна, строка меню, Dock, панель
+/// задач, рабочий стол, скрытые и свёрнутые — не в списке. scale — масштаб
+/// окна портрета: на Windows рамки в физических px. Узнать нельзя — пусто
+pub fn windows(scale: f64) -> Vec<WinRect> {
+    wins::list(scale)
+}
+
+#[cfg(target_os = "macos")]
+mod wins {
+    use super::WinRect;
+    use std::ffi::c_void;
+
+    type CFRef = *const c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CGRect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFRef;
+        fn CGRectMakeWithDictionaryRepresentation(dict: CFRef, rect: *mut CGRect) -> bool;
+        static kCGWindowLayer: CFRef;
+        static kCGWindowBounds: CFRef;
+        static kCGWindowOwnerPID: CFRef;
+        static kCGWindowNumber: CFRef;
+        static kCGWindowAlpha: CFRef;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: CFRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFRef, index: isize) -> CFRef;
+        fn CFDictionaryGetValue(dict: CFRef, key: CFRef) -> CFRef;
+        fn CFNumberGetValue(number: CFRef, kind: isize, out: *mut c_void) -> u8;
+        fn CFRelease(obj: CFRef);
+    }
+
+    // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    const ON_SCREEN: u32 = 1 | 16;
+    // kCFNumberSInt64Type, kCFNumberFloat64Type
+    const SINT64: isize = 4;
+    const FLOAT64: isize = 6;
+
+    unsafe fn int(dict: CFRef, key: CFRef) -> Option<i64> {
+        let n = CFDictionaryGetValue(dict, key);
+        let mut v: i64 = 0;
+        (!n.is_null() && CFNumberGetValue(n, SINT64, &mut v as *mut i64 as *mut c_void) != 0).then_some(v)
+    }
+
+    unsafe fn float(dict: CFRef, key: CFRef) -> Option<f64> {
+        let n = CFDictionaryGetValue(dict, key);
+        let mut v: f64 = 0.0;
+        (!n.is_null() && CFNumberGetValue(n, FLOAT64, &mut v as *mut f64 as *mut c_void) != 0).then_some(v)
+    }
+
+    pub fn list(_scale: f64) -> Vec<WinRect> {
+        let me = std::process::id() as i64;
+        let mut out = Vec::new();
+        unsafe {
+            let all = CGWindowListCopyWindowInfo(ON_SCREEN, 0);
+            if all.is_null() {
+                return out;
+            }
+            for i in 0..CFArrayGetCount(all) {
+                let d = CFArrayGetValueAtIndex(all, i);
+                // Слой 0 — обычные окна (строка меню, Dock, всплывающие — выше)
+                if d.is_null() || int(d, kCGWindowLayer) != Some(0) || int(d, kCGWindowOwnerPID) == Some(me) {
+                    continue;
+                }
+                if float(d, kCGWindowAlpha).map(|a| a <= 0.01).unwrap_or(false) {
+                    continue;
+                }
+                let b = CFDictionaryGetValue(d, kCGWindowBounds);
+                let mut r = CGRect::default();
+                if b.is_null() || !CGRectMakeWithDictionaryRepresentation(b, &mut r) || r.w < 1.0 || r.h < 1.0 {
+                    continue;
+                }
+                let id = int(d, kCGWindowNumber).unwrap_or(0) as u64;
+                out.push(WinRect { id, x: r.x, y: r.y, w: r.w, h: r.h });
+            }
+            CFRelease(all);
+        }
+        out
+    }
+}
+
+#[cfg(windows)]
+mod wins {
+    use super::WinRect;
+    use std::ffi::c_void;
+
+    type Hwnd = *mut c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(cb: extern "system" fn(Hwnd, isize) -> i32, lparam: isize) -> i32;
+        fn IsWindowVisible(h: Hwnd) -> i32;
+        fn IsIconic(h: Hwnd) -> i32;
+        fn GetWindowRect(h: Hwnd, r: *mut Rect) -> i32;
+        fn GetWindowLongPtrW(h: Hwnd, index: i32) -> isize;
+        fn GetWindowThreadProcessId(h: Hwnd, pid: *mut u32) -> u32;
+        fn GetClassNameW(h: Hwnd, buf: *mut u16, max: i32) -> i32;
+    }
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmGetWindowAttribute(h: Hwnd, attr: u32, out: *mut c_void, size: u32) -> i32;
+    }
+
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_TOOLWINDOW: isize = 0x80;
+    const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+    const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+    const DWMWA_CLOAKED: u32 = 14;
+    // Рабочий стол и панель задач — не окна, на которых стоят
+    const SKIP_CLASSES: [&str; 4] = ["Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"];
+
+    extern "system" fn collect(h: Hwnd, lparam: isize) -> i32 {
+        // lparam — &mut Vec<Hwnd> из list(); EnumWindows зовёт синхронно
+        let all = unsafe { &mut *(lparam as *mut Vec<Hwnd>) };
+        all.push(h);
+        1
+    }
+
+    fn class(h: Hwnd) -> String {
+        let mut buf = [0u16; 64];
+        let n = unsafe { GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32) };
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    }
+
+    pub fn list(scale: f64) -> Vec<WinRect> {
+        let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let me = std::process::id();
+        let mut all: Vec<Hwnd> = Vec::new();
+        // По z-порядку: первое — самое переднее
+        unsafe { EnumWindows(collect, &mut all as *mut Vec<Hwnd> as isize) };
+        let mut out = Vec::new();
+        for h in all {
+            unsafe {
+                if IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
+                    continue;
+                }
+                let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+                if ex & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) != 0 {
+                    continue;
+                }
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(h, &mut pid);
+                if pid == me {
+                    continue;
+                }
+                // Окна «спрятанные» системой (другие рабочие столы, приложения UWP в фоне)
+                let mut cloaked = 0u32;
+                let hr = DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut c_void, 4);
+                if hr == 0 && cloaked != 0 {
+                    continue;
+                }
+                if SKIP_CLASSES.contains(&class(h).as_str()) {
+                    continue;
+                }
+                // Рамка без невидимых полей под тень (Windows 10/11)
+                let mut r = Rect::default();
+                let size = std::mem::size_of::<Rect>() as u32;
+                if DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut Rect as *mut c_void, size) != 0
+                    && GetWindowRect(h, &mut r) == 0
+                {
+                    continue;
+                }
+                let (w, hh) = ((r.right - r.left) as f64, (r.bottom - r.top) as f64);
+                if w < 1.0 || hh < 1.0 {
+                    continue;
+                }
+                out.push(WinRect { id: h as usize as u64, x: r.left as f64 / s, y: r.top as f64 / s, w: w / s, h: hh / s });
+            }
+        }
+        out
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+mod wins {
+    use super::WinRect;
+
+    pub fn list(_scale: f64) -> Vec<WinRect> {
+        Vec::new()
+    }
+}

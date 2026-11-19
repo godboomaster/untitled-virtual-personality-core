@@ -30,7 +30,10 @@ import org.json.JSONObject;
    счёт — там ядра нет) и опрашиваем соседей по /24 на GET /api/health:
    ядро отвечает {"status":"ok"} без токена. Сеть шире /24 сужаем до своей
    /24 — иначе десятки тысяч адресов. Отказ no_wifi — телефон не в локальной
-   сети. Из веба такой опрос не сделать: WebView не знает своего адреса. */
+   сети. Из веба такой опрос не сделать: WebView не знает своего адреса.
+   discover — быстрый путь: широковещательный «кто тут ядро?» (CoreDiscovery,
+   ответчик ядра — app/link/discovery.py) — за секунду, на любом порту, с
+   именем компьютера; перебор /24 остаётся для ядер без ответчика. */
 @CapacitorPlugin(name = "CoreFinder")
 public class CoreFinderPlugin extends Plugin {
 
@@ -81,6 +84,57 @@ public class CoreFinderPlugin extends Plugin {
             res.put("nets", new JSArray(nets));
             call.resolve(res);
         }, "core-finder").start();
+    }
+
+    /** «Кто тут ядро?» по сети: широковещательно на всех своих сетях и на
+     * hosts (прежний адрес ядра — на случай сети без широковещания). */
+    @PluginMethod
+    public void discover(PluginCall call) {
+        int waitMs = Math.max(300, Math.min(5000, call.getInt("waitMs", 1500)));
+        JSArray hosts = call.getArray("hosts", new JSArray());
+        new Thread(() -> {
+            List<InetAddress> targets = new ArrayList<>();
+            Set<String> nets = new TreeSet<>();
+            for (InterfaceAddress ia : localAddresses()) {
+                if (ia.getBroadcast() != null && !targets.contains(ia.getBroadcast())) targets.add(ia.getBroadcast());
+                nets.add(toStr(toInt(ia.getAddress()) & (-1 << (32 - ia.getNetworkPrefixLength())))
+                        + "/" + ia.getNetworkPrefixLength());
+            }
+            boolean wifi = !targets.isEmpty();
+            try {
+                if (wifi) targets.add(InetAddress.getByName("255.255.255.255"));
+                for (int i = 0; i < hosts.length(); i++) {
+                    String h = hosts.optString(i, "").trim();
+                    if (h.isEmpty()) continue;
+                    try {
+                        targets.add(InetAddress.getByName(h));
+                    } catch (Exception ignored) {
+                        // не адрес — пропускаем
+                    }
+                }
+                if (targets.isEmpty()) {
+                    call.reject("phone is not on Wi-Fi", "no_wifi");
+                    return;
+                }
+                JSArray found = new JSArray();
+                for (CoreDiscovery.Core c : CoreDiscovery.ask(targets, CoreDiscovery.PORT, waitMs)) {
+                    JSObject o = new JSObject();
+                    o.put("host", c.host);
+                    o.put("id", c.id);
+                    o.put("name", c.name);
+                    o.put("api", c.api);
+                    o.put("token", c.token);
+                    o.put("link", c.link);
+                    found.put(o);
+                }
+                JSObject res = new JSObject();
+                res.put("found", found);
+                res.put("nets", new JSArray(nets));
+                call.resolve(res);
+            } catch (Exception e) {
+                call.reject(String.valueOf(e.getMessage()), "failed");
+            }
+        }, "core-discover").start();
     }
 
     // Отвечает ли на host ядро: /api/health → {"status":"ok"}

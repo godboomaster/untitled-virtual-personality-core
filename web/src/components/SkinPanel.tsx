@@ -1,11 +1,12 @@
 /* SkinPanel — блок управления скинами персон (раздел «Персоны»).
    Скин — запись библиотеки (skinStore): до трёх файлов экранов (чат, досье,
    комната) + перекраска. Библиотека общая, персоне назначается скин из неё.
-   Флоу: скачать шаблон(ы) → отдать нейросети (по одному экрану за раз) →
-   загрузить файл(ы) новым скином или в экраны существующего → валидация →
-   предпросмотр в песочнице → сохранить и применить. Либо сгенерировать
-   скин нейросетью прямо здесь (SkinGenerator) — готовые файлы попадают
-   в ту же загрузку. Под карточками
+   В библиотеке есть встроенные скины (skinStore PRESETS). Свой скин:
+   сгенерировать нейросетью прямо здесь (SkinGenerator, нужно ядро) или
+   взять промпт для своей нейросети (SkinPromptKit, работает и без ядра)
+   — готовые файлы попадают в одну загрузку: валидация → предпросмотр в
+   песочнице → сохранить и применить. Файлы можно загрузить и вручную
+   («Новый скин из файлов»). Под карточками
    библиотеки — одна рабочая область: загрузка, цвета или предпросмотр.
    При runtime-ошибке скина здесь же показывается отчёт по каждому экрану,
    который можно скопировать и вернуть редактору. */
@@ -25,14 +26,14 @@ import type { PersonaSkins, SkinEntry } from '../skins/skinStore';
 import type { SkinScreen } from '../skins/engine';
 import type { Persona } from '../mockData';
 import { useI18n, useMockData } from '../i18n';
-import { buildSkinContractDoc } from '../skins/contract';
 import SkinLibrary from './skins/SkinLibrary';
 import type { SkinWorkspaceKind } from './skins/SkinLibrary';
 import SkinUploader from './skins/SkinUploader';
 import SkinColorEditor from './skins/SkinColorEditor';
 import SkinPreview from './skins/SkinPreview';
 import SkinGenerator from './skins/SkinGenerator';
-import { SCREEN_NAME_KEY, TEMPLATES, downloadFile, skinTitle } from './skins/skinUi';
+import SkinPromptKit from './skins/SkinPromptKit';
+import { SCREEN_NAME_KEY, TEMPLATES, copyText, downloadFile, skinTitle } from './skins/skinUi';
 
 interface Workspace {
   kind: SkinWorkspaceKind;
@@ -62,7 +63,7 @@ function LibraryPreview({ entry, persona, onClose }: { entry: SkinEntry; persona
 }
 
 export default function SkinPanel() {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const { personas } = useMockData();
 
   const [personaId, setPersonaId] = useState(personas[0]?.id ?? '');
@@ -82,8 +83,9 @@ export default function SkinPanel() {
 
   if (!persona) return null;
 
-  const copyText = (text: string) => {
-    navigator.clipboard.writeText(text).then(() => {
+  const copyReport = (text: string) => {
+    void copyText(text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
@@ -176,7 +178,7 @@ export default function SkinPanel() {
             {t('skin.brokenTitle')} · {t(SCREEN_NAME_KEY[s])}
           </div>
           <code>{broken[s]}</code>
-          <button type="button" className="btn btn--ghost" onClick={() => copyText(t('skin.reportPrefix') + broken[s])}>
+          <button type="button" className="btn btn--ghost" onClick={() => copyReport(t('skin.reportPrefix') + broken[s])}>
             {copied ? t('skin.copied') : t('skin.copyReport')}
           </button>
         </div>
@@ -218,7 +220,7 @@ export default function SkinPanel() {
           <button
             type="button"
             className="btn btn--ghost"
-            onClick={() => copyText(t('skin.reportPrefix') + errors.join('\n'))}
+            onClick={() => copyReport(t('skin.reportPrefix') + errors.join('\n'))}
           >
             {copied ? t('skin.copied') : t('skin.copyReport')}
           </button>
@@ -254,8 +256,11 @@ export default function SkinPanel() {
         onGenerated={(files) => openWorkspace('upload', null, files)}
       />
 
-      {/* Создание скина внешней нейросетью: шаблоны экранов + промпт
-          (инструкция + контракт скина, собранный из кода) */}
+      {/* Свой скин через свою нейросеть: тот же промпт, что у генератора,
+          — копируется в любой чат-бот; ответ проверяется и уходит в загрузку */}
+      <SkinPromptKit entries={library.entries} onGenerated={(files) => openWorkspace('upload', null, files)} />
+
+      {/* Шаблоны экранов — для ручной правки */}
       <div className="skin-actions skin-templates">
         <span className="field-label">{t('skin.templates')}</span>
         {SKIN_SCREENS.map((s) => (
@@ -268,11 +273,7 @@ export default function SkinPanel() {
             ⬇ {t(SCREEN_NAME_KEY[s])}
           </button>
         ))}
-        <button type="button" className="btn btn--ghost" onClick={() => copyText(t('skin.llmPrompt') + '\n\n' + buildSkinContractDoc(lang))}>
-          {copied ? t('skin.copied') : t('skin.copyPrompt')}
-        </button>
       </div>
-      <p className="ctx-note">{t('skin.screenshotHint')}</p>
     </div>
   );
 }

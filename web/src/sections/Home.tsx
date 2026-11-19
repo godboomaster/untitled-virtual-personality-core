@@ -5,19 +5,24 @@ import type { InitiativeOutcome } from '../mockData';
 import { requestPersonaCreate } from '../personaCreateStore';
 import { requestChatPersona } from '../chatNavStore';
 import { useInbox } from '../inboxStore';
-import { usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from '../components/PersonaAvatar';
 import CalendarWidget from '../components/CalendarWidget';
 import NotesWidget from '../components/NotesWidget';
-import { api } from '../api';
+import PageTabs from '../components/PageTabs';
+import { api, isNativeApp } from '../api';
 import type { HomeOverview } from '../api';
 import { useApiOnline, useCoreHealth } from '../apiData';
 import { localLast } from '../offline/lastMessage';
+import { isStandalone } from '../standalone';
 import { agoLabel } from '../timeAgo';
+import QrCode from '../link/QrCode';
 
 // Сводка главной с бэкенда обновляется раз в минуту
 const HOME_POLL_MS = 60_000;
 // Строк в ленте «пока вас не было»
 const FEED_LIMIT = 8;
+// Репозиторий проекта: QR-код в подвале ведёт сюда (камерой телефона или нажатием)
+const REPO_URL = 'https://github.com/godboomaster/untitled-virtual-personality-core';
 
 interface HomeProps {
   onNavigate: (s: Section) => void;
@@ -35,7 +40,6 @@ interface FeedRow {
 
 export default function Home({ onNavigate }: HomeProps) {
   const { t, lang } = useI18n();
-  const avatars = usePersonaAvatars();
   // Локальное время устройства пользователя: живые часы в hero-блоке
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -49,9 +53,7 @@ export default function Home({ onNavigate }: HomeProps) {
   const { unread } = useInbox();
   const {
     personas,
-    ltmByPersona,
     remindersByPersona,
-    initiativeStateByPersona,
     diaryByPersona,
     initiativeByPersona,
   } = useMockData();
@@ -139,23 +141,6 @@ export default function Home({ onNavigate }: HomeProps) {
 
   const thought = thoughts.length ? thoughts[thoughtIdx % thoughts.length] : undefined;
 
-  // Досье-карточки модулей консоли
-  const modules: { index: string; title: string; desc: string; target: Section; status: string }[] = [
-    { index: 'MOD_01', title: t('home.modChatTitle'), desc: t('home.modChatDesc'), target: 'chat', status: 'ACTIVE' },
-    { index: 'MOD_02', title: t('home.modDossierTitle'), desc: t('home.modDossierDesc'), target: 'chat', status: 'ACTIVE' },
-    { index: 'MOD_03', title: t('home.modRoomTitle'), desc: t('home.modRoomDesc'), target: 'room', status: 'ACTIVE' },
-    { index: 'MOD_04', title: t('home.modPersonasTitle'), desc: t('home.modPersonasDesc'), target: 'personas', status: 'ACTIVE' },
-    { index: 'MOD_05', title: t('home.modSettingsTitle'), desc: t('home.modSettingsDesc'), target: 'settings', status: 'ACTIVE' },
-    { index: 'MOD_06', title: t('home.modStartTitle'), desc: t('home.modStartDesc'), target: 'start', status: 'GUIDE' },
-  ];
-
-  // Агрегированная телеметрия ядра: суммы по всем персонам
-  const sumLive = (pick: (o: NonNullable<ReturnType<typeof ov>>) => number) =>
-    personas.reduce((n, p) => n + (overview?.personas[p.id] ? pick(overview.personas[p.id]) : 0), 0);
-  const totalLtmFacts = live
-    ? sumLive((o) => o.ltm_facts)
-    : mock ? Object.values(ltmByPersona).reduce((n, facts) => n + facts.length, 0) : 0;
-
   // Лента «пока вас не было»: живая — события каждой персоны после вашего
   // последнего сообщения ей (инициативы и записи дневника), свежие сверху;
   // мок — по 2 события каждого типа
@@ -196,6 +181,15 @@ export default function Home({ onNavigate }: HomeProps) {
     return [...initRows, ...diaryRows, ...reminderRows];
   }, [live, mock, overview, personas, initiativeByPersona, diaryByPersona, remindersByPersona]);
 
+  // Карточки «Состояния»: чей последний ответ свежее — та впереди, дальше по
+  // убыванию; время то же, что в строке «последний ответ» карточки (сводка
+  // ядра или копия переписки на телефоне). Без времени (ответа не было,
+  // демо) — в конце, в прежнем порядке
+  const presenceOrder = useMemo(() => {
+    const lastTs = (id: string) => (live ? overview.personas[id]?.last_user_ts : local?.get(id)?.lastUserTs) ?? -1;
+    return [...personas].sort((a, b) => lastTs(b.id) - lastTs(a.id));
+  }, [live, overview, local, personas]);
+
   // Блок «Заметки»: персоны, у которых они не выключены (notes: false), и
   // число заметок каждой из сводки
   const notesPersonas = useMemo(
@@ -206,38 +200,6 @@ export default function Home({ onNavigate }: HomeProps) {
     () => (live ? Object.fromEntries(personas.map((p) => [p.id, overview.personas[p.id]?.notes_count ?? 0])) : undefined),
     [live, overview, personas],
   );
-
-  // Строки журнала системы для терминального блока
-  const logLines: React.ReactNode[] = [
-    <> &gt; CORE.BOOT &nbsp;v0.1.0 &nbsp;&nbsp;// <b>OK</b></>,
-    <> &gt; PERSONA.LOAD &nbsp;{personas.slice(0, 3).map((p) => p.id).join(' · ')}{personas.length > 3 ? ` +${personas.length - 3}` : ''} &nbsp;&nbsp;// <b>{t('home.logPersonaLoad', { n: personas.length })}</b></>,
-    <> &gt; LTM.SYNC &nbsp;{t('home.logLtm', { n: totalLtmFacts })} &nbsp;&nbsp;// <b>OK</b></>,
-    <> &gt; STM.BUFFER &nbsp;{t('home.logStm')} &nbsp;&nbsp;// <b>OK</b></>,
-    <> &gt; DIARY.WRITE &nbsp;{t('home.logDiary')} &nbsp;&nbsp;// <b>OK</b></>,
-    <> &gt; INITIATIVE.LOOP &nbsp;{t('home.logInitiative')} &nbsp;&nbsp;// <span className="bright">MONITORING</span></>,
-    <> &gt; ROOM.RENDER &nbsp;{t('home.logRoom')} &nbsp;&nbsp;// <b>SYNCED</b></>,
-    <> &gt; ART.PIPELINE &nbsp;{t('home.logArt')} &nbsp;&nbsp;// <b>IN-ROOM</b></>,
-    <> &gt; OPERATOR &nbsp;{t('home.logOperator')} &nbsp;&nbsp;// <b>CONNECTED</b></>,
-  ];
-
-  // Журнал системы: строки появляются по очереди, как в терминале
-  const [visibleLines, setVisibleLines] = useState(0);
-
-  useEffect(() => {
-    if (visibleLines >= logLines.length) return;
-    const timer = setTimeout(() => setVisibleLines((v) => v + 1), 420);
-    return () => clearTimeout(timer);
-  }, [visibleLines, logLines.length]);
-
-  const activeReminders = live
-    ? sumLive((o) => o.reminders_active)
-    : mock ? Object.values(remindersByPersona).reduce((n, rs) => n + rs.filter((r) => r.active).length, 0) : 0;
-  const initiativesToday = live
-    ? sumLive((o) => o.initiatives_today)
-    : mock ? Object.values(initiativeStateByPersona).reduce((n, s) => n + s.initiativesToday, 0) : 0;
-  const initiativesMax = live
-    ? sumLive((o) => o.initiatives_max)
-    : mock ? Object.values(initiativeStateByPersona).reduce((n, s) => n + s.maxPerDay, 0) : 0;
 
   return (
     <div className="section home">
@@ -256,7 +218,7 @@ export default function Home({ onNavigate }: HomeProps) {
           <br />
           <span className="home-readout-date">{dateLine}</span>
         </div>
-        <div className="home-eyebrow">Virtual Persona Core // Ops Console</div>
+        <div className="home-eyebrow">{t('home.eyebrow')}</div>
         <div className="home-greet">{t(greetKey)}</div>
         <h1 className="home-title glitch" data-text={t('home.title')}>
           {t('home.title')}
@@ -295,228 +257,172 @@ export default function Home({ onNavigate }: HomeProps) {
 
       <div className="chrome-bar" />
 
-      {/* Присутствие: кто сейчас в сети и чем занят */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('home.onlineTitle')}</span>
-          <span className="home-block-num">02 / STATUS</span>
-        </div>
-        <div className="home-presence-grid">
-          {personas.map((p) => {
-            // Занятие — только живое состояние персоны (living); без
-            // бэкенда — объяснение, демо-занятия не подставляем
-            const o = ov(p.id);
-            const activity = live
-              ? o?.state
-                ? [o.state.pastime, o.state.location].filter(Boolean).join(' · ')
-                : t('home.noState')
-              : noLink ? t('home.noLink') : '—';
-            const mood = live ? o?.state?.mood : undefined;
-            const localTs = local?.get(p.id)?.lastUserTs;
-            const lastReply = live ? ago(o?.last_user_ts) : localTs ? ago(localTs) : local ? t('home.unknown') : p.lastReply;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                className="home-presence"
-                onClick={() => {
-                  requestChatPersona(p.id);
-                  onNavigate('chat');
-                }}
-              >
-                <div className="home-presence-head">
-                  <div className="avatar">
-                    {avatars[p.id] ? <img src={avatars[p.id]} alt={p.name} /> : p.name.charAt(0)}
+      {/* На телефоне блоки — вкладками, как досье (PageTabs); на широком — подряд,
+          строка заголовков сверху переносит к блоку (jump); шапка и подвал — всегда */}
+      <PageTabs
+        page="home"
+        jump
+        tabs={[
+          {
+            id: 'status',
+            label: t('home.onlineTitle'),
+            content: (
+              <>
+                {/* Присутствие: кто сейчас в сети и чем занят */}
+                <div>
+                  <div className="home-block-head">
+                    <span className="home-block-title">{t('home.onlineTitle')}</span>
+                    <span className="home-block-num">02 / STATUS</span>
                   </div>
-                  <div>
-                    <div className="home-presence-name">
-                      {p.name}
-                      {(unread[p.id] ?? 0) > 0 && (
-                        <span className="unread-dot" title={t('chat.unread')}>
-                          {unread[p.id]}
+                  <div className="home-presence-grid">
+                    {presenceOrder.map((p) => {
+                      // Занятие — только живое состояние персоны (living); без
+                      // бэкенда — объяснение, демо-занятия не подставляем
+                      const o = ov(p.id);
+                      const activity = live
+                        ? o?.state
+                          ? [o.state.pastime, o.state.location].filter(Boolean).join(' · ')
+                          : t('home.noState')
+                        : noLink ? t(isStandalone() ? 'home.noLinkStandalone' : 'home.noLink') : '—';
+                      const mood = live ? o?.state?.mood : undefined;
+                      const localTs = local?.get(p.id)?.lastUserTs;
+                      const lastReply = live ? ago(o?.last_user_ts) : localTs ? ago(localTs) : local ? t('home.unknown') : p.lastReply;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="home-presence"
+                          onClick={() => {
+                            requestChatPersona(p.id);
+                            onNavigate('chat');
+                          }}
+                        >
+                          <div className="home-presence-head">
+                            <div className="avatar">
+                              <PersonaAvatar persona={p} followWithin=".home-presence-grid" />
+                            </div>
+                            <div>
+                              <div className="home-presence-name">
+                                {p.name}
+                                {(unread[p.id] ?? 0) > 0 && (
+                                  <span className="unread-dot" title={t('chat.unread')}>
+                                    {unread[p.id]}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="home-presence-status">
+                                <span className="status-led" />
+                                {t(`status.${p.status}`)}
+                                {mood && <span className="home-presence-mood"> · {mood}</span>}
+                              </div>
+                            </div>
+                          </div>
+                          <div className={'home-presence-activity' + ((live && !o?.state) || noLink ? ' home-presence-activity--none' : '')}>
+                            {activity}
+                          </div>
+                          {(unread[p.id] ?? 0) > 0 ? (
+                            <div className="home-presence-reply home-presence-reply--unread">
+                              {t('home.unreadMsg', { n: unread[p.id] })}
+                            </div>
+                          ) : (
+                            <div className="home-presence-reply">{t('home.lastReplyLabel', { t: lastReply })}</div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            ),
+          },
+          {
+            id: 'events',
+            label: t('pageTabs.events'),
+            content: (
+              <>
+                {/* Лента событий «пока вас не было» */}
+                <div>
+                  <div className="home-block-head">
+                    <span className="home-block-title">{t('home.feedTitle')}</span>
+                    <span className="home-block-num">03 / EVENTS</span>
+                  </div>
+                  <div className="home-feed">
+                    {live && feedRows.length === 0 && <div className="home-feed-empty">{t('home.feedEmpty')}</div>}
+                    {noLink && !mock && <div className="home-feed-empty">{t('home.feedNoLink')}</div>}
+                    {feedRows.map((row, i) => (
+                      <div key={i} className="home-feed-row">
+                        <span className={`badge home-feed-badge--${row.kind}`}>
+                          {row.kind === 'initiative'
+                            ? t('home.badgeInitiative')
+                            : row.kind === 'diary'
+                              ? t('home.badgeDiary')
+                              : t('home.badgeReminder')}
                         </span>
-                      )}
-                    </div>
-                    <div className="home-presence-status">
-                      <span className="status-led" />
-                      {t(`status.${p.status}`)}
-                      {mood && <span className="home-presence-mood"> · {mood}</span>}
-                    </div>
+                        <span className="home-feed-persona">{row.persona}</span>
+                        <span className="home-feed-text">{row.text}</span>
+                        {row.outcome && (
+                          <span
+                            className={`badge ${
+                              row.outcome === 'answered'
+                                ? 'badge--success'
+                                : row.outcome === 'ignored'
+                                  ? 'badge--muted'
+                                  : ''
+                            }`}
+                          >
+                            {t(`outcome.${row.outcome}`)}
+                          </span>
+                        )}
+                        <span className="home-feed-time">{row.ts ? ago(row.ts) : row.time}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <div className={'home-presence-activity' + ((live && !o?.state) || noLink ? ' home-presence-activity--none' : '')}>
-                  {activity}
-                </div>
-                {(unread[p.id] ?? 0) > 0 ? (
-                  <div className="home-presence-reply home-presence-reply--unread">
-                    {t('home.unreadMsg', { n: unread[p.id] })}
+              </>
+            ),
+          },
+          {
+            id: 'notes',
+            label: t('notes.title'),
+            content: (
+              <>
+                {/* Заметки пользователя: своя книжка у каждой персоны */}
+                <div>
+                  <div className="home-block-head">
+                    <span className="home-block-title">{t('notes.title')}</span>
+                    <span className="home-block-num">04 / NOTES</span>
                   </div>
-                ) : (
-                  <div className="home-presence-reply">{t('home.lastReplyLabel', { t: lastReply })}</div>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+                  <NotesWidget personas={notesPersonas} live={live} mock={mock} noLink={noLink} phone={isNativeApp() && noLink} counts={notesCounts} />
+                </div>
+              </>
+            ),
+          },
+          {
+            id: 'calendar',
+            label: t('calendar.title'),
+            content: (
+              <>
+                {/* Общий календарь всех персон */}
+                <div>
+                  <div className="home-block-head">
+                    <span className="home-block-title">{t('calendar.title')}</span>
+                    <span className="home-block-num">05 / PLAN</span>
+                  </div>
+                  <CalendarWidget />
+                </div>
+              </>
+            ),
+          },
+        ]}
+      />
 
-      {/* Телеметрия ядра; без связи — только число персон (они на телефоне),
-          остальное — объяснение вместо цифр */}
-      <div className={`home-telemetry${noLink && !mock ? ' home-telemetry--nolink' : ''}`}>
-        <div className="home-tele-cell">
-          <div className="corner tl" />
-          <div className="corner br" />
-          <div className="home-tele-label">{t('home.telePersonas')}</div>
-          <div className="home-tele-value">{personas.length}</div>
-        </div>
-        {noLink && !mock ? (
-          <div className="home-tele-cell">
-            <div className="corner tl" />
-            <div className="corner br" />
-            <div className="home-tele-label">{t('home.teleCore')}</div>
-            <div className="home-tele-note">{t('home.teleNoLink')}</div>
-          </div>
-        ) : (
-          <>
-            <div className="home-tele-cell">
-              <div className="corner tl" />
-              <div className="corner br" />
-              <div className="home-tele-label">{t('home.teleLtm')}</div>
-              <div className="home-tele-value">{totalLtmFacts}</div>
-            </div>
-            <div className="home-tele-cell">
-              <div className="corner tl" />
-              <div className="corner br" />
-              <div className="home-tele-label">{t('home.teleReminders')}</div>
-              <div className="home-tele-value">{activeReminders}</div>
-            </div>
-            <div className="home-tele-cell">
-              <div className="corner tl" />
-              <div className="corner br" />
-              <div className="home-tele-label">{t('home.teleInitiatives')}</div>
-              <div className="home-tele-value">
-                {initiativesToday}
-                <span> / {initiativesMax}</span>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Лента событий «пока вас не было» */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('home.feedTitle')}</span>
-          <span className="home-block-num">03 / EVENTS</span>
-        </div>
-        <div className="home-feed">
-          {live && feedRows.length === 0 && <div className="home-feed-empty">{t('home.feedEmpty')}</div>}
-          {noLink && !mock && <div className="home-feed-empty">{t('home.feedNoLink')}</div>}
-          {feedRows.map((row, i) => (
-            <div key={i} className="home-feed-row">
-              <span className={`badge home-feed-badge--${row.kind}`}>
-                {row.kind === 'initiative'
-                  ? t('home.badgeInitiative')
-                  : row.kind === 'diary'
-                    ? t('home.badgeDiary')
-                    : t('home.badgeReminder')}
-              </span>
-              <span className="home-feed-persona">{row.persona}</span>
-              <span className="home-feed-text">{row.text}</span>
-              {row.outcome && (
-                <span
-                  className={`badge ${
-                    row.outcome === 'answered'
-                      ? 'badge--success'
-                      : row.outcome === 'ignored'
-                        ? 'badge--muted'
-                        : ''
-                  }`}
-                >
-                  {t(`outcome.${row.outcome}`)}
-                </span>
-              )}
-              <span className="home-feed-time">{row.ts ? ago(row.ts) : row.time}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Заметки пользователя: своя книжка у каждой персоны */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('notes.title')}</span>
-          <span className="home-block-num">04 / NOTES</span>
-        </div>
-        <NotesWidget personas={notesPersonas} live={live} mock={mock} noLink={noLink} counts={notesCounts} />
-      </div>
-
-      {/* Общий календарь всех персон */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('calendar.title')}</span>
-          <span className="home-block-num">05 / PLAN</span>
-        </div>
-        <CalendarWidget />
-      </div>
-
-      {/* Модули консоли */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('home.modulesTitle')}</span>
-          <span className="home-block-num">06 / MODULES</span>
-        </div>
-        <div className="home-dossier-grid">
-          {modules.map((m) => (
-            <button key={m.index} type="button" className="home-dossier" onClick={() => onNavigate(m.target)}>
-              <span className="home-dossier-index">{m.index}</span>
-              <h3>{m.title}</h3>
-              <p>{m.desc}</p>
-              <span className="home-dossier-foot">
-                <span>{m.status}</span>
-                <span className="go">{t('home.modOpen')}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Журнал системы */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('home.syslogTitle')}</span>
-          <span className="home-block-num">07 / SYSLOG</span>
-        </div>
-        <div className="home-term bracketed">
-          <div className="corner tl" />
-          <div className="corner tr" />
-          <div className="corner bl" />
-          <div className="corner br" />
-          <div className="home-term-titlebar">
-            <span className="lights"><i /><i /><i /></span>
-            <span>vpc-core — syslog — 80×24</span>
-            <span>PID 01337</span>
-          </div>
-          {logLines.slice(0, visibleLines).map((line, i) => (
-            <div key={i} className="home-term-line">{line}</div>
-          ))}
-          <div className="home-term-line">
-            <span className="bright">&gt;</span> {t('home.waitingOperator')}<span className="home-term-cursor" />
-          </div>
-        </div>
-      </div>
-
-      {/* Подвал: технические мелочи */}
+      {/* Подвал: девиз и QR-код репозитория */}
       <div className="home-foot">
         <span className="home-foot-stencil">{t('home.footStencil')}</span>
         <div className="home-foot-right">
-          <div className="barcode" aria-hidden="true">
-            <i style={{ width: 2 }} /><i style={{ width: 1 }} /><i style={{ width: 3 }} /><i style={{ width: 1 }} />
-            <i style={{ width: 1 }} /><i style={{ width: 2 }} /><i style={{ width: 4 }} /><i style={{ width: 1 }} />
-            <i style={{ width: 1 }} /><i style={{ width: 2 }} /><i style={{ width: 1 }} /><i style={{ width: 3 }} />
-            <i style={{ width: 1 }} /><i style={{ width: 1 }} /><i style={{ width: 2 }} />
-          </div>
-          <span>SN // VPC-0100-XK42</span>
+          <a className="home-foot-qr" href={REPO_URL} target="_blank" rel="noreferrer" title={t('home.footRepo')} aria-label={t('home.footRepo')}>
+            <QrCode text={REPO_URL} size={90} />
+          </a>
         </div>
       </div>
     </div>

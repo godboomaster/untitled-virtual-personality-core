@@ -1,0 +1,15 @@
+Built-in image_gen. Full edit target: 112-background-gap-monochrome-ghost-logo.png, restoring pale interiors of collar loops. Exact location guide: references/marked-neck-clearance-slits-01.png. Output: 114-marked-neck-gaps-background-ghost-logo.png.
+
+Use case: precise-object-edit
+Asset type: correct ONLY the user's marked tiny neck junction gaps.
+Input image 1: COMPLETE LOGO EDIT TARGET, 112-background-gap-monochrome-ghost-logo.png. Use this version with PALE BONE interiors in both collar loops.
+Input image 2: LOCATION GUIDE, references/marked-neck-clearance-slits-01.png. The pink marks identify the ONLY places to change. Pink is annotation, not artwork.
+Primary request: remove the narrow WHITE/PALE BONE slivers immediately after the black stroke ends in the marked neck joints, and show the surrounding gray background in those tiny slits.
+Change ONLY these marked areas:
+- LEFT marked group: small clearance cuts between the descending head-outline endpoint, leaf/collar attachment and beginning of the left torso side.
+- UPPER RIGHT mark: the tiny separation between the head-outline endpoint and the right collar.
+- LOWER RIGHT mark: the small gap between the right collar and the upper end of the right torso outline.
+Inside those existing narrow separation cuts, replace the bright pale bone fill with the exact muted stone/parchment-GRAY background color and texture. Their gray should visually connect to the exterior background. Preserve the cut widths, angles and geometry. Keep the neighboring black strokes intact and separate. No black bridging, stroke merging, larger gaps, shadows or outlines.
+IMPORTANT: the TWO LARGE DIAMOND-SHAPED OPENINGS INSIDE THE COLLAR MUST STAY PALE BONE, exactly as in image 1. They were NOT what the user marked. Do not recolor them gray. Keep the collar's central crossover and its unmarked pale cut unchanged. Keep the leaf central veins pale as in the input.
+Everything else stays exactly as in image 1: same true circular head, filled oval eyes, both simple leaves, angular woven collar, torso and jagged hem, pale ghost/shell interiors, existing gray zigzag gap above the eggshell, open left shell corner, cracks, ink wear, aged monochrome surface, scale, placement, margins and square framing.
+Output ONE COMPLETE square logo. No pink marks, no crop, text, new symbols, extra colors, new objects, rear wall or upper detached shell. The only edits are gray background replacing the tiny pale slits inside the pink-marked junction areas.

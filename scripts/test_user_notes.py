@@ -28,6 +28,7 @@ LLM, Ollama и сеть не вызываются; data/ — временный 
 
 import os
 import shutil
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -402,6 +403,28 @@ def test_api():
         check("нет персоны — 404", c.get("/api/personas/no_such_persona_x/notes").status_code == 404)
         home = c.get("/api/home").json()["personas"]["connor"]
         check("сводка главной: число заметок", home["notes_enabled"] is True and home["notes_count"] == 1)
+
+        # Перенос с телефона (записаны там без ядра): свои id и время, повтор по id — мимо
+        now = time.time()
+        phone = [{"id": "a1b2c3d4e5f6", "text": "С телефона", "created_at": now - 7200},
+                 {"id": "0f0f0f0f0f0f", "text": "Из будущего", "created_at": now + 9999, "updated_at": now + 9999}]
+        r = c.post(f"{base}/import", json={"notes": phone}).json()
+        check("перенос с телефона: приняты обе", r == {"imported": 2, "skipped": 0})
+        again = c.post(f"{base}/import", json={"notes": phone}).json()
+        check("повтор того же id не пишется", again == {"imported": 0, "skipped": 2})
+        items = c.get(base).json()["items"]
+        got = {n["id"]: n for n in items}
+        check("id и время с телефона; владелец, источник home",
+              got["a1b2c3d4e5f6"]["created_at"] == phone[0]["created_at"] and got["a1b2c3d4e5f6"]["owner"] is True
+              and got["a1b2c3d4e5f6"]["source"] == "home")
+        check("время не из будущего", got["0f0f0f0f0f0f"]["created_at"] <= time.time()
+              and got["0f0f0f0f0f0f"]["updated_at"] <= time.time())
+        check("по времени записи: старая с телефона — ниже свежих",
+              [n["id"] for n in items][-1] == "a1b2c3d4e5f6")
+        bad = c.post(f"{base}/import", json={"notes": [{"id": "../x", "text": "t", "created_at": now}]})
+        check("кривой id — не пишется", bad.status_code == 422 or bad.json().get("imported") == 0)
+        for nid in ("a1b2c3d4e5f6", "0f0f0f0f0f0f"):
+            c.delete(f"{base}/{nid}")
 
         # notes: false — у своей копии персоны
         pdir = Path(_TMP) / "personas"

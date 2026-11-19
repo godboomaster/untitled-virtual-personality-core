@@ -1,6 +1,5 @@
 package io.vpcore.app;
 
-import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -9,7 +8,6 @@ import android.provider.Settings;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -42,11 +40,13 @@ final class PhoneVoiceOps {
 
     private PhoneVoiceOps() {}
 
-    /** Служба может открыть чужой экран: приложение на экране, право «Поверх
-     * других приложений» или Android до 10 (запрета ещё нет). */
+    /** Служба может открыть чужой экран: приложение (или окно «Написать»
+     * виджета) на экране, право «Поверх других приложений» или Android до 10
+     * (запрета ещё нет). */
     static boolean canStartActivities(Context ctx) {
         if (Build.VERSION.SDK_INT < 29) return true;
-        return BackgroundInboxService.appVisible || Settings.canDrawOverlays(ctx);
+        return BackgroundInboxService.appVisible || PortraitInputActivity.onScreen
+                || Settings.canDrawOverlays(ctx);
     }
 
     /** Исполнить по порядку; null — всё сделано, иначе статус итога для
@@ -107,7 +107,7 @@ final class PhoneVoiceOps {
         BackgroundInboxService.createChannels(ctx);
         PendingIntent pi = PendingIntent.getActivity(ctx, 0x7a9, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification n = new NotificationCompat.Builder(ctx, BackgroundInboxService.CHANNEL_MESSAGES)
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, BackgroundInboxService.CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_stat_vpc)
                 .setContentTitle(tapTitle(ctx, report))
                 .setContentText(ctx.getString(R.string.wake_tap_text))
@@ -115,13 +115,9 @@ final class PhoneVoiceOps {
                 .setAutoCancel(true)
                 .setTimeoutAfter(TAP_TTL_MS)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
-                .build();
-        try {
-            NotificationManagerCompat.from(ctx).notify(TAP_TAG, 0, n);
-        } catch (SecurityException e) {
-            // уведомления запрещены — остаётся открыть приложение
-        }
+                .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION);
+        // В общую стопку; запрещены уведомления — остаётся открыть приложение
+        NotifyStack.post(ctx, TAP_TAG, 0, b, null);
     }
 
     private static String tapTitle(Context ctx, JSONObject r) {

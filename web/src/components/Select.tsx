@@ -25,6 +25,7 @@ interface SelectProps {
   className?: string;
   style?: CSSProperties;
   title?: string;
+  ariaLabel?: string;
   disabled?: boolean;
 }
 
@@ -34,7 +35,7 @@ const CLOSE_MS = 120; // длительность анимации сворач�
 
 let uid = 0;
 
-export default function Select({ value, options, onChange, id, className, style, title, disabled }: SelectProps) {
+export default function Select({ value, options, onChange, id, className, style, title, ariaLabel, disabled }: SelectProps) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false); // меню ещё в DOM, играет анимация сворачивания
   const [active, setActive] = useState(-1); // подсвеченный пункт (мышь/стрелки)
@@ -210,6 +211,7 @@ export default function Select({ value, options, onChange, id, className, style,
         title={title ?? current?.label}
         disabled={disabled}
         role="combobox"
+        aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={shown}
         aria-controls={shown ? listId : undefined}

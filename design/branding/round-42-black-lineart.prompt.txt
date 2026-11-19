@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 61-ghost-jagged-hem.png. Convert all outlines, cracks, eyes and ribbon to uniform black; retain white fills, background and the separator.
+
+Color-only edit of the supplied ghost-and-cracked-egg logo.
+Make ALL LINE ART AND ALL DARK FILLED ELEMENTS PURE BLACK (#000000). Replace EVERY green, dark-green, brown, dark-brown and tinted dark area with the SAME neutral solid black. This includes the ghost's entire head and body outline, eyes, neck ribbon, new angular lower hem outline, both eggshell outlines and every fracture/crack mark.
+All remaining interiors and the background stay PURE WHITE (#FFFFFF). This is a strictly BLACK-AND-WHITE emblem: no green, brown, beige, gray shading, gradients, textures or colored tints.
+Preserve the EXACT geometry, line thickness, contours, eyes, ribbon size, centered ghost position, shell shapes and cracks, and especially the thin WHITE SEPARATOR between the ghost's jagged hem and the shell rim. Do not redraw, simplify, shift or resize anything. Only neutralize all the ink to solid black. No new details or text.

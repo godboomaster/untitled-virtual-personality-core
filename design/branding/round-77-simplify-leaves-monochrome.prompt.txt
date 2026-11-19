@@ -1,0 +1,10 @@
+Built-in image_gen. Edit target: 110-original-monochrome-engraved-ghost-logo.png. Output: 111-simple-leaves-monochrome-ghost-logo.png.
+
+Use case: precise-object-edit
+Asset type: simpler leaves on the selected monochrome ghost logo.
+Input image 1: sole edit target, 110-original-monochrome-engraved-ghost-logo.png.
+Primary request: simplify ONLY the TWO LEAVES at the left of the neck collar.
+Preserve the two existing pointed leaf silhouettes, sizes, positions, directions and shared stem attachment. Keep their dark near-black ink fill, but remove ALL fine branching veins, hatching, engraved ornament, parallel inner outlines and interior shading. Each leaf should have ONLY ONE simple clean pale bone-colored central vein, running from the shared attachment toward the pointed tip. Make that single vein narrow and gently tapered, with no side branches. The result should read as two minimal graphic leaves at small sizes. Keep the outer contours crisp with only the very subtle edge wear already belonging to the logo.
+Preserve the small deliberate white/bone clearance between the leaves and the head contour, and keep the interwoven collar and its light openings exactly unchanged.
+Everything else stays exactly as in the input: circular head, filled short oval eyes and their spacing, head/body proportions, angular woven collar, jagged hem, shell separator, open left shell corner without a bridge or black cap, lower shell perimeter and three crack groups, all other line weights, selected near-black/bone/gray monochrome palette, aged-paper surface, controlled outline patina, full square framing and placement.
+Do not add symbols, crests, game emblems, flower motifs, decorative marks, extra leaves, colors, text, back shell wall or upper detached shell. Output one complete square logo. Only the two leaf interiors become simpler.

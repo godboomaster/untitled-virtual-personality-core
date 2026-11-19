@@ -1,0 +1,12 @@
+Built-in image_gen. Full edit target: 97-head-leaves-separated-square-logo.png. User guide: references/head-collar-clearance-guide-01.png. Output: 98-thinner-head-reference-junctions-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: existing square black-and-white ghost logo, user-guided clearance refinement and thinner head contour.
+Input image 1: COMPLETE LOGO EDIT TARGET, 97-head-leaves-separated-square-logo.png.
+Input image 2: USER'S CURRENT DESIGN GUIDE, references/head-collar-clearance-guide-01.png. It shows the desired head/collar/leaf junctions in a cropped view.
+Primary requests:
+1. Match the guide's collar and neck junction treatment: clean narrow white separations between the head outline and the two left leaves, between the head outline and right collar end, and at the collar-to-body joins. Keep the specific angular interwoven collar exactly as pictured in image 2, with its left and right elongated openings, central diagonal crossover, pointed faceted corners, exactly two left leaves and white veins. Preserve the guide's positions, directions and amount of white clearance when translated to the full logo scale. All gaps should be deliberate clean cuts with no accidental black bridges or tiny stray fragments.
+2. Make ONLY the HEAD OUTLINE visibly THINNER by approximately 25% compared with image 1: about 17–18 px instead of roughly 24 px at the 1254 px image scale. Apply a clean consistent stroke width around the entire rounded head arc, including its two lower endpoints. Keep the same head contour centerline, shape, width, height, position and proportions; thin the stroke rather than shrinking the head. The explicit request for a thinner head line takes precedence over the thicker head stroke visible in the guide.
+Preserve the exact solid-black short narrow oval eyes, their size, centers and spacing. Keep the collar, leaf, torso and shell stroke weights unchanged: ONLY the head outline gets thinner. Keep the current visible torso height, body shape and jagged hem, white separator above the shell, lower shell outline and cracks, emblem scale and placement, square canvas and margins exactly as in image 1.
+Output the COMPLETE square logo with the ENTIRE lower eggshell visible using image 1's framing. Image 2 is a cropped design guide, not an instruction to crop the output.
+Crisp flat black-and-white vector-like contours on clean white background. No upper shell, extra details, text, new objects, color, gradients, shadows, texture or border.

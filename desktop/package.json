@@ -7,7 +7,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "robot": "tauri dev -- -- --robot",
+    "prebuild:mac": "sh scripts/macos-sign.sh --check-stopped",
+    "build:mac": "tauri build --bundles app && npm run sign:mac",
+    "sign:mac": "sh scripts/macos-sign.sh",
+    "check:mac": "sh scripts/macos-sign.sh --verify"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",

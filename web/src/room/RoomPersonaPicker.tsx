@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import type { Persona } from '../mockData';
 import { useI18n } from '../i18n';
-import { usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from '../components/PersonaAvatar';
 import { BACK_OVERLAY, useBackHandler } from '../backStack';
 import Icon from '../components/icons';
 
@@ -20,7 +20,6 @@ interface RoomPersonaPickerProps {
 
 export default function RoomPersonaPicker({ personas, current, statusLine, onPick }: RoomPersonaPickerProps) {
   const { t } = useI18n();
-  const avatars = usePersonaAvatars();
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   useBackHandler(open, BACK_OVERLAY, close);
@@ -35,7 +34,7 @@ export default function RoomPersonaPicker({ personas, current, statusLine, onPic
 
   const face = (p: Persona) => (
     <span className="room-pick-face" style={p.color ? ({ '--persona': p.color } as CSSProperties) : undefined}>
-      {avatars[p.id] ? <img src={avatars[p.id]} alt="" /> : p.name.charAt(0)}
+      <PersonaAvatar persona={p} decorative followWithin=".room-pick, .sheet-list" />
     </span>
   );
 

@@ -1,0 +1,68 @@
+.avatar-mini-player {
+  --mini-paper: var(--bg-panel, #f6f6f4);
+  --mini-ink: var(--text, #202124);
+  --mini-muted: var(--text-dim, #666965);
+  --mini-line: var(--border-soft, #dcdfd8);
+  --mini-soft: var(--bg-panel-2, #e9ece5);
+  width: 58px;
+  max-width: calc(100vw - 12px);
+  color: var(--mini-ink);
+  font: 400 12px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  cursor: auto;
+  text-align: left;
+}
+.avatar-mini-player, .avatar-mini-player * { box-sizing: border-box; }
+.avatar-mini-player--expanded { width: 208px; }
+.avatar-mini-caption { display: flex; flex-direction: column; gap: 1px; padding-bottom: 4px; }
+.avatar-mini-caption strong { font-size: 11px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.avatar-mini-caption span { font-size: 11px; color: var(--mini-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.avatar-mini-surface { height: 104px; border: 1px solid var(--mini-line); border-radius: 13px; background: var(--mini-paper); box-shadow: 0 3px 10px #0002; overflow: hidden; }
+.avatar-mini-dock { height: 100%; display: grid; grid-template-columns: repeat(2, 20px); grid-template-rows: repeat(4, 20px); gap: 4px 6px; justify-content: center; align-content: center; justify-items: center; align-items: center; padding: 5px; }
+.avatar-mini-player .avatar-mini-button { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 20px; height: 20px; min-height: 0; margin: 0; padding: 0; background: transparent; color: inherit; border: 0; border-radius: 50%; cursor: pointer; }
+.avatar-mini-player .avatar-mini-button:hover { background: var(--mini-soft); }
+.avatar-mini-player .avatar-mini-button:disabled { opacity: .4; cursor: wait; }
+.avatar-mini-player .avatar-mini-primary, .avatar-mini-player .avatar-mini-primary:hover { color: var(--mini-paper); background: var(--mini-ink); }
+.avatar-mini-button svg { width: 13px; height: 13px; }
+.avatar-mini-percent { color: var(--mini-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.avatar-mini-card { height: 100%; padding: 6px 8px 8px; display: flex; flex-direction: column; }
+.avatar-mini-card-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--mini-muted); margin-bottom: 2px; }
+.avatar-mini-actions { display: flex; align-items: center; gap: 2px; }
+.avatar-mini-card-top > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.avatar-mini-actions { flex-shrink: 0; }
+.avatar-mini-actions .avatar-mini-button { width: 20px; height: 20px; }
+.avatar-mini-track { display: flex; gap: 7px; align-items: center; margin-bottom: 6px; }
+.avatar-mini-track > div:last-child { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.avatar-mini-track strong { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.avatar-mini-track span { font-size: 11px; color: var(--mini-muted); }
+.avatar-mini-cover { position: relative; width: 32px; height: 32px; border-radius: 5px; background: var(--mini-soft); flex-shrink: 0; padding: 4px; overflow: hidden; }
+.avatar-mini-cover span { position: relative; z-index: 1; color: var(--mini-ink); letter-spacing: 1px; overflow-wrap: anywhere; }
+.avatar-mini-cover i { position: absolute; width: 32px; height: 32px; right: -12px; bottom: -6px; border-radius: 50%; background: repeating-radial-gradient(circle, var(--mini-ink) 0 2px, var(--mini-muted) 3px, var(--mini-ink) 4px); }
+.avatar-mini-player input[type="range"] { appearance: none; -webkit-appearance: none; accent-color: var(--mini-ink); min-width: 0; width: 100%; height: 16px; margin: 0; padding: 0; background: transparent; border: 0; cursor: pointer; }
+.avatar-mini-player input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(to right, var(--mini-ink) var(--mini-progress, 0%), var(--mini-line) var(--mini-progress, 0%)); }
+.avatar-mini-player input[type="range"]::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; margin-top: -4px; border: 0; border-radius: 50%; background: var(--mini-ink); transform: none; box-shadow: none; }
+.avatar-mini-player input[type="range"]:hover::-webkit-slider-thumb { transform: none; }
+.avatar-mini-player input[type="range"]::-moz-range-track { height: 4px; border-radius: 4px; background: var(--mini-line); }
+.avatar-mini-player input[type="range"]::-moz-range-progress { height: 4px; border-radius: 4px; background: var(--mini-ink); }
+.avatar-mini-player input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: var(--mini-ink); transform: none; box-shadow: none; }
+.avatar-mini-player input[type="range"]:hover::-moz-range-thumb { transform: none; }
+.avatar-mini-timeline > div { display: flex; justify-content: space-between; font-size: 11px; color: var(--mini-muted); font-variant-numeric: tabular-nums; }
+.avatar-mini-transport { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; }
+.avatar-mini-transport .avatar-mini-primary { width: 30px; height: 30px; }
+.avatar-mini-volume { display: flex; align-items: center; gap: 2px; padding-top: 6px; margin-top: auto; }
+.avatar-mini-volume .avatar-mini-button { width: 20px; height: 20px; }
+.avatar-mini-player--expanded .avatar-mini-surface { height: 190px; }
+.avatar-mini-volume input { flex: 1; }
+.avatar-mini-volume output { width: 32px; font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+.avatar-mini-error { margin: 7px 0 0; padding: 7px; border-radius: 8px; background: var(--mini-paper); color: var(--danger, #a52828); font-size: 11px; overflow-wrap: anywhere; max-height: 100px; overflow: auto; }
+@media (prefers-color-scheme: dark) {
+  .avatar-mini-player { --mini-paper: var(--bg-panel, #242528); --mini-ink: var(--text, #eeefed); --mini-muted: var(--text-dim, #babdb7); --mini-line: var(--border-soft, #41443f); --mini-soft: var(--bg-panel-2, #323630); }
+}
+@media (pointer: coarse) {
+  .avatar-mini-player:not(.avatar-mini-player--expanded) { width: 106px; }
+  .avatar-mini-player .avatar-mini-button { min-width: 44px; min-height: 44px; }
+  .avatar-mini-surface { height: 200px; }
+  .avatar-mini-player--expanded .avatar-mini-surface { height: 360px; }
+  .avatar-mini-dock { grid-template-columns: repeat(2, 44px); grid-template-rows: repeat(4, 44px); }
+  .avatar-mini-volume { flex-wrap: wrap; justify-content: center; }
+  .avatar-mini-volume input { order: -1; flex-basis: 100%; }
+}

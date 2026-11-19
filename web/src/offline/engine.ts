@@ -1,21 +1,31 @@
 import { fallbackKit, getKit } from './kit';
 import type { OfflineKit } from './kit';
 import { OfflineLlm, pluginCode } from './plugin';
+import type { ChatMsg } from './plugin';
+import { askWebchats, WebchatsFailed } from './webchat';
+import { answerSteps, defaultSteps } from './personaChain';
 import { envNote, formatWeb, searchWeb, wantsSearch } from './context';
+import { isSmalltalk } from './gate';
 import { askTimePlan, extractSystem, looksLikeReminder, parseExtraction, planFromText, planReminder, scheduledNote } from './reminders';
 import type { LocalReminder, ReminderPlan } from './reminders';
-import { getMemory, memoryHasVectors, memoryHistory } from './memory';
+import { getLore, getMemory, memoryHasVectors, memoryHistory } from './memory';
+import { loreBlock, loreQueryTexts, previousTurn, searchLore } from './lore';
+import type { LoreResult } from './lore';
 import { formatRecall, searchDocs, vecBaseline } from './recall';
-import { queryVector, releaseEmbedder } from './embed';
+import { embedTexts, queryVector, releaseEmbedder } from './embed';
 import { unpackVec } from './vectors';
 import type { RecallDoc } from './recall';
 import { cleanAnswer, LOCAL_HISTORY_MAX, localPrompt, normalizeHistory, selfMemoryNote, withoutStaleUnanswered } from './prompt';
+import { modeNote, tagHistory, withTurnNote } from './modeTags';
 import type { HistoryLine, MemoryContext } from './prompt';
 import { dialogueLanguage, languageLine, languageName } from './language';
 
-/* Кто отвечает без ноутбука: сначала облачная модель по ключу (если есть
-   интернет и ключи), иначе — Gemma на телефоне (если модель скачана). Нет
-   ни того ни другого — OfflineUnavailable: реплика ждёт связи в очереди.
+/* Кто отвечает без ноутбука — по цепочке провайдеров персоны (досье →
+   «Настройки», personaChain.ts): у каждой персоны своя, по умолчанию — как
+   на компьютере. Звенья: облачная модель по ключу (если есть интернет и
+   ключи), веб-чаты без ключей, что включены во вкладке «Провайдеры»
+   (webchat.ts), Gemma на телефоне (если модель скачана). Не ответил
+   никто — OfflineUnavailable: реплика ждёт связи в очереди.
    К промпту — как у ядра: местные время и погода, выдача поиска (если гейт
    пропускает), напоминания; просьбу «напомни» разбирает перенос парсера
    ядра, необычную — модель в JSON, код проверяет и ставит будильник
@@ -32,21 +42,37 @@ export interface OfflineAnswer {
 }
 
 // no_kit — данных персоны на телефоне нет; no_route — ни облака, ни модели
-// (cloud: почему не облако — no_providers, offline, failed); model_broken —
+// (cloud: почему не облако — no_providers, offline, failed; web: почему не
+// веб-чаты — код последнего отказа, пусто — их не включали); model_broken —
 // файл модели испорчен и удалён
 export class OfflineUnavailable extends Error {
   reason: 'no_kit' | 'no_route' | 'model_broken';
   cloud: string;
-  constructor(reason: 'no_kit' | 'no_route' | 'model_broken', cloud = '') {
+  web: string;
+  constructor(reason: 'no_kit' | 'no_route' | 'model_broken', cloud = '', web = '') {
     super(reason);
     this.reason = reason;
     this.cloud = cloud;
+    this.web = web;
   }
 }
 
 const CLOUD_HISTORY = 24; // реплик переписки в запросе к облаку
 const CLOUD_RECALL = 5; // реплик постарше к теме вопроса (как у ядра)
+// Образцов голоса модели телефона — меньше: окно промпта маленькое
+const LOCAL_VOICE_MAX = 3;
 const CLOUD_FACTS_RELEVANT = 10; // фактов к теме сверх тех, что в ките
+
+/** Куски лора к реплике; null — лора у персоны нет. Без модели векторов — по словам. */
+async function gatherLore(persona: string, kit: OfflineKit, text: string, history: HistoryLine[]): Promise<LoreResult | null> {
+  const index = await getLore(persona).catch(() => null);
+  if (!index) return null;
+  const previous = previousTurn(history);
+  const name = kit.name.split('(')[0].trim();
+  const smalltalk = isSmalltalk(kit, text);
+  const vectors = smalltalk ? null : await embedTexts(loreQueryTexts(text, previous, name)).catch(() => null);
+  return searchLore(index, { query: text, previous, name, names: [name, ...(kit.names ?? [])], smalltalk, vectors });
+}
 
 /** Память к ответу: реплики старше окна истории и факты — к теме вопроса. */
 async function gatherMemory(persona: string, kit: OfflineKit, text: string, history: HistoryLine[], window: number): Promise<MemoryContext> {
@@ -115,7 +141,8 @@ export async function answerOffline(
   history: HistoryLine[],
   onToken?: (chunk: string) => void,
   onLocalStart?: () => void, // ответ взяла модель телефона (до первого слова — секунды)
-  actionNote?: string, // итог команды телефону (phone/notes.ts): ответ — по нему
+  actionNote?: string, // итог команды телефону (phone/notes.ts) или заметок: ответ — по нему
+  claimed = false, // ход забран заметками: напоминания и поиск его не берут
 ): Promise<OfflineAnswer> {
   const kit = getKit(persona) ?? fallbackKit(persona, text);
   if (!kit) throw new OfflineUnavailable('no_kit');
@@ -129,7 +156,7 @@ export async function answerOffline(
   // разберёт модель (облако, иначе телефон)
   let plan: ReminderPlan | undefined;
   let needModel = false;
-  if (full && kit.reminders_enabled) {
+  if (full && kit.reminders_enabled && !claimed) {
     const r = planFromText(kit, text);
     if (r === 'model') needModel = true;
     else if (r) plan = r;
@@ -140,86 +167,148 @@ export async function answerOffline(
   const [env, results, memory] = await Promise.all([
     full ? envNote(kit) : Promise.resolve(''),
     full && !reminderTalk && wantsSearch(kit, text) ? searchWeb(text, CLOUD_RESULTS.max) : Promise.resolve([]),
-    gatherMemory(persona, kit, text, history, LOCAL_HISTORY_MAX),
+    // Лор — после памяти: модель векторов считает по одному запросу за раз
+    gatherMemory(persona, kit, text, history, LOCAL_HISTORY_MAX).then(async (m) => ({
+      ...m,
+      lore: await gatherLore(persona, kit, text, history).catch(() => null),
+    })),
   ]);
   const scheduled = full ? scheduledNote(kit) : '';
   // Язык ответа — по текущей реплике (как у ядра), а не язык чата из кита
   const lang = dialogueLanguage(text, history, kit.lang);
   const langLine = languageLine(lang);
+  // Ответы другого режима персоны — с пометкой, а в конце системного блока —
+  // правило к ним и образцы голоса режима, как у ядра (modeTags.ts). Память
+  // и лор ищут по тексту — им история без пометок
+  const shown = tagHistory(kit, history);
+  // Ход сразу после смены режима — к реплике заметка, кто персона сейчас
+  const asked = withTurnNote(kit, shown.lastTagged, text);
 
-  // 1. Облако: ключи и перебор провайдеров — в нативном плагине
-  let cloud = '';
-  try {
-    if (needModel && !plan) {
-      const raw = await OfflineLlm.cloudChat({
-        persona,
-        messages: [{ role: 'system', content: extractSystem(kit) }, { role: 'user', content: text }],
-        maxTokens: 150,
-        temperature: 0,
-      });
-      const ex = parseExtraction(raw.text);
-      plan = ex ? planReminder(kit, ex) : askTimePlan(kit, '');
-    }
-    const known = new Set(kit.facts);
-    const moreFacts = memory.facts.filter((f) => !known.has(f.text));
+  // Промпт облака — он же веб-чатам; заметка о напоминании (plan) может
+  // появиться только после разбора просьбы моделью — собираем при вызове
+  const known = new Set(kit.facts);
+  const moreFacts = memory.facts.filter((f) => !known.has(f.text));
+  const cloudMessages = (): ChatMsg[] => {
     const system = [
       withLanguage(kit, langLine),
       moreFacts.length ? `More facts about the user:\n${moreFacts.map((f) => `- ${f.text}`).join('\n')}` : '',
       kit.dossier ?? '',
       selfMemoryNote(kit),
+      memory.lore ? loreBlock(kit.rules, memory.lore) : '',
       formatRecall(kit, memory.recall),
       scheduled,
       env,
       formatWeb(kit, results, CLOUD_RESULTS),
       plan?.note,
       actionNote,
+      modeNote(kit, shown.tags),
     ]
       .filter(Boolean)
       .join('\n\n');
-    const r = await OfflineLlm.cloudChat({
-      persona,
-      messages: [{ role: 'system', content: system }, ...normalizeHistory([...history.slice(-CLOUD_HISTORY), { role: 'user', text }])],
-    });
-    const answer = cleanAnswer(r.text);
-    if (answer) return { text: answer, source: 'cloud', provider: r.provider, reminder: plan?.reminder, fallback };
-  } catch (e) {
-    // нет ключей, нет интернета или провайдеры не ответили — к модели телефона
-    cloud = pluginCode(e);
-  }
-
-  // 2. Модель на телефоне — без модели векторов в памяти: вектор вопроса уже
-  // посчитан, а Gemma нужна вся память, что есть
-  const status = await OfflineLlm.modelStatus().catch(() => null);
-  if (!status?.downloaded) throw new OfflineUnavailable('no_route', cloud);
-  releaseEmbedder();
-  const requestId = newRequestId();
-  onLocalStart?.();
-  const handle = await OfflineLlm.addListener('localToken', (d) => {
-    if (d.requestId === requestId) onToken?.(d.text);
-  });
-  try {
-    // Просьбу о напоминании облако разобрать не успело — разбирает телефон
-    if (needModel && !plan) {
-      const ex = parseExtraction(await localOnce(extractSystem(kit), text, 120));
-      plan = ex ? planReminder(kit, ex) : askTimePlan(kit, '');
-    }
+    return [{ role: 'system', content: system }, ...normalizeHistory([...shown.lines.slice(-CLOUD_HISTORY), { role: 'user', text: asked }])];
+  };
+  // Промпт модели телефона — короче облачного (по бюджету символов); он же
+  // сайту, в поле которого облачный не влезает (Google AI Mode — ~8 тыс.)
+  const localParts = () => {
     const web = PERSONAL_RE.test(text) ? '' : formatWeb(kit, results, LOCAL_RESULTS);
-    const notes = [scheduled, env, web, plan?.note, actionNote].filter((x): x is string => !!x);
-    const local = localPrompt(kit, memory, notes, history, text, langLine);
-    // Заметки в конце длинного промпта маленькая модель пропускает: о
-    // напоминании и об итоге команды телефону «подтверждает» по прежним
-    // ответам, язык берёт из истории и характера — они и в реплике
-    const name = languageName(lang);
-    const appNote = [plan?.note, actionNote, name ? `Reply in ${name}.` : ''].filter(Boolean).join(' ');
-    const prompt = appNote ? `${local.text}\n\n(Note from the app, not from the user: ${appNote})` : local.text;
-    const r = await OfflineLlm.localChat({ requestId, system: local.system, history: local.history, text: prompt, ...LOCAL_SAMPLING });
-    return { text: cleanAnswer(r.text), source: 'local', reminder: plan?.reminder, fallback };
-  } catch (e) {
-    const code = pluginCode(e);
-    if (code === 'model_missing') throw new OfflineUnavailable('no_route', cloud);
-    if (code === 'model_broken') throw new OfflineUnavailable('model_broken', cloud);
-    throw e;
-  } finally {
-    void handle.remove();
+    // Пометки — только у реплик, что войдут в короткую историю телефона
+    const recentTags = tagHistory(kit, history.slice(-LOCAL_HISTORY_MAX)).tags;
+    const notes = [scheduled, env, web, plan?.note, actionNote, modeNote(kit, recentTags, LOCAL_VOICE_MAX)].filter((x): x is string => !!x);
+    return localPrompt(kit, memory, notes, shown.lines, asked, langLine);
+  };
+  const compactMessages = (): ChatMsg[] => {
+    const local = localParts();
+    return [{ role: 'system', content: local.system }, ...local.history, { role: 'user', content: local.text }];
+  };
+
+  // Шаги по порядку ответа; первый, кто ответил, и отвечает
+  const steps = await answerSteps(persona).catch(() => defaultSteps());
+  let cloud = ''; // почему не облако — код последнего отказа
+  let webchat = ''; // почему не веб-чаты
+  let broken = false; // файл модели телефона испорчен и удалён
+  for (const step of steps) {
+    if (step.kind === 'cloud') {
+      // Облако: ключи и перебор провайдеров — в нативном плагине (only — эти и в этом порядке)
+      const only = step.only ?? undefined;
+      try {
+        if (needModel && !plan) {
+          const raw = await OfflineLlm.cloudChat({
+            persona,
+            messages: [{ role: 'system', content: extractSystem(kit) }, { role: 'user', content: text }],
+            maxTokens: 150,
+            temperature: 0,
+            only,
+          });
+          const ex = parseExtraction(raw.text);
+          plan = ex ? planReminder(kit, ex) : askTimePlan(kit, '');
+        }
+        const r = await OfflineLlm.cloudChat({ persona, messages: cloudMessages(), only });
+        const answer = cleanAnswer(r.text);
+        if (answer) return { text: answer, source: 'cloud', provider: r.provider, reminder: plan?.reminder, fallback };
+      } catch (e) {
+        // нет ключей, нет интернета или провайдеры не ответили — к следующему шагу
+        cloud = pluginCode(e);
+      }
+      continue;
+    }
+
+    if (step.kind === 'web') {
+      // Веб-чаты без ключей — сайты, что включены во вкладке «Провайдеры»
+      if (!step.sites.length) continue;
+      try {
+        if (needModel && !plan) {
+          // Разбор просьбы — свежим чатом сайта без входа; не вышло — спросим время
+          const raw = await askWebchats(
+            persona,
+            [[{ role: 'system', content: extractSystem(kit) }, { role: 'user', content: text }]],
+            true,
+            step.sites,
+          ).catch(() => null);
+          const ex = raw ? parseExtraction(raw.text) : null;
+          plan = ex ? planReminder(kit, ex) : askTimePlan(kit, '');
+        }
+        const r = await askWebchats(persona, [cloudMessages(), compactMessages()], false, step.sites);
+        const answer = cleanAnswer(r.text);
+        if (answer) return { text: answer, source: 'cloud', provider: r.site.name, reminder: plan?.reminder, fallback };
+      } catch (e) {
+        webchat = e instanceof WebchatsFailed ? e.code : 'failed';
+      }
+      continue;
+    }
+
+    // Модель на телефоне — без модели векторов в памяти: вектор вопроса уже
+    // посчитан, а Gemma нужна вся память, что есть
+    const status = await OfflineLlm.modelStatus().catch(() => null);
+    if (!status?.downloaded) continue;
+    releaseEmbedder();
+    const requestId = newRequestId();
+    onLocalStart?.();
+    const handle = await OfflineLlm.addListener('localToken', (d) => {
+      if (d.requestId === requestId) onToken?.(d.text);
+    });
+    try {
+      // Просьбу о напоминании облако разобрать не успело — разбирает телефон
+      if (needModel && !plan) {
+        const ex = parseExtraction(await localOnce(extractSystem(kit), text, 120));
+        plan = ex ? planReminder(kit, ex) : askTimePlan(kit, '');
+      }
+      const local = localParts();
+      // Заметки в конце длинного промпта маленькая модель пропускает: о
+      // напоминании и об итоге команды телефону «подтверждает» по прежним
+      // ответам, язык берёт из истории и характера — они и в реплике
+      const name = languageName(lang);
+      const appNote = [plan?.note, actionNote, name ? `Reply in ${name}.` : ''].filter(Boolean).join(' ');
+      const prompt = appNote ? `${local.text}\n\n(Note from the app, not from the user: ${appNote})` : local.text;
+      const r = await OfflineLlm.localChat({ requestId, system: local.system, history: local.history, text: prompt, ...LOCAL_SAMPLING });
+      return { text: cleanAnswer(r.text), source: 'local', reminder: plan?.reminder, fallback };
+    } catch (e) {
+      // Модели нет или файл испорчен — к следующему шагу (Gemma не последняя)
+      const code = pluginCode(e);
+      if (code === 'model_broken') broken = true;
+      else if (code !== 'model_missing') throw e;
+    } finally {
+      void handle.remove();
+    }
   }
+  throw new OfflineUnavailable(broken ? 'model_broken' : 'no_route', cloud, webchat);
 }

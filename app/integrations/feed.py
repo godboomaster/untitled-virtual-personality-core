@@ -17,6 +17,7 @@
 """
 
 import hashlib
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -158,6 +159,64 @@ class Feed:
                 if upd:
                     it.update(upd)
             self._save(data)
+
+    def import_records(self, records: Iterable[dict], seen_ids: Iterable[str] = ()) -> int:
+        """Записи ленты с телефона (перенос сервисов, transfer.py): новые по id
+        встают в ленту по времени получения, seen_ids — в «уже видел». →
+        сколько записей добавлено."""
+        from app.integrations.transfer import clean_meta
+        clean = []
+        for rec in records or []:
+            if not isinstance(rec, dict) or not re.match(r"^[a-f0-9]{16}$", str(rec.get("id") or "")):
+                continue
+            if rec.get("source") not in store.SERVICES:
+                continue
+            level = rec.get("level") if rec.get("level") in store.LEVELS else None
+            status = rec.get("status") if rec.get("status") in STATUSES else "skipped"
+            feedback = rec.get("feedback") if rec.get("feedback") in store.LEVELS else None
+
+            def num(key, default=None):
+                try:
+                    return float(rec.get(key)) if rec.get(key) is not None else default
+                except (TypeError, ValueError):
+                    return default
+
+            now = time.time()
+            clean.append({
+                "id": rec["id"], "source": rec["source"], "kind": _clip(rec.get("kind"), 40),
+                "title": _clip(rec.get("title"), MAX_TITLE), "sender": _clip(rec.get("sender"), 200),
+                "text": _clip(rec.get("text"), MAX_TEXT), "url": str(rec.get("url") or "")[:1000],
+                "ts": min(num("ts", now), now), "received": min(num("received", now), now),
+                "meta": clean_meta(rec.get("meta")), "group": _clip(rec.get("group"), 200),
+                "level": level, "summary": _clip(rec.get("summary"), 300),
+                "reason": _clip(rec.get("reason"), 120),
+                "by": rec.get("by") if rec.get("by") in ("rule", "signals", "model") else "",
+                "status": status, "notified_at": num("notified_at"), "feedback": feedback,
+            })
+        seen_ids = [s for s in seen_ids or [] if isinstance(s, str) and re.match(r"^[a-f0-9]{16}$", s)]
+        if not clean and not seen_ids:
+            return 0
+        with self._lock, file_lock(self.path):
+            data = self._load()
+            known = set(data["seen"]) | {it["id"] for it in data["items"]}
+            added = 0
+            for rec in clean:
+                if rec["id"] in known:
+                    continue
+                known.add(rec["id"])
+                data["items"].append(rec)
+                data["seen"].append(rec["id"])
+                added += 1
+            # «Уже видел» телефона — старше своего: при срезке уходит первым
+            fresh_seen = []
+            for s in seen_ids:
+                if s not in known:
+                    known.add(s)
+                    fresh_seen.append(s)
+            data["seen"] = fresh_seen + data["seen"]
+            data["items"].sort(key=lambda it: float(it.get("received") or 0))
+            self._save(data)
+            return added
 
     def get(self, item_id: str) -> Optional[dict]:
         for it in self.items():

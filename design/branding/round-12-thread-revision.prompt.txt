@@ -1,0 +1,9 @@
+Built-in image_gen. Targeted revision of the thread concept to keep the lower notch open and avoid a mouth-like shape.
+
+Use case: logo-brand. Targeted correction to the supplied "22 / THREAD" ghost logo sheet.
+Input image 1 is the edit target. Preserve all typography, layout, palette, both ghost bodies and eye shapes. ONLY revise the lower notch/thread geometry on both ghosts.
+Problem: the broad band currently bridges all the way across the lower notch, enclosing a white crescent which reads as a sad mouth or moustache. Remove that construction entirely.
+Instead, use ONE short broad curved continuation of the LEFT inner hem. It sweeps gently upward and inward into the open notch, then ends as a softly tapered free end around the notch's middle. It DOES NOT reach or connect to the right edge. Keep a generous open gap between its free end and the right tail. No enclosed white hole, no horizontal closed crescent, no frown, no smile, no mouth. The only enclosed holes anywhere are the TWO original eye holes.
+The outline should feel like one loose end of the ghost's fabric beginning to gather itself into a living shape. A compact asymmetrical open flowing hem, with the opposite original angular tail preserved. No literal thread icon or needle. No complex knot, infinity loop, swirl inside the torso, letter or decoration.
+Keep the new shape in the lowest quarter of each ghost. Both silhouettes remain simple, solid and recognizable. Exactly the same concept on 05 and 07.
+Flat near-black on warm ivory, crisp vector-like edges, no gradients, textures, grain, shading, shadows or 3D. Preserve exact labels "22 / THREAD", "05 / ORIGAMI", "07 / RIBBON", "Virtual Persona", "CORE".

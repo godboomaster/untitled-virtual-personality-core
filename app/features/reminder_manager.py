@@ -2025,6 +2025,9 @@ class ReminderManager:
         # силе (могло быть отменено/перенесено в только что закончившемся
         # ходе — тогда не шлём). Ход идёт — откладываем до следующего тика,
         # не ждём в цикле.
+        if self.context.startswith("api_"):
+            from app.api import said
+            said.expect_kind(self.context.removeprefix("api_"), chat_id, text, said.REMINDER_KIND)
         entry = None
         gate = self._turn_gate
         if gate is not None:
@@ -2042,13 +2045,14 @@ class ReminderManager:
             entry = res.entry
 
         try:
+            delivery = {"topic_id": topic_id}
+            if getattr(self._sender, "supports_kinds", False):
+                delivery["kind"] = "reminder"
             if getattr(self._sender, "supports_refs", False):
                 # Метка срабатывания: телефон, сам напомнивший без ноутбука
                 # (upcoming_for_chat), это сообщение второй раз не покажет
-                ok = await self._sender.send_message(chat_id, text, topic_id=topic_id,
-                                                     ref=reminder_ref(reminder))
-            else:
-                ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
+                delivery["ref"] = reminder_ref(reminder)
+            ok = await self._sender.send_message(chat_id, text, **delivery)
         except Exception as e:
             logger.error(f"[Reminder] Ошибка отправки в {chat_id}: {e}")
             ok = False

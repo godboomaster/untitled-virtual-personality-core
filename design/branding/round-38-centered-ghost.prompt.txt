@@ -1,0 +1,7 @@
+Built-in image_gen. Edit target: 57-larger-ghost.png. Translate the ghost horizontally to align with the center of the lower eggshell, preserving its enlarged size and design.
+
+Precise composition edit to the supplied ghost-and-cracked-egg logo.
+Move the ENTIRE GHOST (head, eyes, ribbon and body together as one rigid unit) slightly to the RIGHT so its vertical centerline is exactly aligned with the CENTER OF THE LOWER EGGSHELL. Currently the ghost sits visibly left of the shell's center. On this roughly 1134-pixel-wide image, the needed translation is approximately 40–45 pixels right: align the head/neck/body center to the lower shell's midpoint near the canvas center.
+Do NOT resize, stretch, reshape or rotate the ghost. Preserve its recently enlarged size and all details: subtly wide face, tall narrow capsule eyes, flat face-to-ribbon edge, slightly thicker black band, smooth offsets and plain white straight-sided body.
+Keep the LOWER eggshell completely fixed: same position, size, outer contour, broken rim, cracks and facets. Let the moved ghost's lower body remain naturally behind its jagged opening. Keep the upper shell fragment's design, size and orientation; only nudge it minimally upward/right if needed to leave a narrow clear gap from the repositioned head.
+Preserve all colors, line weights, framing and solid white background. The only intended change is to center the ghost within the egg, with no extra details or text.

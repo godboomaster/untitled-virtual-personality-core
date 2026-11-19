@@ -71,14 +71,14 @@ html[data-skin='cyberpunk'] body {
   letter-spacing: 0.005em;
 }
 
-/* Сканлайны поверх всего экрана: статичные, едва заметные */
+/* Сканлайны остаются частью фонового слоя и не ложатся поверх окон и текста. */
 html[data-skin='cyberpunk'] body::before {
   content: '';
   position: fixed;
   inset: 0;
-  z-index: 3000;
+  z-index: 0;
   pointer-events: none;
-  background: repeating-linear-gradient(180deg, transparent 0 2px, rgba(4, 0, 10, 0.16) 2px 3px);
+  background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(4, 0, 10, 0.1) 3px 4px);
 }
 
 html[data-skin='cyberpunk'] ::selection {
@@ -1445,43 +1445,6 @@ html[data-skin='cyberpunk'] .home-feed-row {
 
 html[data-skin='cyberpunk'] .home-feed-persona {
   color: var(--cp-cyan);
-}
-
-/* Модули консоли: срезы основы + неоновая кромка */
-html[data-skin='cyberpunk'] .home-dossier {
-  background:
-    linear-gradient(225deg, transparent calc(22px * 0.7071 - 0.7px), var(--cp-line-hi) 0 calc(22px * 0.7071 + 0.8px), transparent 0),
-    linear-gradient(45deg, transparent calc(22px * 0.7071 - 0.7px), var(--cp-line-hi) 0 calc(22px * 0.7071 + 0.8px), transparent 0),
-    linear-gradient(var(--cp-cyan), var(--cp-cyan)) 0 0 / 2px 46px no-repeat,
-    linear-gradient(160deg, rgba(24, 16, 41, 0.95), rgba(12, 8, 22, 0.95));
-  box-shadow: inset 0 0 0 1px var(--cp-line);
-}
-
-html[data-skin='cyberpunk'] .home-dossier:hover {
-  background:
-    linear-gradient(225deg, transparent calc(22px * 0.7071 - 0.7px), var(--cp-pink) 0 calc(22px * 0.7071 + 0.8px), transparent 0),
-    linear-gradient(45deg, transparent calc(22px * 0.7071 - 0.7px), var(--cp-pink) 0 calc(22px * 0.7071 + 0.8px), transparent 0),
-    linear-gradient(var(--cp-pink), var(--cp-pink)) 0 0 / 2px 46px no-repeat,
-    linear-gradient(160deg, rgba(49, 20, 43, 0.95), rgba(14, 9, 25, 0.95));
-  box-shadow: inset 0 0 0 1px rgba(255, 46, 136, 0.6), inset 0 0 26px rgba(255, 46, 136, 0.1);
-}
-
-html[data-skin='cyberpunk'] .home-dossier-index {
-  color: var(--cp-cyan);
-}
-
-html[data-skin='cyberpunk'] .home-dossier h3 {
-  font-family: var(--font-disp);
-  font-weight: 700;
-  font-size: 15px;
-}
-
-html[data-skin='cyberpunk'] .home-dossier-foot {
-  border-top-color: var(--cp-line);
-}
-
-html[data-skin='cyberpunk'] .home-dossier-foot .go {
-  color: var(--cp-pink-hi);
 }
 
 html[data-skin='cyberpunk'] .home-greet {

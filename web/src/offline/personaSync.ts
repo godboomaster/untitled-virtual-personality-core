@@ -1,6 +1,6 @@
 import { api, ApiError, isNativeApp } from '../api';
 import { coreHealth, refetchPersonas, upsertCachedPersona } from '../apiData';
-import { forgetKit, getKit, refreshKit, renameKit, storeKit } from './kit';
+import { forgetKit, getKit, patchKitShort, refreshKit, renameKit, storeKit } from './kit';
 import type { OfflineKit } from './kit';
 import {
   localApiPersona,
@@ -13,7 +13,12 @@ import {
 } from './localPersonas';
 import type { LocalPersona } from './localPersonas';
 import { clearOfflineMessages, moveOfflineMessages } from './store';
+import { forgetWebchats } from './webchat';
 import { moveLocalReminders } from './reminders';
+import { moveLocalNotes } from './localNotes';
+import { forgetLocalLore, moveLocalLore } from './localLore';
+import { forgetAvatar, moveAvatar } from '../avatarStore';
+import { movePendingShort, pendingShorts, setPendingShort, settlePendingShort } from './shortPrompt';
 
 /* Перенос на ядро персон, созданных на телефоне без него (localPersonas.ts).
    Ядро на связи — YAML уходит обычным созданием (POST /api/personas), раньше
@@ -49,6 +54,10 @@ function renameLocal(cur: LocalPersona, to: string): LocalPersona {
   moveOfflineMessages(cur.id, to);
   renameKit(cur.id, to);
   moveLocalReminders(cur.id, to);
+  moveLocalNotes(cur.id, to);
+  void moveLocalLore(cur.id, to);
+  moveAvatar(cur.id, to);
+  movePendingShort(cur.id, to);
   notifyLocalPersonaRenamed(cur.id, to);
   return next;
 }
@@ -80,7 +89,9 @@ async function moveOne(p: LocalPersona, taken: Set<string>): Promise<MoveResult>
   try {
     for (let i = 0; i < MAX_TRIES; i++) {
       if (taken.has(lower(cur.id))) {
-        if (await isOurs(cur)) {
+        // Встроенная в приложение — на ядре та же (встроенная ядра или его
+        // копия): переписка с телефона ложится в неё, копии «_2» не нужно
+        if (cur.bundled || (await isOurs(cur))) {
           finalize(cur);
           return { kind: 'done', id: cur.id };
         }
@@ -141,6 +152,31 @@ export function syncLocalPersonas(): Promise<string[]> {
   return syncing;
 }
 
+/** Ядро на связи: краткие описания, заданные или составленные без него
+ * (shortPrompt.ts), — на ядро. Персоны с телефона ждут своего переноса;
+ * 404 (персоны нет), 409 (характер на ядре другой — составит ядро) и
+ * 400/422 — правка снимается; нет сети, 401, 5xx — ждёт следующей связи.
+ * → персоны, чью правку ядро приняло или отклонило. */
+export async function syncShortPrompts(): Promise<string[]> {
+  const done: string[] = [];
+  if (!isNativeApp()) return done;
+  for (const [persona, p] of Object.entries(pendingShorts())) {
+    if (localPersona(persona)) continue;
+    try {
+      const r = p.source === 'auto'
+        ? await api.setShortPrompt(persona, p.text, 'auto', p.crc)
+        : await api.setShortPrompt(persona, p.text);
+      patchKitShort(persona, r);
+    } catch (e) {
+      if (!(e instanceof ApiError)) break; // нет связи — остальное тоже потом
+      if (e.status === 401 || e.status >= 500) continue;
+    }
+    settlePendingShort(persona, p.at);
+    done.push(persona);
+  }
+  return done;
+}
+
 const following = new Set<string>();
 
 /** Перенесённая персона: кит с ядра сейчас и, пока краткое описание для
@@ -177,6 +213,10 @@ export function forgetLocalPersona(id: string) {
   if (!localPersona(id)) return;
   removeLocalPersona(id);
   clearOfflineMessages(id);
+  forgetWebchats(id);
   forgetKit(id);
   moveLocalReminders(id, null);
+  forgetAvatar(id);
+  setPendingShort(id, null);
+  void forgetLocalLore(id);
 }

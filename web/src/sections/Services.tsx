@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
 import InfoButton from '../components/InfoButton';
 import Select from '../components/Select';
-import type { HelpKey } from '../helpTexts';
-import { api, ApiError, getApiUrl, isLinkMode } from '../api';
+import { api, getApiUrl, isLinkMode } from '../api';
 import type {
   ServiceCheck,
   ServiceFeedItem,
@@ -11,109 +9,35 @@ import type {
   ServiceRule,
   ServicesNotify,
   ServicesStatus,
-  ServiceState,
 } from '../api';
 import { useApiOnline } from '../apiData';
 import { confirmDialog } from '../dialogStore';
 import { useI18n } from '../i18n';
+import { isStandalone } from '../standalone';
+import PhoneServicesView from '../offline/PhoneServicesView';
+import PageTabs from '../components/PageTabs';
+import { CheckResult, Header, ServiceCard, StateLine, Switch, ToggleRow } from './servicesParts';
+import { errText, timeLabel } from './servicesText';
+import type { T } from './servicesText';
 
 /* «Сервисы»: внешние источники событий (Gmail и Google Диск, GitHub,
    Telegram-аккаунт, почта по IMAP, RSS, вебхук) и уведомления о них от
    персоны. Разбор «сообщать или нет» идёт в ядре (app/integrations):
    здесь — подключения, настройки уведомлений, правила и лента событий с
    оценками «как надо было» (по ним учится разбор). Статус и лента
-   перечитываются, пока вкладка видна. */
+   перечитываются, пока вкладка видна. Телефон без компьютера проверяет
+   часть сервисов сам — там свой вид (offline/PhoneServicesView.tsx). */
 
 const POLL_MS = 15_000;
 const LEVELS: ServiceLevel[] = ['urgent', 'notify', 'digest', 'ignore'];
 const SOURCES = ['gmail', 'drive', 'github', 'telegram', 'imap', 'rss', 'webhook'] as const;
 
-type T = (key: string, vars?: Record<string, string | number>) => string;
-
-function errText(e: unknown): string {
-  if (e instanceof ApiError) return e.message;
-  return e instanceof Error ? e.message : String(e);
-}
-
-function timeLabel(ts: number | null | undefined, locale: string): string {
-  if (!ts) return '—';
-  const d = new Date(ts * 1000);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  return sameDay
-    ? d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-
-function Switch({ checked, onChange, title, disabled }: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  title?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="switch" title={title}>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
-      <span className="switch-slider" />
-    </label>
-  );
-}
-
-function ToggleRow({ label, hint, checked, onChange, disabled }: {
-  label: string;
-  hint?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="svc-toggle">
-      <Switch checked={checked} onChange={onChange} title={label} disabled={disabled} />
-      <div>
-        <div className="svc-toggle-label">{label}</div>
-        {hint && <div className="field-hint" style={{ marginTop: 2 }}>{hint}</div>}
-      </div>
-    </div>
-  );
-}
-
-function StateLine({ state, t, locale }: { state?: ServiceState; t: T; locale: string }) {
-  if (!state) return null;
-  if (state.auth_error) return <p className="svc-error">{t('services.authLost')}</p>;
-  if (state.last_error) return <p className="svc-error">{t('services.lastError', { error: state.last_error })}</p>;
-  if (state.last_ok) return <p className="field-hint">{t('services.lastOk', { time: timeLabel(state.last_ok, locale) })}</p>;
-  return <p className="field-hint">{t('services.notChecked')}</p>;
-}
-
-function CheckResult({ res, t }: { res: ServiceCheck | null; t: T }) {
-  if (!res) return null;
-  if (res.ok) return <p className="svc-ok">{t('services.checkOk', { account: res.account ?? '' })}</p>;
-  return <p className="svc-error">{res.error || t('services.checkFail')}</p>;
-}
-
-function ServiceCard({ title, badge, children, help }: {
-  title: string;
-  badge: { text: string; on: boolean; warn?: boolean };
-  children: ReactNode;
-  help?: HelpKey;
-}) {
-  return (
-    <div className="card svc-card">
-      <div className="card-title-row">
-        <h3 className="card-title">
-          {title}
-          {help && <InfoButton helpKey={help} />}
-        </h3>
-        <span className={'badge' + (badge.warn ? ' svc-badge-warn' : badge.on ? ' badge--success' : ' badge--muted')}>
-          {badge.text}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
 export default function Services() {
+  // Выбор режима меняется только перезапуском приложения
+  return isStandalone() ? <PhoneServicesView /> : <CoreServices />;
+}
+
+function CoreServices() {
   const { t, lang } = useI18n();
   const locale = lang === 'ru' ? 'ru-RU' : 'en-US';
   const online = useApiOnline();
@@ -194,43 +118,46 @@ export default function Services() {
       {flash && <div className="svc-flash" role="status">{flash}</div>}
       {!st.hub.active && st.hub.started && <div className="card svc-warn">{t('services.standby')}</div>}
 
-      <Overview st={st} t={t} locale={locale} say={say} reload={load} />
-      <NotifyCard st={st} t={t} save={saveNotify} />
-
-      <h2 className="svc-group-title">{t('services.connections')}</h2>
-      <div className="svc-grid">
-        <GoogleCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
-        <GithubCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
-        <TelegramCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
-        <ImapCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
-        <RssCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
-        <WebhookCard st={st} t={t} say={say} reload={load} saveService={saveService} />
-      </div>
-
-      <RulesCard st={st} t={t} say={say} reload={load} />
-      <FeedCard
-        items={feedItems}
-        source={feedSource}
-        setSource={setFeedSource}
-        t={t}
-        locale={locale}
-        say={say}
-        reload={load}
+      <PageTabs
+        page="services"
+        tabs={[
+          { id: 'overview', label: t('pageTabs.overview'), content: <Overview st={st} t={t} locale={locale} say={say} reload={load} /> },
+          { id: 'notify', label: t('services.notifyTitle'), content: <NotifyCard st={st} t={t} save={saveNotify} /> },
+          {
+            id: 'connections',
+            label: t('services.connections'),
+            content: (
+              <>
+                <h2 className="svc-group-title">{t('services.connections')}</h2>
+                <div className="svc-grid">
+                  <GoogleCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
+                  <GithubCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
+                  <TelegramCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
+                  <ImapCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
+                  <RssCard st={st} t={t} locale={locale} say={say} reload={load} saveService={saveService} />
+                  <WebhookCard st={st} t={t} say={say} reload={load} saveService={saveService} />
+                </div>
+              </>
+            ),
+          },
+          { id: 'rules', label: t('services.rules'), content: <RulesCard st={st} t={t} say={say} reload={load} /> },
+          {
+            id: 'feed',
+            label: t('services.feed'),
+            content: (
+              <FeedCard
+                items={feedItems}
+                source={feedSource}
+                setSource={setFeedSource}
+                t={t}
+                locale={locale}
+                say={say}
+                reload={load}
+              />
+            ),
+          },
+        ]}
       />
-    </div>
-  );
-}
-
-function Header({ t }: { t: T }) {
-  return (
-    <div className="section-header">
-      <div>
-        <h1 className="section-title">{t('nav.services')}</h1>
-        <p className="section-subtitle">
-          {t('services.subtitle')}
-          <InfoButton helpKey="services.about" />
-        </p>
-      </div>
     </div>
   );
 }

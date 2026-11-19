@@ -1,24 +1,59 @@
 import { useEffect, useReducer, useState } from 'react';
 import { api, apiHost, setApiUrl } from '../api';
 import { useI18n } from '../i18n';
+import { recheckCore, useCoreLink } from '../apiData';
 import { bgInboxStatus, bgNotifyEnabled, retryBgNotifyPermission, setBgNotify, stopBgInbox } from '../bgInbox';
+import { forgetPhoneControlServer } from '../phone/control';
 import type { BgInboxStatus, BgNotifyResult } from '../bgInbox';
 import { forgetWakeServer, openOverlaySettings, setWakeWord, wakeStatus } from '../wakeWord';
 import type { WakeResult, WakeStatus } from '../wakeWord';
 import { getLinkConfig, linkState, onLinkState, reconnectLink, setLinkConfig } from './client.ts';
+import { isStandalone, setStandaloneChosen } from '../standalone';
+import { stopPhoneServices } from '../offline/phoneServices';
 
-/* «Настройки» → «Подключение» (приложение на телефоне): к какому ноутбуку
-   подключено и как — по защищённому каналу (Wi-Fi или посредник) или по
-   адресу. Отвязка/смена сервера возвращают на экран подключения.
-   Здесь же — уведомления, когда приложение закрыто (фоновая служба,
-   bgInbox.ts), и «Слушать по имени» (wakeWord.ts): обе пока только для
-   подключения по адресу. */
+/* Вкладка «Подключение» (приложение на телефоне): ядро — есть ли связь
+   сейчас, к какому ноутбуку подключено и как: по защищённому каналу (Wi-Fi
+   или посредник) или по адресу. Отвязка/смена сервера возвращают на экран
+   подключения. Отдельной карточкой (BackgroundCard) — что работает, когда
+   приложение закрыто: уведомления (фоновая служба, bgInbox.ts) и «Слушать по
+   имени» (wakeWord.ts); обе пока только для подключения по адресу. */
+
+const ROW = { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } as const;
 
 export default function ConnectionCard() {
   const { t } = useI18n();
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => onLinkState(force), []);
+  const coreLink = useCoreLink();
   const link = getLinkConfig();
+
+  // Без компьютера: подключить его — экран подключения (BootGate); всё, что
+  // на телефоне, переедет туда при первой связи
+  if (isStandalone()) {
+    return (
+      <div className="card">
+        <h2 className="card-title">{t('connection.coreCard')}</h2>
+        <div className="field">
+          <label className="field-label">{t('connection.address')}</label>
+          <div style={ROW}>
+            <span>{t('standalone.noComputer')}</span>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => {
+                setStandaloneChosen(false);
+                // Сервисы телефона — больше не проверять: дальше их дело компьютера
+                void stopPhoneServices().finally(() => window.location.reload());
+              }}
+            >
+              {t('standalone.connect')}
+            </button>
+          </div>
+          <p className="field-hint">{t('standalone.connectHint')}</p>
+        </div>
+      </div>
+    );
+  }
 
   const unlink = async () => {
     // Сначала просим ноутбук забыть этот телефон (если он на связи), потом —
@@ -26,6 +61,7 @@ export default function ConnectionCard() {
     if (link?.id) await api.unpairLink(link.id).catch(() => {});
     stopBgInbox();
     forgetWakeServer();
+    forgetPhoneControlServer();
     setLinkConfig(null);
     window.location.reload();
   };
@@ -33,10 +69,28 @@ export default function ConnectionCard() {
   const state = linkState();
   return (
     <div className="card">
-      <h2 className="card-title">{t('settings.connection')}</h2>
+      <h2 className="card-title">{t('connection.coreCard')}</h2>
+      {/* Связь сейчас — та же, что в шапке; «Проверить» — не ждать опроса */}
       <div className="field">
-        <label className="field-label">{t('settings.connectionServer')}</label>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <label className="field-label">{t('connection.state')}</label>
+        <div style={ROW}>
+          <span className={`connection-state connection-state--${coreLink}`}>
+            <span className="status-led" />
+            {t(`connection.state.${coreLink}`)}
+          </span>
+          <button
+            type="button"
+            className="btn btn--ghost btn--chip"
+            disabled={coreLink === 'searching'}
+            onClick={() => recheckCore()}
+          >
+            {t('connection.check')}
+          </button>
+        </div>
+      </div>
+      <div className="field">
+        <label className="field-label">{t('connection.address')}</label>
+        <div style={ROW}>
           <code style={{ overflowWrap: 'anywhere' }}>{apiHost()}</code>
           {link ? (
             <button type="button" className="btn btn--ghost" onClick={() => void unlink()}>
@@ -49,6 +103,7 @@ export default function ConnectionCard() {
               onClick={() => {
                 stopBgInbox();
                 forgetWakeServer();
+                forgetPhoneControlServer();
                 setApiUrl('');
                 window.location.reload();
               }}
@@ -61,7 +116,7 @@ export default function ConnectionCard() {
       {link && (
         <div className="field">
           <label className="field-label">{t('link.path')}</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={ROW}>
             <span>{t(`link.state.${state}`)}</span>
             <button type="button" className="btn btn--ghost btn--chip" onClick={() => reconnectLink()}>
               {t('link.reconnect')}
@@ -70,8 +125,31 @@ export default function ConnectionCard() {
           <p className="field-hint">{link.u ? t('link.relayHint', { url: link.u }) : t('link.noRelayHint')}</p>
         </div>
       )}
-      <BackgroundNotify linkMode={Boolean(link)} />
-      <WakeWordToggle linkMode={Boolean(link)} />
+    </div>
+  );
+}
+
+/** «Когда приложение закрыто»: уведомления фоновой службы и «Слушать по имени». */
+export function BackgroundCard() {
+  const { t } = useI18n();
+  const [, force] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => onLinkState(force), []);
+  const standalone = isStandalone();
+  const linkMode = !standalone && getLinkConfig() !== null;
+  return (
+    <div className="card">
+      <h2 className="card-title">{t('connection.backgroundCard')}</h2>
+      {/* Фоновой службы уведомлений без компьютера нет: напоминания телефона
+          приходят будильником и при закрытом приложении */}
+      {standalone ? (
+        <div className="field">
+          <label className="field-label">{t('settings.bgNotify')}</label>
+          <p className="field-hint">{t('standalone.bgNotifyHint')}</p>
+        </div>
+      ) : (
+        <BackgroundNotify linkMode={linkMode} />
+      )}
+      <WakeWordToggle linkMode={linkMode} />
     </div>
   );
 }

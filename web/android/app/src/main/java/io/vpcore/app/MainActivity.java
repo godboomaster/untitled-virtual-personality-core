@@ -2,6 +2,7 @@ package io.vpcore.app;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.view.MotionEvent;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -17,6 +18,10 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(FileSavePlugin.class);
         registerPlugin(WakeWordPlugin.class);
         registerPlugin(CoreFinderPlugin.class);
+        registerPlugin(PhoneServicesPlugin.class);
+        registerPlugin(PhoneControlPlugin.class);
+        registerPlugin(WebChatPlugin.class);
+        registerPlugin(AvatarOverlayPlugin.class);
         super.onCreate(savedInstanceState);
         handleTap(getIntent());
     }
@@ -43,6 +48,18 @@ public class MainActivity extends BridgeActivity {
         // Виджеты комнаты и портрета: приложение открыли — заодно освежить, если данные старые
         RoomWidget.refreshIfStale(this);
         PortraitWidget.refreshIfStale(this);
+        // Аватар поверх приложений включён, а окна нет (обновление, система убила) — вернуть
+        AvatarOverlayService.restore(this);
+    }
+
+    // Аватар поверх приложений смотрит, куда нажали и здесь, — без службы
+    // спец. возможностей: касания своего окна приложение видит само
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            AvatarOverlayService.lookAt(Math.round(ev.getRawX()), Math.round(ev.getRawY()));
+        }
+        return super.dispatchTouchEvent(ev);
     }
 
     @Override

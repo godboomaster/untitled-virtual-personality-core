@@ -1,9 +1,9 @@
 # Pydantic-схемы запросов и ответов API.
 
 import re
-from typing import Literal, Optional
+from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, StrictStr, field_validator
 
 from app.api.security import PersonaId, SafeId
 
@@ -63,9 +63,16 @@ class ChatRequest(BaseModel):
     # Просьба с голосовой активации («Коннор, …»): одну фразу могли услышать
     # и компьютер ядра, и телефон — вторая копия получит duplicate
     voice: bool = False
+    # Эта реплика заменяет ход, который ещё генерируется в этом чате (сказали
+    # новое, пока персона думала): его генерация обрывается, ответ в историю
+    # не ляжет (app/core/turn_cancel)
+    supersede: bool = False
     # Id устройства (тот же client_id, что у опроса inbox): пока ответа нет,
     # реплику показывают другие устройства, а это — и так показывает свою
     client_id: Optional[str] = Field(None, max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
+    # Каким именем персону позвали голосом («Девиант, …» — в message имени
+    # уже нет): имя режима персоны включает режим (app/core/persona_modes)
+    called_as: Optional[str] = Field(None, max_length=80)
 
 
 class VoiceWakeHold(BaseModel):
@@ -82,6 +89,8 @@ class OfflineMessage(BaseModel):
     # cloud — ответила облачная модель с телефона, local — Gemma на телефоне,
     # queued — ответа не было (только реплика пользователя)
     source: Optional[Literal["cloud", "local", "queued"]] = None
+    # Режим персоны, которым ответил телефон (из кита; "" — обычный)
+    mode: Optional[str] = Field(None, max_length=40, pattern=r"^[\w-]*$")
 
 
 class OfflineImportRequest(BaseModel):
@@ -117,6 +126,9 @@ class ChatResponse(BaseModel):
     # по нему отключает «реалистичную» паузу-дебаунс отправки — команды
     # управления должны уходить мгновенно
     control_mode: bool = False
+    # Режим управления телефоном (app/features/phone_control) после хода —
+    # веб показывает его значок; с control_mode взаимоисключающие
+    phone_mode: bool = False
     # Скриншоты страницы из режима управления («что на странице?») — dataURL
     images: list[str] = Field(default_factory=list)
     # Кнопки ответа на вопрос режима управления, которого ждёт чат
@@ -131,6 +143,16 @@ class ChatResponse(BaseModel):
     # Голосовая просьба, которую уже обрабатывает другое устройство
     # (ChatRequest.voice): reply пустой, озвучивать нечего
     duplicate: bool = False
+    # Ход отменён, пока генерировался (новая реплика с supersede или
+    # POST /api/chat/cancel): reply пустой, в историю ответ не лёг
+    cancelled: bool = False
+
+
+class ChatCancel(BaseModel):
+    """POST /api/chat/cancel — оборвать начатую генерацию ответа в чате."""
+    persona: PersonaId
+    user_id: str = "web_user"
+    chat_id: Optional[str] = None
 
 
 class PresenceRequest(BaseModel):
@@ -154,6 +176,10 @@ class PersonaInfo(BaseModel):
     color: Optional[str] = None  # цвет метки персоны (общий календарь и т.п.)
     features: dict = Field(default_factory=dict)
     settings: dict = Field(default_factory=dict)
+    # Режимы по триггеру (<id>_modes/<режим>.yaml): id, name, names,
+    # keywords, exit_keywords, mood, hold_minutes — голосовой слушатель
+    # будит персону и именами режимов
+    modes: list[dict] = Field(default_factory=list)
 
 
 class HistoryMessage(BaseModel):
@@ -202,6 +228,27 @@ class StmTrimRequest(BaseModel):
 
 class PersonaYamlUpdate(BaseModel):
     yaml: str  # новое содержимое YAML-файла персоны целиком
+
+
+class PersonaPhraseSave(BaseModel):
+    group_id: str = Field(min_length=1, max_length=256)
+    revision: str = Field(min_length=1, max_length=64)
+    variants: list[StrictStr] = Field(min_length=1, max_length=15)
+
+
+class PersonaModeSave(BaseModel):
+    # Файл режима <id>_modes/<режим>.yaml целиком (app/api/modes_api)
+    yaml: str = Field(..., max_length=200_000)
+    create: bool = False  # новый режим: такой уже есть — 409, а не перезапись
+
+
+class ShortPromptUpdate(BaseModel):
+    # Краткое описание для модели телефона (app/features/short_prompt.py):
+    # source yaml — своё (пустое — убрать, составит модель персоны); auto —
+    # составлено на телефоне без ядра, crc — crc32 характера, по которому
+    text: str = Field("", max_length=4000)
+    source: Literal["yaml", "auto"] = "yaml"
+    crc: Optional[int] = Field(None, ge=0, le=0xFFFFFFFF)
 
 
 # Под id осталась память (удалённой персоны): keep — подхватить, fresh — убрать
@@ -315,6 +362,18 @@ class NoteRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class PhoneNote(BaseModel):
+    id: str = Field(min_length=6, max_length=32)
+    text: str = Field(min_length=1, max_length=4000)
+    created_at: float
+    updated_at: Optional[float] = None
+
+
+class NotesImportRequest(BaseModel):
+    # Заметки, записанные на телефоне без ядра (перенос при связи)
+    notes: list[PhoneNote] = Field(..., max_length=100)
+
+
 class LearningStartRequest(BaseModel):
     subject: str
     interval_seconds: float = 86400
@@ -358,6 +417,11 @@ class PhoneLlmResult(BaseModel):
 _CAPABILITY_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
 
+class DeviceBodyStatus(BaseModel):
+    state: Literal['awake', 'asleep']
+    session: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
 class DeviceHello(BaseModel):
     # Устройство ядра представилось (app/core/devices): Pi с камерой и т.п.
     id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
@@ -365,6 +429,7 @@ class DeviceHello(BaseModel):
     # Как к нему обращаются в чате («робот», «robot»): по ним узнаётся просьба
     names: list[str] = Field(default_factory=list, max_length=8)
     capabilities: list[str] = Field(default_factory=list, max_length=32)  # «camera.snapshot»
+    body: DeviceBodyStatus | None = None
 
     @field_validator("names")
     @classmethod
@@ -386,6 +451,7 @@ class DeviceResult(BaseModel):
     # Итог команды из GET /api/devices/{id}/commands
     command_id: str = Field(min_length=1, max_length=32)
     ok: bool
+    body: DeviceBodyStatus | None = None
     error: str | None = Field(None, max_length=500)
     image: str | None = None  # JPEG base64 или dataURL; размер режет BodySizeLimit
     data: dict | None = None
@@ -446,6 +512,28 @@ class TimezoneRequest(BaseModel):
     timezone: str = ""
 
 
+class LlmEconomyUpdate(BaseModel):
+    # «Экономия нейронки» (app/core/llm_economy): частичная правка пунктов,
+    # true — модель (как раньше), false — код. Только bool: «false» строкой
+    # не должен молча включать модель
+    items: dict[str, StrictBool] = Field(default_factory=dict, max_length=32)
+
+
+class AvatarTextUpdate(BaseModel):
+    # Скорость текста у аватара (app/core/avatar_text): частичная правка;
+    # пределы проверяет avatar_text.update (вне пределов — 422)
+    words_per_sec: Optional[StrictFloat | StrictInt] = None
+    part_sec: Optional[StrictFloat | StrictInt] = None
+
+
+class UiLookUpdate(BaseModel):
+    # Как выглядит веб на компьютере (app/core/ui_look): скин, свои темы
+    # персон, схема — целиком; id проверяет ui_look.update (негодный — 422)
+    skin: Optional[StrictStr] = Field(None, max_length=48)
+    personas: Dict[StrictStr, StrictStr] = Field(default_factory=dict)
+    theme: Optional[Literal["light", "dark"]] = None
+
+
 class LocationRequest(BaseModel):
     """Настройка местоположения пользователя (для окружения: время/погода).
 
@@ -472,7 +560,7 @@ class PersonaDraftSave(BaseModel):
 class RoomLayoutUpdate(BaseModel):
     # {"<имя предмета>": {marker, size, icon, image, spot, hidden} | null}
     items: Optional[dict[str, Optional[dict]]] = None
-    avatar: Optional[dict] = None  # {head, eyes, accessory, shade} | null
+    avatar: Optional[dict] = None  # {head, eyes, accessory, shade, body?} | null
 
 
 class RoomStyleUpdate(BaseModel):
@@ -500,6 +588,106 @@ class PortraitSheetUpdate(BaseModel):
     offset_y: int = 0
     bg: str = "auto"      # auto — убрать сплошной фон, keep — как есть
     tolerance: int = 0    # 0 — по шуму фона
+
+
+class PortraitEmotionMood(BaseModel):
+    # Когда эмоция на лице сама, по настроению персоны (state engine):
+    # зона valence/arousal и/или слова тега настроения
+    valence: Optional[Literal["good", "bad"]] = None
+    arousal: Optional[Literal["calm", "excited"]] = None
+    words: List[str] = Field(default_factory=list, max_length=8)
+
+
+class PortraitEmotionUpdate(BaseModel):
+    # Эмоция портрета (app/api/portrait_api.py): имя — его персона пишет в
+    # маркере [EMO:имя], подсказка — когда эмоция уместна (идёт в промпт).
+    # mood: null — только по маркеру; поля нет — условие прежнее
+    name: str = Field(..., min_length=1, max_length=40)
+    hint: str = Field("", max_length=200)
+    mood: Optional[PortraitEmotionMood] = None
+
+
+class AnimUpdate(BaseModel):
+    # Анимация портрета на рабочем столе (app/api/portrait_anim.py):
+    # data_url — новый лист кадров, без него — правка полей или переразметка
+    # загруженного листа. Числа вне пределов ядро прижимает к ним
+    data_url: Optional[str] = None
+    name: str = Field(..., max_length=200)
+    rows: int = 1
+    cols: int = 1
+    frames: Optional[int] = None  # None — до последней непустой клетки
+    fps: int = 8
+    loops: int = 1
+    loop: Optional[bool] = None  # по кругу; None — как было
+    scale: float = 1.0
+    align: str = "grid"     # grid — общий сдвиг, feet — каждый кадр по ногам
+    bg: str = "auto"
+    tolerance: int = 0
+    offset_x: int = 0
+    offset_y: int = 0
+    faces: str = "none"     # куда смотрит фигура: none, left, right
+    triggers: list[str] = Field(default_factory=list, max_length=40)
+    # Клавиши и кнопки мыши (Ctrl+Shift+KeyK, MouseLeft); None — как было
+    keys: Optional[list[str]] = Field(default=None, max_length=8)
+    # Связки: после каких и перед какими анимациями играет (id), chance —
+    # в скольких процентах случаев; None — как было
+    after: Optional[list[str]] = Field(default=None, max_length=12)
+    before: Optional[list[str]] = Field(default=None, max_length=12)
+    chance: Optional[int] = None
+    # Переход между режимами (повод mode): из каких режимов ("" — обычный;
+    # пусто — из любого); None — как было
+    switch_from: Optional[list[str]] = Field(default=None, max_length=12)
+    # Звук: sound_url None — как был, "" — убрать, data-URL — новый
+    sound_url: Optional[str] = None
+    sound_name: Optional[str] = Field(default=None, max_length=200)
+    sound_loop: Optional[bool] = None
+    volume: Optional[int] = None
+    weight: int = 1
+    enabled: bool = True
+
+
+class FrameCutRequest(BaseModel):
+    # Нарезка листа в редакторе кадров (app/api/portrait_frames.py): сетка,
+    # поля, фон и линии сетки (xs — cols+1 штук, ys — rows+1, px листа)
+    rows: int
+    cols: int
+    offset_x: int = 0
+    offset_y: int = 0
+    bg: str = "auto"
+    tolerance: int = 0
+    align: Optional[str] = None  # только у анимации: grid или feet
+    xs: Optional[list[int]] = Field(default=None, max_length=13)
+    ys: Optional[list[int]] = Field(default=None, max_length=13)
+
+
+class FrameTiming(BaseModel):
+    # Время кадров анимации: fps — шаг, holds — сколько шагов стоит каждый
+    # кадр (None — ровно). Пределы держит ядро (portrait_anim)
+    fps: int = 8
+    loops: int = 1
+    loop: bool = False
+    holds: Optional[list[float]] = Field(default=None, max_length=144)
+    frames: Optional[int] = None  # сколько кадров играть; None — как было
+
+
+class FrameSaveRequest(FrameCutRequest):
+    # fix — {all: {dx, dy, s}, cells: {"номер кадра": {dx, dy, s, r, px, py}}};
+    # пределы держит ядро (portrait_api.clean_fix). order — порядок кадров
+    # анимации (номера клеток листа); не прислали — как был, null — как на листе
+    fix: Optional[dict] = None
+    timing: Optional[FrameTiming] = None
+    order: Optional[list[int]] = Field(default=None, max_length=144)
+
+
+class AnimSettingsUpdate(BaseModel):
+    every_min: int = 4      # средний интервал ротации, минут; 0 — выкл
+    walk: bool = True       # гуляет ли сама по экрану
+    sleep_anim: Optional[str] = None  # цикл на всё время сна; null — обычный портрет
+
+
+class LoreSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    previous: str = Field(default="", max_length=4000)
 
 
 class RoomPokeRequest(BaseModel):

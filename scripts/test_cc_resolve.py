@@ -481,7 +481,8 @@ def main():
                 fake, run, item, obs),
             _done_item=lambda run, item, obs: TaskAgent._done_item(
                 fake, run, item, obs),
-            _repeat_click=lambda run, item, obs: None)
+            _repeat_click=lambda run, item, obs: None,
+            _receive_pick=lambda run, item, obs, line: None)
         TaskAgent._do_element(fake, {"history": []}, "c", None, {"action": "click"},
                               _it(4, "a", "Далее"),
                               {"host": "x.ru", "url": "https://x.ru",

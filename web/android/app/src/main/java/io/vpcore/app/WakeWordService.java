@@ -124,7 +124,10 @@ public class WakeWordService extends Service {
     static final String KEY_BASE_URL = "baseUrl";
     static final String KEY_TOKEN = "token";
     // Последний список персон ядра: ядро недоступно — имена всё равно знаем
-    private static final String KEY_PERSONAS = "personas";
+    static final String KEY_PERSONAS = "personas";
+    // Телефон без компьютера (скачан только APK): ядра нет вовсе — имена
+    // присылает приложение (KEY_PERSONAS), отвечает телефон (answerWithoutCore)
+    static final String KEY_STANDALONE = "standalone";
     // Реплики без ядра и без окна приложения — ему, когда его откроют
     static final String KEY_PENDING = "pending";
     static final Object PENDING_LOCK = new Object();
@@ -278,12 +281,17 @@ public class WakeWordService extends Service {
         }
     }
 
+    /** Есть кого спрашивать: адрес ядра или режим без компьютера. */
+    static boolean hasCoreOrStandalone(SharedPreferences p) {
+        return !p.getString(KEY_BASE_URL, "").isEmpty() || p.getBoolean(KEY_STANDALONE, false);
+    }
+
     /** Приложение вышло на экран: включено, а служба не работает (её убила
      * система или телефон перезагрузился) — запустить снова. */
     static void startIfEnabled(Context ctx) {
         if (running) return;
         SharedPreferences p = prefs(ctx);
-        if (!p.getBoolean(KEY_ENABLED, false) || p.getString(KEY_BASE_URL, "").isEmpty()) return;
+        if (!p.getBoolean(KEY_ENABLED, false) || !hasCoreOrStandalone(p)) return;
         if (!micGranted(ctx)) return;
         try {
             start(ctx);
@@ -404,12 +412,14 @@ public class WakeWordService extends Service {
         }
         SharedPreferences p = prefs(this);
         String url = p.getString(KEY_BASE_URL, "");
-        boolean want = p.getBoolean(KEY_ENABLED, false) && !url.isEmpty() && micGranted(this);
+        boolean want = p.getBoolean(KEY_ENABLED, false) && hasCoreOrStandalone(p) && micGranted(this);
         // startForeground — сразу и всегда: после startForegroundService
         // остановка без него роняет приложение
+        final Notification note;
         try {
             int type = Build.VERSION.SDK_INT >= 30 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE : 0;
-            ServiceCompat.startForeground(this, ONGOING_ID, buildNotification(), type);
+            note = buildNotification();
+            ServiceCompat.startForeground(this, ONGOING_ID, note, type);
         } catch (RuntimeException e) {
             // Android 14+: служба с микрофоном не стартует из фона
             Log.w(TAG, "startForeground не удался", e);
@@ -421,6 +431,7 @@ public class WakeWordService extends Service {
             halt(startId);
             return START_NOT_STICKY;
         }
+        NotifyStack.shown(this, ONGOING_ID, note); // значок — в общую стопку уведомлений
         baseUrl = url.replaceAll("/+$", "");
         token = p.getString(KEY_TOKEN, "");
         String only = p.getString(KEY_ONLY_PERSONA, "");
@@ -435,8 +446,9 @@ public class WakeWordService extends Service {
         if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
         boolean first = audioThread == null;
         if (first) setState("loading");
-        // Персона сменилась — имена из сохранённого списка заново, не дожидаясь ядра
-        if (phrases.isEmpty() || refilter) applyPersonas(p.getString(KEY_PERSONAS, ""), false);
+        // Персона сменилась — имена из сохранённого списка заново, не дожидаясь
+        // ядра; без компьютера список присылает приложение — каждый раз заново
+        if (phrases.isEmpty() || refilter || baseUrl.isEmpty()) applyPersonas(p.getString(KEY_PERSONAS, ""), false);
         // Имена — сразу (новый адрес или токен), дальше раз в 10 минут; одна
         // цепочка обновлений, сколько бы раз службу ни перезапускали
         net.execute(() -> {
@@ -460,6 +472,7 @@ public class WakeWordService extends Service {
     private void halt(int startId) {
         running = false;
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+        NotifyStack.gone(this, null, ONGOING_ID);
         stopSelf(startId);
     }
 
@@ -468,6 +481,7 @@ public class WakeWordService extends Service {
         synchronized (notifyLock) {
             destroyed = true;
             NotificationManagerCompat.from(this).cancel(ONGOING_ID);
+            NotifyStack.gone(this, null, ONGOING_ID);
         }
         running = false;
         state = "off";
@@ -513,6 +527,11 @@ public class WakeWordService extends Service {
 
     private void refreshPersonas() {
         if (destroyed) return;
+        // Без компьютера спрашивать некого — имена из списка приложения
+        if (baseUrl.isEmpty()) {
+            if (phrases.isEmpty() && mode == Mode.IDLE) setState("no_names");
+            return;
+        }
         long next = PERSONAS_REFRESH_MS;
         try {
             String body = httpGet(baseUrl + "/api/personas");
@@ -893,6 +912,10 @@ public class WakeWordService extends Service {
                         followUp = say.endsWith("?");
                     }
                     Log.i(TAG, "← ответ приложения " + say.length() + " симв." + (followUp ? ", вопрос" : ""));
+                } else if (baseUrl.isEmpty()) {
+                    // Без компьютера — сразу телефоном (облако по ключу или Gemma)
+                    say = answerWithoutCore(persona, message, action);
+                    followUp = say.endsWith("?");
                 } else try {
                     JSONObject body = new JSONObject()
                             .put("persona", persona)
@@ -917,7 +940,10 @@ public class WakeWordService extends Service {
                         });
                         return;
                     }
-                    StringBuilder all = new StringBuilder(r.optString("reply", ""));
+                    // Строки хода агента задач (режим управления) — в карточке
+                    // задачи, вслух их не читаем
+                    StringBuilder all = new StringBuilder(
+                            BackgroundInboxService.withoutTaskLines(r, r.optString("reply", "")));
                     JSONArray extra = r.optJSONArray("extra_messages");
                     for (int i = 0; extra != null && i < extra.length(); i++) {
                         String part = extra.optString(i, "");
@@ -965,20 +991,29 @@ public class WakeWordService extends Service {
         // реплика ждёт его открытия (takePending), а служба слушает дальше
         String reply = BackgroundInboxService.appVisible
                 ? WakeWordPlugin.askOffline(persona, message, null, OFFLINE_ANSWER_MS) : null;
+        // Без компьютера «ядро не отвечает» — неправда: его нет вовсе
+        boolean phoneOnly = baseUrl.isEmpty();
         if (reply == null) {
             keepForApp(persona, message);
-            return getString(R.string.wake_say_offline_later);
+            return getString(phoneOnly ? R.string.wake_say_phone_later : R.string.wake_say_offline_later);
         }
         if (WakeWordPlugin.TIMEOUT.equals(reply)) return getString(R.string.wake_say_offline_slow);
         String say = WakeMatch.forSpeech(reply);
         if (!say.isEmpty()) return say;
         // Ответить некому (ни облака, ни модели телефона) — реплика ждёт ядро в чате
-        return getString(R.string.wake_say_offline_queued);
+        return getString(phoneOnly ? R.string.wake_say_phone_queued : R.string.wake_say_offline_queued);
     }
 
     private void keepForApp(String persona, String message) {
+        keepForApp(this, persona, message, null);
+    }
+
+    /** Реплика ждёт приложение (takePending): голосом без ядра — и окно
+     * «Написать» виджета, когда ядро не отвечает. action — команда телефону,
+     * уже исполненная (персона ответит по итогу). */
+    static void keepForApp(Context ctx, String persona, String message, JSONObject action) {
         synchronized (PENDING_LOCK) {
-            SharedPreferences p = prefs(this);
+            SharedPreferences p = prefs(ctx);
             JSONArray list;
             try {
                 list = new JSONArray(p.getString(KEY_PENDING, "[]"));
@@ -986,10 +1021,12 @@ public class WakeWordService extends Service {
                 list = new JSONArray();
             }
             try {
-                list.put(new JSONObject()
+                JSONObject item = new JSONObject()
                         .put("persona", persona)
                         .put("message", message)
-                        .put("ts", System.currentTimeMillis() / 1000.0));
+                        .put("ts", System.currentTimeMillis() / 1000.0);
+                if (action != null) item.put("action", action);
+                list.put(item);
             } catch (Exception ignored) {
                 return; // put строк не падает
             }
@@ -1320,6 +1357,7 @@ public class WakeWordService extends Service {
             shownText = key;
             try {
                 NotificationManagerCompat.from(this).notify(ONGOING_ID, n);
+                NotifyStack.shown(this, ONGOING_ID, n);
             } catch (SecurityException e) {
                 // Нет разрешения на уведомления — служба работает без значка
             }
@@ -1351,6 +1389,7 @@ public class WakeWordService extends Service {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                .setGroup(NotifyStack.GROUP) // в общую стопку уведомлений приложения
                 .build();
     }
 

@@ -1,0 +1,17 @@
+Built-in image_gen. Edit target: 39-white-ghost-faceted-egg.png. User shape reference retained at references/ghost-shape-01.png. Ghost redesigned with a circular white head, black neck ribbon and white draped cloth flaring downward. Egg and alpha transparency preserved.
+
+Use case: precise-object-edit.
+Asset type: revise the white ghost character in an existing transparent ghost-and-cracked-egg emblem.
+Input image 1: EDIT TARGET, the latest white ghost with dark pill eyes emerging from two angular ivory eggshell pieces.
+Input image 2: USER'S SHAPE REFERENCE, pencil drawing. Borrow the three-part character construction only, not the paper background, pencil texture, vertical sketch marks or oversized odd eye bumps.
+
+USER REQUEST, exactly: a ROUND HEAD, then a BLACK STRIP/RIBBON underneath, then WHITE CLOTH that WIDENS DOWNWARDS.
+Replace ONLY the current one-piece arched ghost with this new three-part ghost:
+1. A clearly CIRCULAR white head, round like a ball in silhouette rather than an arch or capsule. Keep the two calm DARK VERTICAL CAPSULE EYES from image 1, sized and positioned naturally inside the round head. No mouth, ears, spikes or protrusions.
+2. Directly beneath the head, a short solid BLACK HORIZONTAL RIBBON BAND around the narrow neck, clearly visible between the circular head and cloth. It is a simple dark collar/strip, NOT a bow tie, not a long scarf or dangling ties.
+3. From just below that black band, WHITE DRAPED FABRIC begins NARROW and flares outward continuously toward the bottom, like the A-line floating cloak in the user's pencil sketch. The silhouette must be visibly narrower at the neck and wider at the hem. A softly irregular wavy lower cloth edge and one or two restrained long fold lines should make it read as fabric. No arms, no hands, no legs, no shoulders wider than the lower hem. Keep the cloth simple and mature, not frilly or a dress with accessories.
+Match the broad proportions of the sketch: smaller round head above a longer flaring fabric body, with the black ribbon connecting them. Keep the three sections legible at icon size.
+
+Keep the overall ghost centered in the same space above the lower eggshell, emerging from its broken rim. Its cloth hem should remain visible just over/inside the lower shell opening, with the widest cloth section near that opening. Fit the new ghost into the existing composition; do not shrink it into a tiny character.
+PRESERVE the two existing cracked eggshell pieces, their angular ivory/beige facets, dark ink outlines, fracture marks, shapes, positions, scale and orientation. Do not add more shell pieces or plants. Preserve the transparent alpha background and overall canvas framing.
+Use clean white for head and cloth, dark charcoal eyes/ribbon and a restrained charcoal outline consistent with the shell ink. Slightly hand-drawn but clean graphic emblem finish matching image 1. No new background, text, labels, wordmark, glow, shadows or decorative objects.

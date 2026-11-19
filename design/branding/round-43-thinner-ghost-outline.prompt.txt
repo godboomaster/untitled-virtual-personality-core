@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 62-black-lineart-ghost.png. Thin only the ghost's head/body/hem outlines, preserving filled eyes, ribbon, eggshell strokes and the white separator.
+
+Precise local stroke-weight edit to the supplied black-and-white ghost-and-cracked-egg logo.
+Make ONLY the GHOST'S OUTLINE LINES approximately 25–30% THINNER: the face/head perimeter, both straight body sides, and the angular zigzag hem just above the shell. Keep the same exact centerline paths, contours, dimensions and positions; only reduce stroke thickness uniformly. Retain smooth corners where present and sharp angular hem vertices.
+Do NOT shrink the dark filled capsule eyes or thin the solid black neck ribbon: preserve their exact sizes and shapes. Preserve the flat face-to-ribbon junction and smooth lower offsets.
+Keep ALL EGGSHELL OUTLINES AND CRACKS at their CURRENT thickness, with their exact contours, positions and scale. Preserve the thin WHITE SEPARATOR between the ghost's angular hem and the shell rim. Keep all interiors and background pure white and all ink pure black. No extra details, folds, shading, text or other changes.

@@ -110,6 +110,9 @@ def snapshot_input(local_router, device: dict, question: str, lang: Optional[str
     try:
         res = devices.command(device["id"], SNAPSHOT, timeout=SNAPSHOT_TIMEOUT_SEC)
     except devices.DeviceError as e:
+        if e.code == 'asleep':
+            raise screen_look.ScreenLookError('The body is asleep. Say “activate body” first.' if str(lang).startswith('en') else
+                                              'Тело спит. Сначала скажи «включи тело».')
         if e.code == "timeout":
             raise screen_look.ScreenLookError(TIMEOUT.format(name=name))
         if e.code == "failed":
@@ -118,6 +121,13 @@ def snapshot_input(local_router, device: dict, question: str, lang: Optional[str
     shot = res.get("image")
     if not shot:
         raise screen_look.ScreenLookError(FAILED.format(name=name, detail="пустой снимок"))
+    return describe_snapshot(local_router, device, shot, question, lang, on_shot)
+
+
+def describe_snapshot(local_router, device: dict, shot: bytes, question: str,
+                      lang: Optional[str], on_shot=None, note: str | None = None) -> tuple[str, bytes]:
+    """An already captured frame; never issues another camera or motor command."""
+    name = device['name']
     if on_shot is not None:
         try:
             on_shot(shot)
@@ -125,4 +135,4 @@ def snapshot_input(local_router, device: dict, question: str, lang: Optional[str
             logger.warning(f"[DeviceLook] Кадр «{name}» не отдан заранее: {e}")
     desc = screen_look.describe_locally(local_router, shot, question, lang, subject="image")
     logger.info(f"[DeviceLook] Кадр «{name}» {len(shot) // 1024} КБ описан локальной моделью ({len(desc)} симв.)")
-    return (f"{question}\n\n" if question else "") + DEVICE_NOTE.format(name=name) + desc, shot
+    return (f"{question}\n\n" if question else "") + (note or DEVICE_NOTE.format(name=name)) + desc, shot

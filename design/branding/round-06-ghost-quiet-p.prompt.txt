@@ -1,0 +1,12 @@
+Built-in image_gen. Subtle lower-hem revision of 07-ghost-sigil.png; a faint open P suggestion without a literal enclosed letter. Not integrated into the application.
+
+Use case: logo-brand.
+Asset type: precise subtle refinement of the supplied ghost logo.
+Input image 1 is the EDIT TARGET. Preserve its square presentation, ivory background, exact "Virtual Persona" wordmark and small "CORE", two upright pill-shaped eyes, the large black ghost's rounded rectangular head and straight sides, and the small inverted app icon. Keep the original ghost recognizable, same scale, proportions, calm expression and bold black silhouette.
+
+USER REQUEST: a barely noticeable suggestion of the letter P through the BOTTOM EDGE CUTOUT of the ghost. Their last rejected attempt showed a large literal P carved into the ghost's stomach and looked like a mouth. Do NOT repeat that.
+Make a small elegant contour edit to the original LOWER HEM ONLY. Retain the original asymmetric two tapered lower ends and its compact geometric ghost character. In place of the simple triangular apex of the lower cutout, use a short upright inner edge on the left and a small smooth rightward curling shoulder at the top of that opening, followed by a quiet diagonal return toward the shorter right tail. The left upright and curved right shoulder should provide only a distant typographic echo, an abstract almost unnoticed signature in the hem.
+The notch is a single fully OPEN background-colored space connected generously to the background at the bottom. It has NO enclosed loop, NO enclosed counter island, NO literal letterform, NO freestanding glyph, NO white marking on the belly and NO mouth. The top of the notch must remain in the lowest quarter to lowest third of the ghost, well below the eyes, with a large uninterrupted black torso. Two eye openings are the ONLY interior holes. Keep the design sparse and legible at small scale.
+Prioritize a beautiful ghost silhouette with a discreet asymmetrical rounded notch over legibility of any letter. Almost all of the ghost remains unchanged. Update the small app icon to match the edited hem.
+Replace bottom-left label with exact text "10 / QUIET".
+Flat crisp vector-like monochrome artwork. No gradients, no shading, no grain, no texture, no shadows, no glow, no 3D, no additional objects.

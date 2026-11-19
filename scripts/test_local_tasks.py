@@ -210,7 +210,7 @@ def test_get_response_order():
             return self.answer
 
     answers = {"qwen": None, "deepseek": "ответ deepseek"}
-    r._get_webchat = lambda site=None: Chat(site, answers.get(site))
+    r._get_webchat = lambda site=None, persona=None: Chat(site, answers.get(site))
     out = r.get_response([{"role": "user", "content": "x"}], task="state_engine",
                          persona="p")
     check("qwen промолчал → ответил deepseek", out == "ответ deepseek"
@@ -275,7 +275,7 @@ def test_rotation():
             return None if self.site in dead else f"ответ {self.site}"
 
     dead = set()
-    r._get_webchat = lambda site=None: Chat(site)
+    r._get_webchat = lambda site=None, persona=None: Chat(site)
     outs = [r.get_response([{"role": "user", "content": "x"}], task="state_engine",
                            persona="p") for _ in range(6)]
     check("2:1 — два вопроса duck.ai, один Google, и снова",
@@ -299,6 +299,92 @@ def test_rotation():
     r.bind_persona("p", main, {"bg_site": "rotate"})
     check("rotate без очереди — как по умолчанию (fallback), не сайт «rotate»",
           r._resolve_task("state_engine", "p") == ("webchat", ["qwen", "deepseek"]))
+
+
+def test_persona_history_isolation():
+    section("История фоновых задач изолирована между персонами и после перезапуска")
+    import app.features.web_llm as wl
+    main = StubModelRouter("webchat:deepseek", ["webchat:qwen"])
+    calls = []
+    dead = set()
+
+    class HistoryChat(wl.WebChatLLM):
+        # Настоящие пути/чтение/запись WebChatLLM; вместо браузера —
+        # провайдер с памятью, который возвращает всю историю своего чата.
+        def get_response(self, messages, **kw):
+            calls.append((self.site, self.base_dir))
+            if self.site in dead:
+                return None
+            history = list(self._load_state().get("test_history", []))
+            history.extend(m["content"] for m in messages)
+            self._save_state({"test_history": history})
+            return " | ".join(history)
+
+    with tempfile.TemporaryDirectory(prefix="vpc_side_isolation_") as tmp, \
+            mock.patch.object(wl, "data_dir", return_value=Path(tmp)), \
+            mock.patch.object(wl, "WebChatLLM", HistoryChat):
+        r = fresh_router()
+        for persona in ("api_don", "api_arrodes"):
+            r.bind_persona(persona, main, None)
+        # Загрязнённый старый default не должен наследоваться ни одной персоной.
+        legacy = r._get_webchat("qwen")
+        legacy.get_response([{"role": "user", "content": "legacy-secret"}])
+        arrodes = r.for_persona("api_arrodes")
+        don = r.for_persona("api_don")
+        arrodes.get_response([{"role": "user", "content": "arrodes-secret"}],
+                             task="world_engine")
+        out = don.get_response([{"role": "user", "content": "don-event"}],
+                               task="world_engine")
+        check("мир Кихота не получает историю Арродеса или старого default",
+              out == "don-event")
+        out = don.get_response([{"role": "user", "content": "don-diary"}],
+                               task="self_memory")
+        check("задачи одной персоны сохраняют собственную историю",
+              out == "don-event | don-diary")
+        a = r._get_webchat("qwen", persona="api_arrodes")
+        d = r._get_webchat("qwen", persona="api_don")
+        check("разные инстансы и файлы состояния для каждой персоны",
+              a is not d and d is not legacy
+              and a._state_path == Path(tmp) / "api_arrodes/computer_control/web_llm_state.json"
+              and d._state_path == Path(tmp) / "api_don/computer_control/web_llm_state.json")
+        # Те же chat_id/dialog_scope у разных персон не объединяют их чаты.
+        from app.core.dialog_scope import dialog_scope
+        with dialog_scope("web_user"):
+            a._set_chat_url("https://example.test/arrodes")
+            check("адрес чата общего chat_id не утекает другой персоне",
+                  d._chat_url() is None)
+            d._set_chat_url("https://example.test/don")
+            check("адреса одного chat_id сохраняются раздельно",
+                  a._chat_url() == "https://example.test/arrodes"
+                  and d._chat_url() == "https://example.test/don")
+        restarted = fresh_router()
+        for persona in ("api_don", "api_arrodes"):
+            restarted.bind_persona(persona, main, None)
+        out = restarted.for_persona("api_don").get_response(
+            [{"role": "user", "content": "don-after-restart"}], task="state_engine")
+        check("после перезапуска восстанавливается только история своей персоны",
+              out == "don-event | don-diary | don-after-restart")
+        # Запасной сайт также обязан получить контекст персоны.
+        dead.add("qwen")
+        restarted.for_persona("api_arrodes").get_response(
+            [{"role": "user", "content": "arrodes-fallback"}], task="world_engine")
+        out = restarted.for_persona("api_don").get_response(
+            [{"role": "user", "content": "don-fallback"}], task="world_engine")
+        check("fallback-сайт тоже не смешивает истории персон",
+              out == "don-fallback"
+              and calls[-1] == ("deepseek", Path(tmp) / "api_don/computer_control"))
+        # Даже без bind_persona известный context нельзя терять.
+        with mock.patch.dict(os.environ, {"LOCAL_LLM_BACKEND": "webchat"}), \
+                mock.patch("app.core.local_router._global_webchat_sites", return_value=["deepseek"]):
+            out = restarted.for_persona("unbound").get_response(
+                [{"role": "user", "content": "unbound-event"}], task="world_engine")
+        check("персона без настроек тоже получает собственную историю",
+              out == "unbound-event")
+        cached = list(restarted._webchats.values())
+        with mock.patch.object(HistoryChat, "retire") as retire:
+            restarted.reset_webchats()
+        check("сброс закрывает чаты всех персон и сайтов",
+              not restarted._webchats and retire.call_count == len(cached))
 
 
 def test_settings_api():
@@ -379,6 +465,7 @@ def main():
     test_resolution()
     test_get_response_order()
     test_rotation()
+    test_persona_history_isolation()
     test_settings_api()
     print(f"\nИтого: {ok - failures}/{ok} OK")
     return 1 if failures else 0

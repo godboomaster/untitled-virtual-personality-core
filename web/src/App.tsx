@@ -4,7 +4,7 @@ import Icon from './components/icons';
 import DevLogPanel from './components/DevLogPanel';
 import { DetroitBackground } from './effects/DetroitBackground';
 import { useI18n, useMockData } from './i18n';
-import { useApiOnline, useCoreHealth } from './apiData';
+import { recheckCore, useApiOnline, useCoreHealth, useCoreLink } from './apiData';
 import { useInbox, useInboxPolling } from './inboxStore';
 import { ensureNotifyPermission, OPEN_CHAT_EVENT, OPEN_ROOM_EVENT, setUnreadTitle } from './notifications';
 import { requestChatOverview, requestChatPersona, requestRoomPersona } from './chatNavStore';
@@ -14,29 +14,51 @@ import Start from './sections/Start';
 import Home from './sections/Home';
 import Chat from './sections/Chat';
 import Room from './sections/Room';
+import Avatar from './sections/Avatar';
 import Personas from './sections/Personas';
 import Skins from './sections/Skins';
 import ApiKeys from './sections/ApiKeys';
 import Services from './sections/Services';
+import Connection from './sections/Connection';
+import Providers from './sections/Providers';
+import Player from './player/Player';
 import ImageLightbox from './components/ImageLightbox';
 import DialogHost from './components/DialogHost';
 import PipHost from './PipHost';
+import WidgetHeads from './portrait/widgetHeads';
 import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
 import { setThemePreference, useAppliedSkin, useEffectiveSkin } from './skinTheme';
 import { getSkin } from '../skins';
 import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
+import { syncPhoneControl } from './phone/control';
 import { usePhoneGemma } from './offline/phoneGemma';
 import { syncWakeWord } from './wakeWord';
-import { useOfflineSync } from './offline/state';
+import { useOfflineMode, useOfflineSync } from './offline/state';
+import { useKeysOffer } from './offline/useKeysOffer';
+import { usePhoneServices, useServicesOffer } from './offline/useServicesOffer';
+import { isStandalone } from './standalone';
+import { useUiLookSync } from './uiLookSync';
+import { isNativeApp } from './api';
+import { useCoreRelocate } from './coreMove';
 
-export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'services' | 'settings';
+export type Section = 'start' | 'home' | 'chat' | 'room' | 'avatar' | 'personas' | 'skins' | 'services' | 'connection' | 'providers' | 'settings' | 'player';
+
+// Телефон: «ядро на связи» подписью в шапке — столько после подключения (и
+// по нажатию на индикатор), дальше место снова у переключателя темы
+const LINK_OK_LABEL_MS = 4000;
 
 type Theme = AppTheme;
 
 export default function App() {
   const [section, setSection] = useState<Section>('home');
+  // «Провайдеры» есть только у телефона без связи с ядром: связь вернулась —
+  // из вкладки в «Настройки»
+  const offlineMode = useOfflineMode();
+  useEffect(() => {
+    if (section === 'providers' && !offlineMode) setSection('settings');
+  }, [section, offlineMode]);
   // Узкий экран (телефон): меню разделов — выдвижная панель по кнопке в шапке
   const [menuOpen, setMenuOpen] = useState(false);
   useBackHandler(menuOpen, BACK_MENU, () => setMenuOpen(false));
@@ -51,8 +73,23 @@ export default function App() {
   const { personas } = useMockData();
   // false — бэкенд недоступен: интерфейс показывает моковые данные прототипа
   const apiOnline = useApiOnline();
+  // Выбор скина — ядру: по нему рисуется портрет на рабочем столе
+  useUiLookSync(apiOnline);
   // Шапка: связь с ядром по опросу /api/health; онлайн — незамороженные персоны
   const coreDown = useCoreHealth() === 'down';
+  // Приложение на телефоне с ядром на компьютере открывается, не дожидаясь
+  // его (BootGate): связь — подписью в шапке: ищу / на связи / нет связи
+  const nativeCore = isNativeApp() && !isStandalone();
+  const coreLink = useCoreLink();
+  const [okLabel, setOkLabel] = useState(false);
+  const [okLabelSeq, setOkLabelSeq] = useState(0);
+  useEffect(() => {
+    if (!nativeCore || coreLink !== 'ok') return;
+    setOkLabel(true);
+    const timer = window.setTimeout(() => setOkLabel(false), LINK_OK_LABEL_MS);
+    return () => window.clearTimeout(timer);
+  }, [nativeCore, coreLink, okLabelSeq]);
+  const searching = nativeCore && coreLink === 'searching';
   const personasOnline = personas.filter((p) => p.status !== 'frozen').length;
   const devMode = useDevMode();
   const devLogOpen = useDevLogOpen();
@@ -63,8 +100,16 @@ export default function App() {
   useInboxPolling(apiOnline, personas);
   // Телефон: ноутбук снова на связи — переписка без него уходит на него
   useOfflineSync();
+  // Телефон: ключи, введённые без компьютера, — предложить перенести на ядро
+  useKeysOffer();
+  // Телефон: «Сервисы» без компьютера — режим и доставленное в чат; появился
+  // компьютер — предложить перенести их туда
+  usePhoneServices();
+  useServicesOffer();
   // Телефон: Gemma считает служебные задачи ядра, если её выбрали на телефоне
   usePhoneGemma();
+  // Телефон: нет связи — не сменился ли у ядра адрес (ищем его по id в сети)
+  useCoreRelocate();
   // Присутствие (гейт фона) репортит экран чата — там известно, ЧЕЙ чат
   // открыт; ключ отметки — (персона, чат), см. presence.ts
   const { unread } = useInbox();
@@ -128,6 +173,8 @@ export default function App() {
     syncBgInbox();
     // «Слушать по имени»: служба получает свежие адрес и токен
     syncWakeWord();
+    // Управление экраном телефона — тоже
+    syncPhoneControl();
     return listenBgNotificationTaps();
   }, []);
 
@@ -195,32 +242,60 @@ export default function App() {
                 </span>
               ))}
             </div>
-            <div className={`topbar-status${!apiOnline || coreDown ? ' topbar-status--down' : ''}`}>
+            <div
+              className={`topbar-status${
+                !apiOnline || (coreDown && !isStandalone() && !searching)
+                  ? ' topbar-status--down'
+                  : searching
+                    ? ' topbar-status--searching'
+                    : nativeCore && okLabel
+                      ? ' topbar-status--label'
+                      : ''
+              }`}
+              {...(nativeCore
+                ? {
+                    role: 'button',
+                    tabIndex: 0,
+                    // Нет связи — проверить сейчас; на связи — показать подпись
+                    onClick: () => (coreLink === 'down' ? recheckCore() : setOkLabelSeq((n) => n + 1)),
+                  }
+                : {})}
+            >
               <span className="status-led" />
               <span>
                 {!apiOnline
                   ? t('topbar.mock')
-                  : coreDown
-                    ? t('topbar.down')
-                    : t('topbar.status', { n: personasOnline, total: personas.length })}
+                  : isStandalone()
+                    ? t('topbar.standalone')
+                    : searching
+                      ? t('topbar.searching')
+                      : coreDown
+                        ? t('topbar.down')
+                        : nativeCore && narrow
+                          ? t('topbar.okShort')
+                          : t('topbar.status', { n: personasOnline, total: personas.length })}
               </span>
-              {!apiOnline && <span className="badge badge--muted">MOCK</span>}
+              {!apiOnline && <span className="badge badge--muted">{t('topbar.mockBadge')}</span>}
             </div>
           </div>
         </header>
         {devMode && narrow && <DevLogPanel docked />}
-        <div className="content-scroll">
+        <div className="content-scroll" hidden={section === 'player'}>
           <div key={section} className="section-enter">
             {section === 'start' && <Start onNavigate={setSection} />}
             {section === 'home' && <Home onNavigate={setSection} />}
             {section === 'chat' && <Chat />}
             {section === 'room' && <Room />}
+            {section === 'avatar' && <Avatar />}
             {section === 'personas' && <Personas />}
             {section === 'skins' && <Skins />}
             {section === 'services' && <Services />}
-            {section === 'settings' && <ApiKeys />}
+            {section === 'connection' && <Connection />}
+            {section === 'providers' && offlineMode && <Providers />}
+            {section === 'settings' && <ApiKeys onNavigate={setSection} />}
           </div>
         </div>
+        <Player visible={section === 'player'} onOpen={() => setSection('player')} />
       </main>
       {devMode && !narrow && <DevLogPanel />}
       {/* Лайтбокс: клик по контентной картинке — крупный просмотр */}
@@ -229,6 +304,8 @@ export default function App() {
       <DialogHost />
       {/* PiP-окно (комната или портрет): живёт над разделами, переживает уход из них */}
       <PipHost />
+      {/* Телефон: листы головы для виджета «Живой портрет» у персон без своего портрета */}
+      <WidgetHeads personas={personas} />
     </div>
   );
 }

@@ -1796,33 +1796,24 @@ html[data-skin='pixel'] .home-presence-grid {
 }
 
 html[data-skin='pixel'] .home-presence,
-html[data-skin='pixel'] .home-dossier,
 html[data-skin='pixel'] .home-feed {
   border: 0;
   background: var(--px-win-fill);
   box-shadow: var(--px-win);
 }
 
-html[data-skin='pixel'] .home-dossier {
-  clip-path: none;
-}
-
-html[data-skin='pixel'] .home-presence:hover,
-html[data-skin='pixel'] .home-dossier:hover {
+html[data-skin='pixel'] .home-presence:hover {
   background: var(--px-win-fill);
   transform: translate(-2px, -2px);
 }
 
-html[data-skin='pixel'] .home-presence-name,
-html[data-skin='pixel'] .home-dossier h3 {
+html[data-skin='pixel'] .home-presence-name {
   font-weight: 400;
   font-size: 17px;
 }
 
 html[data-skin='pixel'] .home-presence-status,
 html[data-skin='pixel'] .home-presence-reply,
-html[data-skin='pixel'] .home-dossier-foot,
-html[data-skin='pixel'] .home-dossier-index,
 html[data-skin='pixel'] .home-feed-empty {
   font-size: 12px;
 }
@@ -1831,8 +1822,7 @@ html[data-skin='pixel'] .home-presence-activity {
   font-size: 13.5px;
 }
 
-html[data-skin='pixel'] .home-presence-reply,
-html[data-skin='pixel'] .home-dossier-foot {
+html[data-skin='pixel'] .home-presence-reply {
   border-top: 2px dotted var(--border-soft);
 }
 
@@ -2327,7 +2317,7 @@ html[data-skin='pixel'] .provider-name {
   font-weight: 500;
 }
 
-/* ===== Главная: лента, заметки, календарь, журнал ===== */
+/* ===== Главная: лента, заметки, календарь ===== */
 html[data-skin='pixel'] .home-feed-row {
   border-bottom: 2px dotted var(--border-soft);
 }
@@ -2431,10 +2421,6 @@ html[data-skin='pixel'] .home-term-titlebar .lights i:nth-child(3) {
   background: var(--px-leaf);
 }
 
-html[data-skin='pixel'] .home-term-line .bright {
-  color: var(--px-gold);
-}
-
 /* Курсоры терминалов — мягкое «дыхание» вместо резкого мигания */
 @keyframes px-breathe {
   0%, 100% { opacity: 1; }
@@ -2462,10 +2448,6 @@ html[data-skin='pixel'] .chat-loading-cells i {
 html[data-skin='pixel'] .home-foot-stencil,
 html[data-skin='pixel'] .home-foot-right {
   font-size: 12px;
-}
-
-html[data-skin='pixel'] .barcode i {
-  background: var(--accent-dark);
 }
 
 /* ===== Диалоги подтверждения ===== */
@@ -2626,4 +2608,34 @@ html[data-skin='pixel'] .reminder-item {
     grid-column: 1 / -1;
   }
 
+}
+
+/* Readable secondary copy: reserve Tiny5/mono styling for short HUD labels. */
+html[data-skin='pixel'] .boot-meta,
+html[data-skin='pixel'] .boot-cmd-label,
+html[data-skin='pixel'] .boot-hint,
+html[data-skin='pixel'] .memory-item-time,
+html[data-skin='pixel'] .stat-label,
+html[data-skin='pixel'] .dossier-meta,
+html[data-skin='pixel'] .message-time,
+html[data-skin='pixel'] .chat-card-foot,
+html[data-skin='pixel'] .chat-card-preview--empty,
+html[data-skin='pixel'] .home-readout,
+html[data-skin='pixel'] .home-readout .val,
+html[data-skin='pixel'] .home-presence-reply,
+html[data-skin='pixel'] .home-feed-empty,
+html[data-skin='pixel'] .room-tele-sub,
+html[data-skin='pixel'] .art-drop-spec,
+html[data-skin='pixel'] .art-drop-status,
+html[data-skin='pixel'] .room-focus-label,
+html[data-skin='pixel'] .persona-card-meta,
+html[data-skin='pixel'] .persona-card-label,
+html[data-skin='pixel'] .home-feed-persona,
+html[data-skin='pixel'] .home-feed-time,
+html[data-skin='pixel'] .cal-weekdays span,
+html[data-skin='pixel'] .mem-stats .stat-label,
+html[data-skin='pixel'] .topbar-title {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0;
 }

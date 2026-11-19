@@ -1,0 +1,11 @@
+Built-in image_gen. Edit target: 83-narrow-short-oval-eyes-ghost.png. Output: 88-square-ghost-logo.png.
+
+Use case: precise-object-edit
+Asset type: final square black-and-white logo.
+Input image 1: the edit target, 83-narrow-short-oval-eyes-ghost.png. The user chose this version with solid black short narrow oval eyes.
+Primary request:
+1. REMOVE the ENTIRE detached UPPER eggshell piece floating above and to the right of the ghost's head, including all of that piece's outlines and crack marks. Leave clean white background in its place.
+2. Keep the COMPLETE remaining emblem: the ghost with the selected solid black short narrow oval eyes, the angular neck collar and its two leaves on the left, and the LOWER cracked eggshell.
+3. Recompose this remaining emblem as a polished logo on a SQUARE 1:1 canvas. Center the whole remaining emblem horizontally and vertically with balanced white margins. Scale the complete emblem uniformly to occupy approximately 84% of the canvas height. Keep the entire emblem visible with comfortable clearance on every side. The square refers to the CANVAS; do not add any box, border or badge.
+Preserve the selected eye shape, fill, size relative to the head, centers and spacing EXACTLY: solid black, no white highlights, no white slits, no hollow interiors. Preserve the original head shape and expression, body proportions, jagged hem, both outlined leaves, angular collar and its small white separation cuts, white separator above the LOWER shell, lower shell outline and its cracks. Keep all remaining elements' relative positions and proportions; allow only a uniform overall scale and translation for square placement.
+Style: clean flat vector-like logo, crisp smooth contours, consistent existing line weights, solid black ink on a clean pure WHITE background. Remove any faint paper texture or noise from the white background. No shading, gradients, colors, extra objects, text, letters, watermark, mockup, upper shell, or decorative frame. Output one complete square logo.

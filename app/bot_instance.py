@@ -27,7 +27,7 @@ from app.core.file_vector_db import FileVectorDB
 from app.core.file_reader import extract_text, MAX_FILE_SIZE_DEFAULT
 from app.core.interfaces import MessageSender
 from app.core.presence import web_presence
-from app.core import timeutil
+from app.core import llm_economy, lore, timeutil, turn_cancel
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.paths import data_dir
 from app.core.turn_gate import ChatTurnGate, begin_turn_async
@@ -80,7 +80,7 @@ from app.features.computer_control import (
     split_compound_command, tag_origin)
 from app.features.scenario_manager import ScenarioManager
 from app.features.task_agent import TaskAgent, parse_task_request
-from app.features.search_gate import search_skip_reason
+from app.features.search_gate import search_gate_reason
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,20 @@ _SKIN_TURN = threading.local()
 # телефоне — компьютер в этом ходе не трогается (ни «почини браузер», ни
 # режим управления, ни агент задач); флаг видит тот же _cc_allowed
 _PHONE_TURN = threading.local()
+
+# Ход голосом (голосовая активация: process_message(spoken=True)) — ответ
+# прочитает синтез речи, пока человек ждёт у микрофона: эссе на 8000 знаков
+# модель пишет минуты, а say читает четверть часа
+# Потолок длины ответа голосом (токены): даже если модель не послушает
+# «коротко», генерация упрётся в него за секунды; оборванный хвост
+# срезается до последней законченной фразы, догенерации нет
+SPOKEN_MAX_TOKENS = int(os.getenv("VOICE_REPLY_MAX_TOKENS", "400") or 400)
+SPOKEN_REPLY_NOTE = (
+    "[Voice conversation] The user said this out loud and is waiting by the microphone; "
+    "your reply will be read aloud by text-to-speech. Answer the way you would speak: "
+    "briefly, one to three short sentences (about 300 characters at most). No lists, "
+    "headings, markdown, emoji or *actions in asterisks*. If the topic needs more, give "
+    "the gist and offer to go on.")
 
 # Шаговые команды: повтор — намеренный («громче» ×3, «дальше» ×2), дублем
 # не считается никогда (см. cc_turn_enter)
@@ -444,6 +458,14 @@ _TODO_ADD_MARK_RE = _marker_re("TODO_ADD")
 _INV_USE_MARK_RE = _marker_re("INVENTORY_USE")
 _INV_ADD_MARK_RE = _marker_re("INVENTORY_ADD")
 _INV_REMOVE_MARK_RE = _marker_re("INVENTORY_REMOVE")
+# Действие портрета на рабочем столе (app/api/portrait_anim): [ACT:имя
+# анимации]; слабые модели пишут и [act:…]
+_ACT_MARK_RE = re.compile(r"\[ACT:([^\]\n]+)\]", re.IGNORECASE)
+# Выражение лица живого портрета (app/api/portrait_api, эмоции): [EMO:имя]
+_EMO_MARK_RE = re.compile(r"\[EMO:([^\]\n]+)\]", re.IGNORECASE)
+# Портрет на столе слушал ленту реплик не позже стольких секунд назад —
+# персоне есть смысл знать про своё «тело»
+_ACT_LISTENER_SEC = 15 * 60
 
 
 def _cap_first(text: str) -> str:
@@ -767,6 +789,92 @@ def _is_plain_yes_no(text: str) -> bool:
     return bool(text) and len(text.split()) <= _CONTINUE_SHORT_ANSWER_MAX_WORDS
 
 
+def _all_trigger_words(bot) -> set:
+    """trigger_words и имена режимов персоны (обращение именем режима — тоже
+    к ней: в группе Telegram она отвечает, имя срезается). Функция, а не
+    только метод: методы BotInstance зовут и на заготовках (SimpleNamespace)
+    в тестах; getattr — бот мог быть собран без __init__."""
+    words = set(getattr(bot, "trigger_words", ()) or ())
+    names = getattr(getattr(bot, "persona", None), "mode_names", None)
+    if callable(names):
+        try:
+            words |= {str(n).lower() for n in names() if str(n).strip()}
+        except Exception:
+            pass
+    return words
+
+
+# Служебные метки из истории, которые модель повторяет в ответе: время
+# реплики и пометка режима (с пробелами вокруг — на их месте абзац)
+_REPLY_TAG_RE = re.compile(
+    r"[ \t]*\[\d{2}\.\d{2}(?:\.\d{4})?\s+\d{1,2}:\d{2}\][ \t]*"
+    r"|[ \t]*\[(?:in your \"[^\"\]\n]{1,60}\" mode|as your usual self)\][ \t]*")
+
+
+def _trigger_mode(bot, key) -> Optional[str]:
+    # Режим чата по триггеру сейчас ("" — обычный); не узнать — None
+    get = getattr(getattr(bot, "persona", None), "trigger_mode", None)
+    if not callable(get):
+        return None
+    try:
+        return str(get(str(key)) or "")
+    except Exception:
+        return None
+
+
+def _note_mode_change(bot, key: str, before: Optional[str]) -> None:
+    """Режим чата сменился — у чата другой аватар (app/api/avatar_modes):
+    событие mode ленте реплик (портрет на столе, виджет телефона) и сигнал
+    вебу (inbox отдаст avatar_mode). Только у веб-персоны."""
+    after = _trigger_mode(bot, key)
+    if before is None or after is None or before == after:
+        return
+    ctx = str(getattr(bot, "context", "") or "")
+    if not ctx.startswith("api_"):
+        return
+    try:
+        from app.api import chat_events, said
+        said.mode_changed(ctx[4:], str(key))
+        chat_events.bump(ctx[4:])
+    except Exception as e:
+        logger.debug(f"[BotInstance] смена режима не отправлена: {e}")
+
+
+def _act_avatar(bot, persona: str, key: str, part: str = "anims") -> str:
+    """Чьи анимации (part «head» — листы и эмоции лица) у портрета чата key:
+    аватара его режима, если у режима они свои (app/api/avatar_modes.resolve),
+    иначе обычные."""
+    mode_for = getattr(getattr(bot, "persona", None), "mode_for", None)
+    if not callable(mode_for):
+        return persona
+    try:
+        from app.api import avatar_modes
+        return avatar_modes.resolve(persona, str(mode_for(user_id=key, chat_id=key) or ""))[part]
+    except Exception:
+        return persona
+
+
+def _observe_mode(bot, key: str, text: str, called_as: Optional[str] = None) -> None:
+    """Реплика пользователя — включить/снять режим персоны по имени или
+    ключевому слову (PersonaLayer.observe_turn). Поломка ход не валит."""
+    observe = getattr(getattr(bot, "persona", None), "observe_turn", None)
+    if not callable(observe):
+        return
+    before = _trigger_mode(bot, key)
+    try:
+        observe(key, text or "", called_as=called_as,
+                base_names=BotInstance._address_names(bot))
+    except Exception as e:
+        logger.warning(f"[BotInstance] Режим персоны не выбран: {e}")
+    _note_mode_change(bot, key, before)
+
+
+def _persona_turn(bot, key: str):
+    # Ход чата key: настройки и промпт без явного чата — его режима
+    scope = getattr(getattr(bot, "persona", None), "turn_scope", None)
+    return scope(key) if callable(scope) else nullcontext()
+
+
 class BotInstance:
 
     # У каждой персоны — свой BotInstance.
@@ -776,6 +884,10 @@ class BotInstance:
         self.persona_name = persona_name
         self.context = context or persona_name
         self.persona = PersonaLayer(persona_name=persona_name)
+        # Режимы персоны по триггеру (имя, ключевое слово, настроение —
+        # app/core/persona_modes): какой включён в каком чате — в данных этого
+        # контекста, рядом с его памятью; память у режимов общая
+        self.persona.bind_mode_state(data_dir(), self.context)
 
         # Гейт «ход пользователя ↔ фоновое сообщение» (app/core/turn_gate.py):
         # общий для API и Telegram — фоновые инициативы/ритм/напоминания/уроки
@@ -958,7 +1070,7 @@ class BotInstance:
         # Memory + Router
         self.memory = MemoryManager(
             stm_size=self.stm_size,
-            enable_ltm_extraction=Config.LTM_EXTRACTION_ENABLED,
+            enable_ltm_extraction=self.features.get('ltm', Config.LTM_EXTRACTION_ENABLED) is True,
             ltm_model_provider=Config.LTM_MODEL_PROVIDER,
             load_stm_from_db=not persona_data.get("fresh_stm", False),
             context=context,
@@ -1101,8 +1213,15 @@ class BotInstance:
 
         # Язык чата без сохранённого значения (первый запуск, новый чат) —
         # по репликам STM
+        # Режим по настроению смотрит на mood чата из state engine
+        self.persona.mood_of = self._chat_mood
         if self.living is not None:
             self.living.get_chat_user_language = self.chat_user_language
+            # Свои эмоции живого лица «по настроению» — и теги mood персоны
+            self.living.get_own_emotions = self._own_emotions
+            # Жизнь тикает только чатам, где пользователь писал недавно
+            # (LIFE_ACTIVE_DAYS) — по метке его реплики, не ответов персоны
+            self.living.get_last_user_activity = self._last_user_message_time
 
         # Напоминания знают о living-состоянии (mood/energy в тексте)
         if self.reminder_manager is not None and self.living is not None:
@@ -1148,15 +1267,13 @@ class BotInstance:
             # manager создастся позже через setup_rhythm(sender)
             logger.info(f"  [{persona_name}] Rhythm (утро/ночь/погода) подготовлен (ожидает sender)")
 
-        # Банк flavor-реплик для CC-команд (AI Mode — «системные» сообщения
-        # без истории/LTM): фоновая генерация, если банк отсутствует или
-        # устарел (хэш system_prompt). Без CC реплики не нужны.
-        if self.computer_control is not None:
-            try:
-                from app.features import flavor_text
-                flavor_text.ensure_flavor_bank(self)
-            except Exception as _fe:
-                logger.debug(f"  [{persona_name}] flavor-банк не запущен: {_fe}")
+        # Ошибки нужны любой персоне; CC-фразы — только при включённом CC.
+        # Режимы и языки готовятся тем же фоновым заданием, без истории/LTM.
+        try:
+            from app.features import flavor_text
+            flavor_text.ensure_flavor_bank(self)
+        except Exception as _fe:
+            logger.debug(f"  [{persona_name}] flavor-банк не запущен: {_fe}")
 
         logger.info(f"  [{persona_name}] BotInstance создан | stm_size={self.stm_size} | features: {list(self.features.keys())}")
 
@@ -1244,10 +1361,118 @@ class BotInstance:
 
     def should_respond(self, text: str) -> bool:
         lower = text.strip().lower()
-        for trigger in self.trigger_words:
+        for trigger in _all_trigger_words(self):
             if lower.startswith(trigger):
                 return True
         return False
+
+    def _all_trigger_words(self) -> set:
+        return _all_trigger_words(self)
+
+    def called_name(self, text: str) -> Optional[str]:
+        """Каким словом-вызовом (trigger_words или имя режима, длиннейшим)
+        начинается реплика. Telegram срезает его до process_message, а режим
+        по имени должен знать, как персону позвали (called_as)."""
+        lower = (text or "").strip().lower()
+        for trigger in sorted(_all_trigger_words(self), key=len, reverse=True):
+            if trigger and lower.startswith(trigger):
+                return trigger
+        return None
+
+    def _chat_mood(self, chat_key) -> Optional[dict]:
+        # Настроение персоны в чате (state engine) — для режимов по mood;
+        # слоя состояния нет — None
+        living = getattr(self, "living", None)
+        engine = getattr(living, "state_engine", None) if living is not None else None
+        if engine is None or not getattr(getattr(living, "config", None), "state_enabled", True):
+            return None
+        peek = getattr(engine, "peek_mood", None)
+        return peek(str(chat_key)) if callable(peek) else None
+
+
+    def mode_command(self, chat_key: str, args: str = "", lang: str = "ru") -> str:
+        """«/mode» (веб и Telegram): список режимов и текущий; «/mode X» —
+        включить вручную, «/mode off» — обычный, «/mode auto» — снова по
+        триггерам. Сменился режим — и аватар (_note_mode_change)."""
+        before = _trigger_mode(self, chat_key)
+        try:
+            return self._mode_command(chat_key, args, lang)
+        finally:
+            _note_mode_change(self, str(chat_key), before)
+
+    def _mode_command(self, chat_key: str, args: str, lang: str) -> str:
+        from app.core.persona_modes import norm
+        persona = self.persona
+        en = lang == "en"
+        triggers = persona._triggers() if hasattr(persona, "_triggers") else {}
+        if not triggers:
+            return (f"This persona has no modes. Put <mode>.yaml files with their own "
+                    f"system_prompt and triggers into the {self.persona_name}_modes/ "
+                    "folder next to its YAML." if en else
+                    "У персоны нет режимов. Файлы <режим>.yaml со своим system_prompt "
+                    f"и triggers — в папку {self.persona_name}_modes/ рядом с её YAML.")
+        key = str(chat_key)
+        arg = norm(args)
+        if arg in ("off", "base", "normal", "обычный", "обычная", "выкл"):
+            persona.set_mode(key, "")
+            return ("Usual mode on — until a name or keyword switches it (/mode auto — "
+                    "let the mood decide too)." if en else
+                    "Обычный режим — пока его не сменит имя или ключевое слово "
+                    "(/mode auto — пусть решает и настроение).")
+        if arg in ("auto", "авто"):
+            persona.set_mode(key, None)
+            return ("Modes switch by their triggers again." if en
+                    else "Режимы снова включаются по своим триггерам.")
+        if arg:
+            mode = next((m for m in triggers if norm(m) == arg or norm(persona.mode_label(m)) == arg
+                         or arg in triggers[m].names), None)
+            if mode is None:
+                known = ", ".join(triggers)
+                return (f"No mode “{args.strip()}”. Modes: {known}." if en
+                        else f"Нет режима «{args.strip()}». Есть: {known}.")
+            persona.set_mode(key, mode)
+            label = persona.mode_label(mode)
+            return (f"Mode “{label}” on — until another trigger or /mode off." if en
+                    else f"Режим «{label}» включён — до другого триггера или /mode off.")
+
+        lines = ["Persona modes:" if en else "Режимы персоны:"]
+        for mode, t in triggers.items():
+            parts = []
+            if t.names:
+                parts.append(("name: " if en else "имя: ") + ", ".join(t.names))
+            if t.keywords:
+                parts.append(("words: " if en else "слова: ") + ", ".join(t.keywords))
+            if t.mood:
+                mood = ", ".join(t.mood.tags) if t.mood.tags else ""
+                parts.append(("mood" if en else "настроение") + (f": {mood}" if mood else ""))
+            label = persona.mode_label(mode)
+            head = f"• {mode}" + (f" — {label}" if label != mode else "")
+            lines.append(head + (f" ({'; '.join(parts)})" if parts
+                                 else (" (only via /mode)" if en else " (только через /mode)")))
+        current = persona.trigger_mode(key)
+        if current:
+            info = persona.mode_since(key)
+            via = info.get("via") if info.get("mode") == current else "mood"
+            how = {"name": ("by name", "по имени"), "keyword": ("by keyword", "по ключевому слову"),
+                   "manual": ("manually", "вручную"), "mood": ("by mood", "по настроению")}
+            how_txt = how.get(via, how["mood"])[0 if en else 1]
+            until = info.get("until") if info.get("mode") == current else None
+            tail = ""
+            if until and not info.get("once"):
+                tail = (", until " if en else ", до ") + timeutil.from_ts(float(until)).strftime("%H:%M")
+            elif info.get("once"):
+                tail = ", for one message" if en else ", на одну реплику"
+            label = persona.mode_label(current)
+            lines.append((f"Now: “{label}” ({how_txt}{tail})." if en
+                          else f"Сейчас: «{label}» ({how_txt}{tail})."))
+        else:
+            manual = persona.manual_mode(key) == ""
+            lines.append(("Now: usual" + (" (chosen manually)." if manual else ".")) if en
+                         else ("Сейчас: обычный" + (" (выбран вручную)." if manual else ".")))
+        lines.append("/mode <mode> — switch on, /mode off — usual, /mode auto — by triggers."
+                     if en else
+                     "/mode <режим> — включить, /mode off — обычный, /mode auto — снова по триггерам.")
+        return "\n".join(lines)
 
     def _web_race_enabled(self) -> bool:
         """Поиск гонкой AI Mode + DDG. features.web_search_ai_mode: явный
@@ -1271,15 +1496,37 @@ class BotInstance:
             ddg_search=lambda q: self._search_web(q, *search_args[1:],
                                                   fetch_pages=False))
 
+    def _search_plan(self, user_input: str, raw_user_text: Optional[str],
+                     rewritten: str) -> Tuple[Optional[str], str, str]:
+        """Веб-поиск хода → (причина НЕ искать или None, текст для гейта,
+        запрос к поиску).
+
+        Только по словам человека: у фото, кадра камеры/устройства, снимка
+        экрана и файла user_input — составной текст с описанием/OCR («что
+        видит робот?\\nThe user asked you to look through…»), он не запрос к
+        Google; подписи нет — искать нечего ('no_text'). Обычный текст —
+        переписанный запрос (rewritten), как раньше.
+        Гейт: по умолчанию белый список (явная просьба найти, вопрос о
+        внешнем/свежем); пункт «Экономии нейронки» search_every_message — как
+        раньше, всё, кроме связок и вопросов о персоне."""
+        composite = raw_user_text is not None and raw_user_text != user_input
+        text = (raw_user_text or "").strip() if composite else (user_input or "")
+        query = text if composite else rewritten
+        if composite and not text:
+            return "no_text", text, query
+        return (search_gate_reason(
+            text, self._address_names(),
+            every_message=llm_economy.enabled("search_every_message")), text, query)
+
     def _reminder_names(self) -> list:
         # Обращения к персоне для разбора напоминаний и дел: «Лира, напомни…»
         # — без имени в тексте напоминания
         return sorted({str(n).strip().lower() for n in self._address_names() if str(n).strip()})
 
     def _address_names(self) -> set:
-        # Как к персоне обращаются: trigger_words + id + имя из YAML.
-        # getattr — бот мог быть собран без __init__ (тестовые заготовки)
-        names = set(getattr(self, "trigger_words", ()) or ())
+        # Как к персоне обращаются: trigger_words и имена режимов + id + имя
+        # из YAML. getattr — бот мог быть собран без __init__ (заготовки)
+        names = _all_trigger_words(self)
         if getattr(self, "persona_name", None):
             names.add(self.persona_name)
         display = (getattr(getattr(self, "persona", None), "persona_data", None)
@@ -1290,7 +1537,7 @@ class BotInstance:
 
     def strip_trigger(self, text: str) -> str:
         lower = text.strip().lower()
-        for trigger in sorted(self.trigger_words, key=len, reverse=True):
+        for trigger in sorted(_all_trigger_words(self), key=len, reverse=True):
             if lower.startswith(trigger):
                 return text.strip()[len(trigger):].strip().lstrip(",.!?:; ")
         return text
@@ -1376,12 +1623,155 @@ class BotInstance:
             return False
         return self.is_owner(user_id)
 
+    def phone_control_allowed(self, user_id: str, chat_id=None) -> bool:
+        """Управление экраном телефона (app/features/phone_control): тот же
+        гейт, что у режима управления (владелец или allowlist), не из скина,
+        не в ходе команды, уже исполненной телефоном, и в Telegram — не в
+        группе (экран телефона увидели бы все). features.phone_control:
+        false — выключено у персоны."""
+        if getattr(self, "features", {}).get("phone_control", True) is False:
+            return False
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
+            return False
+        chat = str(chat_id or "")
+        if not getattr(self, "web_single_user", False) and chat.startswith("-"):
+            return False
+        return self._cc_user_allowed(user_id)
+
+    def phone_mode_on(self, chat_id) -> bool:
+        """Режим управления телефоном в чате (app/features/phone_control)."""
+        try:
+            from app.features import phone_control
+            return phone_control.mode_on(str(chat_id or ""))
+        except Exception:
+            return False
+
+    def _phone_control_turn(self, text: str, user_id: str, chat_id,
+                            lang: Optional[str]) -> Optional[dict]:
+        """Реплика экрану телефона → {"reply"} | {"note"} | None (не ему)."""
+        if not text or not self.phone_control_allowed(user_id, chat_id):
+            return None
+        from app.features import phone_control
+        key = str(chat_id or user_id or "")
+        if not key:
+            return None
+        waiting = phone_control.has_pending(key)
+        mode_phrase = phone_control.parse_mode(text, self._address_names())
+        if not (waiting or mode_phrase or phone_control.mode_on(key)
+                or phone_control.mentions_phone(text)):
+            return None
+        # Подтверждение режима управления компьютером, ждущее ответа, — новее
+        # нашего вопроса (наш при создании гасит его, см. ниже): «да» — ему
+        cc = getattr(self, "computer_control", None)
+        foreign = False
+        if waiting and cc is not None:
+            try:
+                foreign = cc.get_pending(chat_id, user_id=user_id) is not None
+            except Exception:
+                foreign = False
+        cc_available = cc is not None and self._cc_allowed(user_id, chat_id)
+        try:
+            res = phone_control.turn(text, key, user_id, lang, names=self._address_names(),
+                                     foreign_pending=foreign, cc_available=cc_available)
+        except Exception:
+            logger.exception("[BotInstance] экран телефона: сбой хода")
+            return None
+        if res is None and mode_phrase == "on":
+            # «Включи режим управления» без телефона на связи — режим
+            # компьютера, как раньше; режим телефона (если был) снимаем
+            phone_control.set_mode(key, False)
+        if res is not None and cc is not None and phone_control.has_pending(key):
+            # Наш вопрос стал последним в чате: старое «да» режима управления
+            # компьютером больше не получает
+            try:
+                cc.clear_pending(chat_id)
+            except Exception:
+                pass
+        return res
+
     @staticmethod
     def _file_talk(text: Optional[str], reply_context: Optional[str] = None) -> bool:
         """Реплика про файлы и папки компьютера (или ответ на служебное
         сообщение про них) — модели нужна заметка, что сама она их не видит."""
         from app.features.file_finder import looks_like_file_talk
         return looks_like_file_talk(text or "") or looks_like_file_talk(reply_context or "")
+
+    def _device_body_turn(self, text, user_id, chat_id, lang=None):
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
+            return None
+        from app.features import device_body
+        request = device_body.find_request(text, getattr(self, 'persona_name', None), self._address_names())
+        if request is None:
+            return None
+        if not self._cc_allowed(user_id, chat_id):
+            return device_body.denied(lang)
+        return device_body.execute(request, lang)
+
+    def _device_power_turn(self, text, user_id, chat_id, lang=None):
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
+            return None
+        from app.features import device_power
+        request = device_power.find_request(text, self._address_names(), getattr(self, 'persona_name', None))
+        if request is None:
+            return None
+        if not self._cc_allowed(user_id, chat_id):
+            return device_power.denied(lang)
+        return device_power.execute(request, lang)
+
+    def _device_head_turn(self, text, user_id, chat_id, lang=None):
+        # Same owner/allowlist as computer control. No skin/phone/OCR actions.
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
+            return None
+        from app.features import device_head
+        request = device_head.find_request(text, self._address_names(), getattr(self, 'persona_name', None))
+        if request is None:
+            return None
+        if not self._cc_allowed(user_id, chat_id):
+            return device_head.denied(lang)
+        return device_head.execute(request, lang)
+
+    def _music_player_turn(self, text, user_id, chat_id, lang=None):
+        """Explicit human song requests, before file/CC parsers; owner only."""
+        if (not text or not self.is_owner(user_id)
+                or getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False)
+                or str(chat_id or "").startswith("-")
+                or getattr(self, "features", {}).get("music_player", True) is False):
+            return None
+        from app.features import music_player
+        from app.features.music_browser import MusicBrowserError
+        scenario = getattr(self, "scenario_manager", None)
+        if scenario and scenario.recording(chat_id):
+            return None
+        clean = self._cc_command_text(text)
+        control = music_player.parse_control(clean)
+        task = getattr(self, "task_agent", None)
+        busy_dialog = bool(scenario and scenario.active(chat_id))
+        busy_dialog = busy_dialog or bool(task and task.active(chat_id or user_id))
+        if busy_dialog and (not control or not control[1]):
+            return None
+        cc = getattr(self, "computer_control", None)
+        reserved = [key for table in ("apps", "tasks", "sites") for key in (getattr(cc, table, {}) or {})]
+        playlist = music_player.parse_playlist_request(clean)
+        request = music_player.parse_request(clean, reserved) if not control else None
+        if request is None and control is None and playlist is None:
+            return None
+        try:
+            if playlist:
+                result = music_player.playlist_from_chat(playlist)
+                return music_player.reply(result, lang) if result is not None else None
+            if control:
+                result = music_player.control_from_chat(control[0])
+                if not result.get("running") and not control[1]:
+                    return None
+                return music_player.control_reply(control[0], result, lang)
+            result = music_player.play_from_chat(request.query, request.provider,
+                local_first=request.local_first and self.file_access_allowed(user_id, chat_id))
+            return music_player.reply(result, lang)
+        except MusicBrowserError as e:
+            return ("Could not play music: " if lang == "en" else "Не удалось включить музыку: ") + str(e)
+        except Exception:
+            logger.exception("[MusicPlayer] playback command failed")
+            return "Could not play music on the PC." if lang == "en" else "Не удалось включить музыку на ПК. Проверьте плеер."
 
     def _file_access(self):
         # Менеджер хода «файл с компьютера» — лениво: заготовки без __init__
@@ -1925,6 +2315,31 @@ class BotInstance:
 
     # Main processing
 
+    def lore_search(self, query: str, previous: str = "",
+                    light: bool = False) -> lore.LoreResult:
+        # Поиск по лору персоны — один на ход и на проверку из вкладки «Лор»
+        data = getattr(self.persona, "persona_data", None) or {}
+        name = str(data.get("name") or self.persona_name).split("(")[0].strip()
+        return lore.store_for(self.persona_name).search(
+            query, previous=previous, name=name,
+            names=[name, *_all_trigger_words(self)],
+            limit=lore.LIGHT_LIMIT if light else lore.LIMIT)
+
+    def _lore_block(self, query: str, history, light: bool) -> Optional[str]:
+        # Блок лора на ход. Текст реплики в лог не идёт (режим управления,
+        # приватные чаты), поломка поиска ответу не мешает
+        try:
+            result = self.lore_search(query, lore.previous_turn(history), light)
+            if result.skipped == "no_lore":
+                return None
+            logger.info(f"[Lore] {self.persona_name}: кусков {len(result.hits)}"
+                        f"{', слабо' if result.weak else ''}"
+                        f"{f', без поиска ({result.skipped})' if result.skipped else ''}")
+            return lore.build_block(result)
+        except Exception as e:
+            logger.warning(f"[Lore] {self.persona_name}: поиск не удался: {e}")
+            return None
+
     def control_mode_on(self, chat_id) -> bool:
         # Включён ли режим управления (computer control) для чата.
         # Простой дольше idle_exit_min гасит режим здесь же (лениво, при
@@ -2170,11 +2585,25 @@ class BotInstance:
         """Вопрос «Режим управления выключен — включить и выполнить «X»?»;
         ответ на него ловит _cc_mode_offer_turn следующим ходом."""
         from app.features import cc_texts
-        question = cc_texts.t("cc_mode_offer", lang, cmd=cc_texts.clip(cmd, 80))
+        # Команду может выполнить и телефон (app/features/phone_control) —
+        # спрашиваем, где: «1. На компьютере 2. На телефоне «…»»
+        phone = None
+        if self.phone_control_allowed(user_id, chat_id):
+            try:
+                from app.features import phone_control
+                phone = phone_control.offer_phone(cmd, self._address_names())
+            except Exception as e:
+                logger.debug(f"[BotInstance] телефон для «включить и выполнить?»: {e}")
+        if phone:
+            question = cc_texts.t("cc_mode_offer_where", lang, cmd=cc_texts.clip(cmd, 80),
+                                  phone=phone)
+        else:
+            question = cc_texts.t("cc_mode_offer", lang, cmd=cc_texts.clip(cmd, 80))
         offers = getattr(self, "list_offers", None)
         if offers is not None:
             offers.begin(chat_id, "cc_mode", cmd, user_id=user_id,
-                         user_name=user_name or "", question=question)
+                         user_name=user_name or "", question=question,
+                         extra={"phone": phone} if phone else None)
         logger.info(f"[BotInstance] команда браузеру вне режима управления — "
                     f"предложено включить (chat {chat_id})")
         return question
@@ -2192,13 +2621,45 @@ class BotInstance:
         if time.time() - asked > self._CC_OFFER_TTL_SEC \
                 or self._bot_asked_since(chat_id, asked):
             return None
-        verdict = list_offers.classify_reply("cc_mode", raw_text or "",
-                                             self._address_names())
+        from app.features import cc_texts
+        phone = (offer.get("extra") or {}).get("phone")
+        if phone:
+            # Вопрос «Где выполнить? 1. На компьютере 2. На телефоне»
+            from app.features import phone_control
+            choice = phone_control.where_choice(raw_text or "", self._address_names())
+            if choice == "phone" and self.phone_control_allowed(user_id, chat_id):
+                logger.info(f"[BotInstance] «где выполнить?» → телефон (chat {chat_id})")
+                reply = phone_control.run_in_mode(str(offer.get("value") or ""), mode_key,
+                                                  user_id, lang, self._address_names())
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                self.memory.add_message("assistant", reply, user_id, chat_id)
+                if self.proactive and chat_id:
+                    self.proactive.record_user_response(chat_id)
+                return reply
+            if choice == "pc":
+                verdict = "YES"
+            else:
+                verdict = list_offers.classify_reply("cc_mode", raw_text or "",
+                                                     self._address_names())
+                if verdict == "YES":
+                    # «Да» на «где?» — не выбор: спросим ещё раз, вопрос остаётся
+                    offers = getattr(self, "list_offers", None)
+                    if offers is not None:
+                        offers.begin(chat_id, "cc_mode", offer.get("value"), user_id=user_id,
+                                     user_name=user_name or "",
+                                     question=offer.get("question") or "",
+                                     extra=offer.get("extra"))
+                    reply = cc_texts.t("cc_mode_offer_where_again", lang)
+                    self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                    self.memory.add_message("assistant", reply, user_id, chat_id)
+                    return reply
+        else:
+            verdict = list_offers.classify_reply("cc_mode", raw_text or "",
+                                                 self._address_names())
         logger.info(f"[BotInstance] ответ на «включить режим управления?» "
                     f"(chat {chat_id}): {verdict or 'не ответ'}")
         if verdict not in ("YES", "NO"):
             return None
-        from app.features import cc_texts
         prefix = None
         if verdict == "NO":
             reply = cc_texts.t("cc_mode_offer_declined", lang)
@@ -2273,6 +2734,15 @@ class BotInstance:
             opts = fa.answer_options(key, user_id)
             if opts:
                 return opts
+        # Вопросы экрана телефона («Где управлять?», «Нажать «X»?», «Какое?»)
+        if key:
+            try:
+                from app.features import phone_control
+                opts = phone_control.answer_options(key, user_id)
+                if opts:
+                    return opts
+            except Exception as e:
+                logger.debug(f"[BotInstance] кнопки телефона: {e}")
         cc = getattr(self, "computer_control", None)
         if not key or cc is None:
             return None
@@ -2283,6 +2753,16 @@ class BotInstance:
                 and time.time() - float(cur.get("asked_at") or 0) <= self._CC_OFFER_TTL_SEC \
                 and (not user_id or not cur.get("user_id")
                      or str(cur.get("user_id")) == str(user_id)):
+            phone = (cur.get("extra") or {}).get("phone")
+            if phone:
+                # «Где выполнить?» — кнопки и вне режима управления (scope phone)
+                from app.features import cc_texts
+                lang = detect_language(cur.get("question") or "")
+                return {"kind": "options", "scope": "phone", "options": [
+                    {"label": cc_texts.t("cc_mode_offer_where_pc", lang), "send": "1"},
+                    {"label": cc_texts.t("cc_mode_offer_where_phone", lang, phone=phone),
+                     "send": "2"},
+                    {"role": "no"}]}
             return {"kind": "yesno", "options": [{"role": "yes"}, {"role": "no"}]}
         try:
             if not self.control_mode_on(key):
@@ -2325,6 +2805,19 @@ class BotInstance:
         except Exception as e:
             logger.debug(f"[BotInstance] карточка задачи не собралась: {e}")
             return None
+
+    def cc_task_lines(self, chat_id) -> frozenset:
+        """Строки хода из журнала карточки задачи чата (TaskAgent.log_lines):
+        ими начинается итоговый ответ хода — облачко портрета их не
+        повторяет, как и пузырь веба. Только чтение."""
+        ta = getattr(self, "task_agent", None)
+        if ta is None or not chat_id:
+            return frozenset()
+        try:
+            return ta.log_lines(str(chat_id))
+        except Exception as e:
+            logger.debug(f"[BotInstance] журнал карточки задачи: {e}")
+            return frozenset()
 
     def cc_turn_enter(self, text: str, user_id, chat_id):
         """Вызывается платформой ДО ожидания лока чата (Telegram/веб).
@@ -2695,6 +3188,11 @@ class BotInstance:
             def _notify(text: str, _s=sender, _l=loop):
                 try:
                     kw = {"topic_id": topic} if topic else {}
+                    if getattr(_s, "supports_kinds", False):
+                        # Веб: строки хода показывает карточка задачи — во
+                        # входящие (уведомления) они не идут, только в
+                        # историю ниже (app/api/inbox.KIND_PROGRESS)
+                        kw["kind"] = "progress"
                     asyncio.run_coroutine_threadsafe(
                         _s.send_message(str(chat_id), text, **kw), _l
                     ).result(timeout=15)
@@ -3564,7 +4062,9 @@ class BotInstance:
                         raw_user_text: Optional[str] = None,
                         from_skin: bool = False,
                         turn_note: Optional[str] = None,
-                        file_delivery: Optional[str] = None) -> str:
+                        file_delivery: Optional[str] = None,
+                        spoken: bool = False,
+                        called_as: Optional[str] = None) -> str:
         """Обработка сообщения; парная к START строка END — по её наличию в
         логе видно, дошла ли генерация до конца и сколько заняла (без неё
         не отличить «ответ сгенерирован, но не доставлен» от «завис»).
@@ -3575,7 +4075,11 @@ class BotInstance:
         системный блок промпта, реплика пользователя и STM — без неё.
         file_delivery — что канал сделает с файлом по «открой/пришли файл X»
         (app/features/file_access): "open" — веб на компьютере ядра,
-        "send" — телефон и Telegram; None — канал файлы не обслуживает."""
+        "send" — телефон и Telegram; None — канал файлы не обслуживает.
+        spoken — реплика сказана голосом и ответ прозвучит (голосовая
+        активация): заметка в промпт — коротко, как в разговоре.
+        called_as — каким именем персону позвали, если из текста его срезали
+        (голос, Telegram): имя режима включает режим (app/core/persona_modes)."""
         t0 = time.monotonic()
         # Вложенный вызов внутри хода из скина (агент задач передаёт реплику
         # дальше) флаг не снимает: возвращаем прежнее значение, а не False
@@ -3592,19 +4096,29 @@ class BotInstance:
             # Область диалога — свой тред веб-чата у этого чата (иначе сайт
             # показал бы модели промпты других чатов персоны)
             _cc = getattr(self, "computer_control", None)
+            # Режим персоны этого чата — до хода: имя режима или ключевое
+            # слово в реплике его включают, промпт и настройки хода — его
+            _key = self.stm_key(chat_id, user_id)
+            _observe_mode(self, _key, raw_user_text if raw_user_text is not None else user_input,
+                          called_as)
             with self.user_turn(self.stm_key(chat_id, user_id)), (
                     _cc.chat_scope(chat_id or user_id)
                     if _cc is not None and hasattr(_cc, "chat_scope")
                     else nullcontext()), \
-                    dialog_scope(self.stm_key(chat_id, user_id)):
+                    dialog_scope(self.stm_key(chat_id, user_id)), \
+                    _persona_turn(self, _key):
                 reply = self._process_message_impl(
                     user_input, user_id=user_id, chat_id=chat_id, user_name=user_name,
                     reply_context=reply_context,
                     reply_to_bot_message_id=reply_to_bot_message_id,
                     on_token=on_token, raw_user_text=raw_user_text,
                     from_skin=_SKIN_TURN.on, turn_note=turn_note,
-                    file_delivery=file_delivery,
+                    file_delivery=file_delivery, spoken=spoken,
                 )
+        except turn_cancel.TurnCancelled as e:
+            logger.info(f"[BotInstance] process_message END (ход отменён: {e}): "
+                        f"{time.monotonic() - t0:.1f}s | chat_id={chat_id}")
+            raise
         except BaseException:
             logger.info(f"[BotInstance] process_message END (исключение): "
                         f"{time.monotonic() - t0:.1f}s | chat_id={chat_id}")
@@ -3612,9 +4126,14 @@ class BotInstance:
         finally:
             _SKIN_TURN.on = prev_skin
             _PHONE_TURN.on = prev_phone
+        # Кто отвечал — в той же строке: долгий ход без неё не объяснить
+        # (провайдер потоко-локальный — этот поток его и писал)
+        provider = getattr(getattr(self, "router", None), "_last_provider", None)
         logger.info(
             f"[BotInstance] process_message END: {time.monotonic() - t0:.1f}s | "
-            f"ответ {len(reply) if isinstance(reply, str) else 'нет'} симв. | chat_id={chat_id}"
+            f"ответ {len(reply) if isinstance(reply, str) else 'нет'} симв. | "
+            + (f"{provider} | " if isinstance(provider, str) and provider else "")
+            + (f"голосом | " if spoken else "") + f"chat_id={chat_id}"
         )
         return reply
 
@@ -3626,7 +4145,8 @@ class BotInstance:
                               raw_user_text: Optional[str] = None,
                               from_skin: bool = False,
                               turn_note: Optional[str] = None,
-                              file_delivery: Optional[str] = None) -> str:
+                              file_delivery: Optional[str] = None,
+                              spoken: bool = False) -> str:
         from app.features import side_tasks
 
         # Что пользователь реально НАПИСАЛ (текст сообщения/подпись), в отличие
@@ -3787,6 +4307,29 @@ class BotInstance:
             if self.proactive:
                 self.proactive.record_user_response(chat_id)
             return _skin_reply
+        # Экран телефона (app/features/phone_control): «на телефоне нажми …»,
+        # «телефон, назад», «что на экране телефона?» — раньше режима
+        # управления: обращение к телефону явное, и «нажми «Далее»» с ним —
+        # не компьютеру. Ответ готов — без модели; «что на экране» — заметка
+        # персоне, компьютер в этом ходе не трогается (_PHONE_TURN)
+        _phone = self._phone_control_turn(raw_user_text, user_id, chat_id, turn_lang)
+        if _phone is not None and _phone.get("cc_on"):
+            # «Режим управления компьютером» или выбор «Компьютер» на «Где
+            # управлять?» — обычное включение режима ниже
+            raw_user_text = "включи режим управления"
+            _phone = None
+        if _phone is not None:
+            if _phone.get("phone_mode") and cc_mode_key and self.control_mode_on(cc_mode_key):
+                # Режимы взаимоисключающие: телефон включён — компьютер гасим
+                self._control_mode_switch(cc_mode_key, False, lang=turn_lang)
+            if "reply" in _phone:
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                self.memory.add_message("assistant", _phone["reply"], user_id, chat_id)
+                if self.proactive:
+                    self.proactive.record_user_response(chat_id)
+                return _phone["reply"]
+            turn_note = "\n\n".join(x for x in (turn_note, _phone.get("note")) if x)
+            _PHONE_TURN.on = True
         if cc_mode_key and self._cc_allowed(user_id, chat_id):
             _mode = parse_control_mode(raw_user_text)
             # Новый ход: «стоп» прошлого хода отработал, флаг снимаем.
@@ -3824,6 +4367,57 @@ class BotInstance:
             if _co_reply is not None:
                 return _co_reply
 
+        _body = (self._device_body_turn(raw_user_text, user_id, chat_id, turn_lang)
+                 if not from_skin and not turn_note else None)
+        if _body is not None:
+            self.memory.add_message('user', raw_user_text, user_id, chat_id, user_name)
+            self.memory.add_message('assistant', _body, user_id, chat_id)
+            if self.proactive:
+                self.proactive.record_user_response(chat_id)
+            return _body
+
+        # Shutdown only from literal human text, never OCR, skin or phone results.
+        _power = (self._device_power_turn(raw_user_text, user_id, chat_id, turn_lang)
+                  if not from_skin and not turn_note else None)
+        if _power is not None:
+            self.memory.add_message('user', raw_user_text, user_id, chat_id, user_name)
+            self.memory.add_message('assistant', _power, user_id, chat_id)
+            if self.proactive:
+                self.proactive.record_user_response(chat_id)
+            return _power
+
+        # Direct channels (e.g. Telegram) have no API image-preparation step.
+        # API-prepared input differs from raw text, so it is never captured twice.
+        if (user_input == raw_user_text and not from_skin and not turn_note
+                and not self.control_mode_on(cc_mode_key)):
+            from app.features import device_gaze, device_head, screen_look
+            _gaze = device_gaze.find_request(raw_user_text, self._address_names(), getattr(self, 'persona_name', None))
+            if _gaze is not None:
+                _gaze_error = None
+                if not self._cc_allowed(user_id, chat_id):
+                    _gaze_error = device_head.denied(turn_lang)
+                else:
+                    try:
+                        user_input, _ = device_gaze.capture_input(
+                            getattr(self, '_local_router', None), _gaze, raw_user_text, turn_lang,
+                            on_shot=lambda shot: self.add_pending_photo(chat_id, shot, device_gaze.caption(_gaze)))
+                    except screen_look.ScreenLookError as error:
+                        _gaze_error = str(error)
+                if _gaze_error is not None:
+                    self.memory.add_message('user', raw_user_text, user_id, chat_id, user_name)
+                    self.memory.add_message('assistant', _gaze_error, user_id, chat_id)
+                    return _gaze_error
+
+        # An explicit human request to the physical robot: before browser/LLM routing.
+        _head = (self._device_head_turn(raw_user_text, user_id, chat_id, turn_lang)
+                 if not from_skin and not turn_note else None)
+        if _head is not None:
+            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            self.memory.add_message("assistant", _head, user_id, chat_id)
+            if self.proactive:
+                self.proactive.record_user_response(chat_id)
+            return _head
+
         # «почини браузер» — rescue пула H: веб-чаты перезапускаются в
         # видимом Chrome, чтобы пользователь прошёл капчу руками. Тоже
         # только для авторизованных — иначе кто угодно в чате мог бы поднять
@@ -3850,6 +4444,16 @@ class BotInstance:
                 _wl.finish_idle_rescue()
             except Exception:
                 pass
+
+        # Music gets only explicit playback targets; mode/UI/app commands stay
+        # with their existing handlers. Raw human text only, never OCR/file text.
+        _music = self._music_player_turn(raw_user_text, user_id, chat_id, turn_lang)
+        if _music is not None:
+            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            self.memory.add_message("assistant", _music, user_id, chat_id)
+            if self.proactive:
+                self.proactive.record_user_response(chat_id)
+            return _music
 
         # «Открой файл X» / «пришли файл про Y» — файл с компьютера ядра
         # (app/features/file_access). Раньше режима управления: там «открой
@@ -4369,10 +4973,11 @@ class BotInstance:
         # самой персоне («что сегодня делал?») внешних данных не требуют —
         # поиск по имени персоны как по обычному слову увёл бы фокус ответа
         # на выдачу (SOURCE PRIORITY) вместо дневника персоны
-        search_skip = search_skip_reason(user_input, self._address_names())
+        search_skip, search_text, search_query = self._search_plan(
+            user_input, raw_user_text, ru_rewritten)
         if search_skip and getattr(self, "_web_search_enabled", False):
             logger.info(f"[BotInstance] веб-поиск пропущен ({search_skip}): "
-                        + input_for_log(user_input, control_mode_active(
+                        + input_for_log(search_text, control_mode_active(
                             self, chat_id or user_id)))
         if (self._web_search_enabled and chat_id not in self._web_search_disabled_chats
                 and not self._is_docs_only_request(user_input)
@@ -4387,7 +4992,7 @@ class BotInstance:
             persona_context = self._get_persona_context_for_search()
             # Берём последние 6 сообщений для контекста
             history_for_search = self.memory.stm.get_last(6, chat_id=chat_id)
-            search_args = (ru_rewritten, 5,
+            search_args = (search_query, 5,
                            side_tasks.search_enhance_enabled(self), None,
                            history_for_search, persona_context,
                            side_tasks.translate_verify_enabled(self))
@@ -4436,7 +5041,7 @@ class BotInstance:
                     if full_text:
                         file_context = f"Full text of the uploaded document:\n{full_text}"
                 else:
-                    file_chunks = self.file_db.search(user_id=user_id, query=user_input, limit=5)
+                    file_chunks = self.file_db.search(user_id=user_id, query=user_input, limit=12)
                     if file_chunks:
                         file_context = "Context from uploaded files:\n" + "\n---\n".join(file_chunks)
             web_context = None
@@ -4948,10 +5553,19 @@ class BotInstance:
                     addon_results[addon.name] = res
                     if res is not None and res.prompt_block:
                         addon_blocks.append(res.prompt_block)
+            # Лор персоны: куски к реплике, в light-режиме — меньше. В режиме
+            # управления реплики — команды, вспоминать нечего
+            if not (chat_id and self.control_mode_on(chat_id)):
+                lore_block = self._lore_block(ru_rewritten, stm_messages, light_mode)
+                if lore_block:
+                    addon_blocks.append(lore_block)
             # Итог команды, исполненной телефоном, — и в light-режиме: без
             # него персона «поставит будильник» на словах или откажется
             if turn_note:
                 addon_blocks.append(turn_note)
+            # Ответ прозвучит вслух — коротко, как в разговоре (и в light-режиме)
+            if spoken:
+                addon_blocks.append(SPOKEN_REPLY_NOTE)
             # Сервисы: итог просьбы и подробности недавнего уведомления — и в
             # light-режиме: без них персона ответит про почту наугад
             if services_req is not None:
@@ -4967,6 +5581,19 @@ class BotInstance:
                     logger.debug(f"[BotInstance] блок недавних уведомлений: {e}")
                 if recent:
                     addon_blocks.append(recent)
+            # Портрет на рабочем столе с анимациями, которые персона может
+            # выбрать сама (маркер [ACT:имя]): нота — только пока портрет
+            # слушает ленту этого чата; в light-режиме — нет (слабая модель
+            # путается в маркерах)
+            if not light_mode:
+                body = self._act_note(user_id, chat_id)
+                if body:
+                    addon_blocks.append(body)
+                # Живое лицо (портрет на столе, голосовой режим, PiP) с
+                # эмоциями — маркер [EMO:имя]
+                face = self._emo_note(user_id, chat_id)
+                if face:
+                    addon_blocks.append(face)
             # О файлах говорят, но поиск файлов реплику не взял: модель сама
             # файлов не видит — без заметки «открывает» их на словах
             if self._file_talk(raw_user_text, reply_context):
@@ -5020,7 +5647,8 @@ class BotInstance:
                 living_context=living_context,
                 help_style_context=help_style_block,
                 conversation_style_context=conv_style_note,
-                computer_control_context=cc_prompt
+                computer_control_context=cc_prompt,
+                chat_id=chat_id,
             )
             settings = self.persona.get_settings()
             # Когда есть учебный контекст (анонс/пересказ урока, фидбек) — ответ выходит
@@ -5037,6 +5665,11 @@ class BotInstance:
                 # 1200 токенов не давит на контекст.
                 settings = dict(settings)
                 settings["max_tokens"] = min(int(settings.get("max_tokens", 2000)), 1200)
+            if spoken:
+                # Ответ прозвучит: потолок длины (веб-чату — словами в промпт,
+                # app/core/reply_length)
+                settings = dict(settings)
+                settings["max_tokens"] = min(int(settings.get("max_tokens", 2000)), SPOKEN_MAX_TOKENS)
             # Стриминг (on_token задан): токены уходят подписчику сырыми,
             # финальный ответ после _clean_response/маркеров возвращается как обычно.
             # Веб/API сюда не передаёт on_token — /api/chat/stream сам «печатает»
@@ -5047,9 +5680,13 @@ class BotInstance:
             else:
                 answer = self.router.get_response(
                     messages, **settings)
+            # Отменили, пока сайт дописывал (веб-чат не оборвать) — ответ
+            # выбрасываем, в историю он не ляжет
+            turn_cancel.check()
             if not answer:
                 logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
-                return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
+                return self._pipeline_failure_reply(
+                    user_id, chat_id, kind="models_unavailable", lang=turn_lang)
 
             # Защита от обрыва по max_tokens (persona.get_settings() рассчитан на обычную
             # реплику; когда learning_context просит анонсировать/пересказать урок, ответ
@@ -5061,7 +5698,10 @@ class BotInstance:
             # продолжения выдаёт новую вариацию ответа — склейка даёт дубли.
             _webchat_answered = str(getattr(self.router, "_last_provider", "") or "").startswith("webchat")
             _continuations = 0
-            while not (light_mode or _webchat_answered) and _looks_truncated(answer) and _continuations < 2:
+            # Голосом — тоже: «продолжи» удваивало и утраивало минуты ожидания
+            # (8 тыс. знаков при лимите 1500); оборванное срезаем ниже
+            while not (light_mode or _webchat_answered or spoken) and _looks_truncated(answer) \
+                    and _continuations < 2:
                 follow_up_messages = messages + [
                     {"role": "assistant", "content": answer},
                     {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over. Continue in the same language as the reply."},
@@ -5072,6 +5712,11 @@ class BotInstance:
                     break
                 answer = answer + cont
                 _continuations += 1
+
+            if spoken and _looks_truncated(answer) and len(answer) > SPOKEN_MAX_TOKENS * 1.5:
+                # Упёрлись в потолок голоса посреди фразы — до законченной
+                from app.core.reply_length import trim_to_sentence
+                answer = trim_to_sentence(answer)
 
             # Очистка ответа от мета-рассуждений и Markdown
             answer = self._clean_response(answer)
@@ -5103,24 +5748,29 @@ class BotInstance:
                 else:
                     answer = ""
                 if _is_garbage(answer):
-                    answer = "Не удалось сформулировать ответ — попробуй переформулировать."
+                    from app.features.flavor_text import error_reply
+                    answer = error_reply(self, "reply_failed", user_id=user_id,
+                                         chat_id=chat_id, lang=turn_lang)
+
+            # Действие портрета [ACT:…] — до проверки финального вопроса:
+            # маркер в конце прятал бы вопрос от неё
+            answer, act_names = self._cut_markers(_ACT_MARK_RE, answer)
+            answer, emo_names = self._cut_markers(_EMO_MARK_RE, answer)
+            if act_names or emo_names:
+                # ответ — одно действие: пустой реплики в чате не будет
+                answer = answer.strip() or "…"
 
             # Предохранитель conversation_style: ответ закончился вопросом сверх
-            # лимита серии — одна регенерация с усиленным напоминанием (модель
-            # сама оставит вопрос, если он нужен по смыслу). Регенерированный
-            # текст ниже проходит ту же обработку маркеров, что и обычный.
-            # Учебные сообщения пропускаем — там вопросы часть механики курса.
+            # лимита серии — по умолчанию код срезает финальный вопрос (если
+            # остаётся утверждение; иначе ответ как есть). Пункт «Экономии
+            # нейронки» question_regen — как раньше, одна регенерация с
+            # усиленным напоминанием (модель сама оставит вопрос, если он нужен
+            # по смыслу); регенерированный текст ниже проходит ту же обработку
+            # маркеров, что и обычный. Учебные сообщения пропускаем — там
+            # вопросы часть механики курса.
             if not learning_context:
-                from app.features.conversation_style import (
-                    should_regenerate, regenerate_without_tail_question)
-                if should_regenerate(self.conversation_style, answer, question_streak):
-                    logger.info(
-                        f"[ConvStyle] Финальный вопрос сверх лимита "
-                        f"(streak={question_streak}, mode={self.conversation_style.frequency}) — регенерация")
-                    new_answer = regenerate_without_tail_question(
-                        self.router, messages, answer, settings, lang=turn_lang)
-                    if new_answer:
-                        answer = self._clean_response(new_answer) or answer
+                answer = self._final_question_guard(
+                    answer, question_streak, messages, settings, turn_lang)
 
             # Финальная чистка ответа аддонами (напр. маркеры источников [ФN])
             for addon in self.addons:
@@ -5189,6 +5839,13 @@ class BotInstance:
                     answer = re.sub(r"\n{3,}", "\n\n", answer).strip()
             if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
+            # Регенерированный ответ мог принести свой [ACT:…] — тоже срезать
+            answer, more_acts = self._cut_markers(_ACT_MARK_RE, answer)
+            answer, more_emos = self._cut_markers(_EMO_MARK_RE, answer)
+            if more_acts or more_emos:
+                answer = answer.strip() or "…"
+                act_names = act_names + more_acts
+                emo_names = emo_names + more_emos
 
             # Автопредложение записать сценарий: закрывающая реплика
             # («спасибо»/«готово») после цепочки действий → один раз
@@ -5205,8 +5862,14 @@ class BotInstance:
                 except Exception as e:
                     logger.debug(f"[Scenarios] maybe_offer не удался: {e}")
 
+            # Эмоция — лицу до ответа: облачко и голос начнутся уже с ней
+            if emo_names:
+                self._show_emotion(emo_names, user_id, chat_id)
             # Сохраняем ответ (при split_messages — по частям, хвост в pending)
             answer = self._save_assistant_reply(answer, user_id, chat_id)
+            # Действие — портрету на столе вместе с ответом
+            if act_names:
+                self._play_act(act_names, user_id, chat_id)
 
             # Эпизодическая память (self_memory) — побочная LLM-запись,
             # пока веб-вкладка ЭТОГО чата активна счётчики заморожены
@@ -5241,28 +5904,54 @@ class BotInstance:
             logger.error(
                 f"[BotInstance] Сбой пайплайна (chat {chat_id}): {e}",
                 exc_info=True)
-            return self._pipeline_failure_reply(user_id, chat_id)
+            return self._pipeline_failure_reply(user_id, chat_id, lang=turn_lang)
         finally:
             # Ничего не делаем — пул живёт всё время жизни бота
             pass
 
-    def _pipeline_failure_reply(self, user_id: str, chat_id) -> str:
+    def _final_question_guard(self, answer: str, question_streak: int,
+                              messages: List[Dict], settings: dict,
+                              turn_lang: Optional[str] = None) -> str:
+        """Слой 3 conversation_style: ответ закончился вопросом сверх лимита
+        серии. По умолчанию код срезает финальный вопрос (остаётся хоть одно
+        утверждение — иначе ответ как есть); пункт «Экономии нейронки»
+        question_regen — регенерация моделью, как раньше."""
+        from app.features.conversation_style import (
+            regenerate_without_tail_question, should_regenerate,
+            should_trim, trim_tail_question)
+        mode = f"streak={question_streak}, mode={self.conversation_style.frequency}"
+        if llm_economy.enabled("question_regen"):
+            if should_regenerate(self.conversation_style, answer, question_streak):
+                logger.info(f"[ConvStyle] Финальный вопрос сверх лимита ({mode}) — регенерация")
+                new_answer = regenerate_without_tail_question(
+                    self.router, messages, answer, settings, lang=turn_lang)
+                if new_answer:
+                    answer = self._clean_response(new_answer) or answer
+            return answer
+        if should_trim(self.conversation_style, answer, question_streak):
+            trimmed = trim_tail_question(answer)
+            if trimmed:
+                logger.info(f"[ConvStyle] Финальный вопрос сверх лимита ({mode}) — срезан кодом")
+                return trimmed
+            logger.info(f"[ConvStyle] Финальный вопрос сверх лимита ({mode}) — "
+                        "срезать нечего, ответ как есть")
+        return answer
+
+    def _pipeline_failure_reply(self, user_id: str, chat_id, *,
+                                kind: str = "processing_error", lang=None) -> str:
         """Реплика-ошибка при сбое пайплайна: на языке пользователя, с записью
         в STM — чтобы в истории не осталось «вопроса без ответа».
 
         В STM пишем только если ответа там ещё нет: сбой мог случиться и ПОСЛЕ
         _save_assistant_reply (обратная связь proactive, living-тик) — тогда
         настоящий ответ уже сохранён, и второй записью историю портить нельзя."""
-        lang = None
-        try:
-            lang = self.chat_user_language(chat_id)
-        except Exception:
-            pass
-        text = ("Sorry, something broke while I was processing your message. "
-                "Try again — or rephrase it."
-                if lang == "en" else
-                "Извини, у меня что-то сломалось при обработке сообщения. "
-                "Попробуй ещё раз — или сформулируй иначе.")
+        if lang is None:
+            try:
+                lang = self.chat_user_language(self.stm_key(chat_id, user_id))
+            except Exception:
+                pass
+        from app.features.flavor_text import error_reply
+        text = error_reply(self, kind, user_id=user_id, chat_id=chat_id, lang=lang)
         try:
             # Проверяем именно ТЕКУЩУЮ реплику: смотрим отметку answer_saved
             # в кадре текущего хода, а не последнюю запись STM — иначе за
@@ -5981,9 +6670,11 @@ class BotInstance:
         response = self._strip_meta_reasoning(response)
         response = self._strip_markdown(response)
         response = self._strip_inline_lists(response)
-        # Слабые модели копируют метку времени [DD.MM HH:MM] из промпта в ответ
-        response = re.sub(
-            r"^\s*\[\d{2}\.\d{2}(?:\.\d{4})?\s+\d{1,2}:\d{2}\]\s*", "", response)
+        # Модели копируют из истории метку времени [DD.MM HH:MM] — в начало
+        # ответа или посреди, будто начинают следующую часть, — и пометку
+        # режима ответа ([in your "X" mode], app/core/persona.py MODE_TAG)
+        response = _REPLY_TAG_RE.sub("\n\n", response)
+        response = re.sub(r"\n{3,}", "\n\n", response)
         return response.strip()
 
     def _addons_repair(self, answer: str, addon_results: dict) -> str:
@@ -6126,6 +6817,97 @@ class BotInstance:
                 sep = "" if glued or core_r[0] in ",.;:!?)»…" else " "
                 acc = core_l + sep + core_r
         return acc, found
+
+    def _act_persona(self) -> Optional[str]:
+        # Анимации портрета — у веб-персоны (контекст api_<id>)
+        ctx = str(getattr(self, "context", "") or "")
+        return ctx[4:] if ctx.startswith("api_") else None
+
+    def _act_note(self, user_id, chat_id) -> Optional[str]:
+        """Нота «у тебя есть тело на рабочем столе»: у веб-персоны есть
+        анимации, которые она выбирает сама, и портрет на столе недавно
+        слушал ленту реплик этого чата (said, acts=1)."""
+        persona = self._act_persona()
+        if not persona:
+            return None
+        try:
+            from app.api import portrait_anim, said
+            key = str(chat_id if chat_id is not None else user_id)
+            if not said.acts_listener_recent(_ACT_LISTENER_SEC, key):
+                return None
+            return portrait_anim.body_note(_act_avatar(self, persona, key))
+        except Exception as e:
+            logger.debug(f"[Act] нота не собрана: {e}")
+            return None
+
+    def _emo_note(self, user_id, chat_id) -> Optional[str]:
+        """Нота «лицо меняет выражение»: у живого портрета веб-персоны есть
+        эмоции, и живое лицо (портрет на столе, голосовой режим, PiP)
+        недавно слушало ленту реплик этого чата (said, emo=1)."""
+        persona = self._act_persona()
+        if not persona:
+            return None
+        try:
+            from app.api import portrait_api, said
+            key = str(chat_id if chat_id is not None else user_id)
+            if not said.emo_listener_recent(_ACT_LISTENER_SEC, key):
+                return None
+            return portrait_api.emotion_note(_act_avatar(self, persona, key, "head"))
+        except Exception as e:
+            logger.debug(f"[Emo] нота не собрана: {e}")
+            return None
+
+    def _own_emotions(self, chat_key) -> Optional[str]:
+        """Эмоции живого лица с условием «по настроению» (портрет аватара
+        чата, app/api/portrait_api.mood_names): их имена разбор диалога и
+        тик состояния берут тегом mood. Листы — в папке веб-персоны и у
+        Telegram-контекста той же персоны."""
+        ctx = str(getattr(self, "context", "") or "")
+        persona = ctx[4:] if ctx.startswith("api_") else ctx
+        if not persona:
+            return None
+        from app.api import portrait_api
+        return portrait_api.mood_names(_act_avatar(self, persona, str(chat_key), "head"))
+
+    def _show_emotion(self, names: List[str], user_id, chat_id) -> None:
+        """Первое узнанное имя из маркеров [EMO:…] → эмоция живому лицу
+        (лента реплик, kind emo)."""
+        persona = self._act_persona()
+        if not persona:
+            return
+        try:
+            from app.api import portrait_api, said
+            key = str(chat_id if chat_id is not None else user_id)
+            head = _act_avatar(self, persona, key, "head")
+            for name in names:
+                emo_id = portrait_api.match_emotion(head, name)
+                if emo_id:
+                    said.note(persona, key, emo_id, kind=said.EMO_KIND)
+                    logger.info(f"[Emo] {persona}: «{name}» → {emo_id}")
+                    return
+            logger.info(f"[Emo] {persona}: нет эмоции для {names!r}")
+        except Exception as e:
+            logger.debug(f"[Emo] не показана: {e}")
+
+    def _play_act(self, names: List[str], user_id, chat_id) -> None:
+        """Первое узнанное имя из маркеров [ACT:…] → анимация портрету на
+        столе (лента реплик, kind act)."""
+        persona = self._act_persona()
+        if not persona:
+            return
+        try:
+            from app.api import portrait_anim, said
+            key = str(chat_id if chat_id is not None else user_id)
+            avatar = _act_avatar(self, persona, key)
+            for name in names:
+                anim_id = portrait_anim.match_act(avatar, name)
+                if anim_id:
+                    said.note(persona, key, anim_id, kind=said.ACT_KIND)
+                    logger.info(f"[Act] {persona}: «{name}» → {anim_id}")
+                    return
+            logger.info(f"[Act] {persona}: нет анимации для {names!r}")
+        except Exception as e:
+            logger.debug(f"[Act] не сыграно: {e}")
 
     def _parse_punishment(self, response: str, user_id: str) -> str:
         # Парсит маркеры наказания, выполняет действия.
@@ -6517,7 +7299,10 @@ class BotInstance:
         "перепиши текст", "изложи", "выжимка",
         "расскажи содержание", "о чём документ", "о чем документ",
         "расскажи текст", "весь текст", "полный текст",
-        "доклад по", "анализ документа", "разбор документа", "проанализируй"
+        "доклад по", "анализ документа", "разбор документа", "проанализируй",
+        # По-английски — и просьба прочитать файл, брошенный на портрет на
+        # рабочем столе (desktop/src-tauri/src/texts.rs, portrait_file_ask)
+        "full text", "whole document", "entire document", "summarize", "summarise",
     ]
 
     def _get_persona_context_for_search(self) -> str:
@@ -6843,6 +7628,25 @@ class BotInstance:
 
         return 0
 
+    def _last_user_message_time(self, chat_id: str) -> float:
+        """Время последней реплики ПОЛЬЗОВАТЕЛЯ в чате (0 — не писал).
+        _get_last_message_time не годится: STM-хвост там — и ответы, и
+        инициативы персоны. Метка трекера (Telegram ставит её на каждое
+        входящее) и последняя user-запись STM (веб трекер не трогает)."""
+        ts = 0.0
+        if self._activity_tracker:
+            ts = float(self._activity_tracker.get_last_activity(chat_id) or 0)
+        try:
+            for msg in reversed(self.memory.stm.get_messages(chat_id=chat_id)):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    stamp = msg.get("timestamp")
+                    if isinstance(stamp, (int, float)):
+                        ts = max(ts, float(stamp))
+                    break
+        except Exception:
+            pass
+        return ts
+
     def setup_proactive(self, sender: MessageSender):
         # Создаёт ProactiveMessaging с готовым sender (платформа: Telegram / веб-inbox).
         if not self._activity_tracker:
@@ -6992,7 +7796,9 @@ class BotInstance:
     ) -> str:
         """Ответ на слэш-команду — тоже ход пользователя (пишет в STM пару
         «команда → ответ»): фоновые сообщения между ними не встают."""
-        with self.user_turn(self.stm_key(chat_id, user_id)):
+        # Настройки и промпт без явного чата — режима этого чата
+        with self.user_turn(self.stm_key(chat_id, user_id)), \
+                _persona_turn(self, self.stm_key(chat_id, user_id)):
             return self._command_reply_impl(
                 context_note, note_kind, chat_id, user_id, user_name, user_input)
 
@@ -7038,7 +7844,7 @@ class BotInstance:
             user_message=user_input, memory_context=memory_text, history=stm_messages,
             user_id=user_id, user_name=user_name,
             has_files=False, self_memory_block=self_memory_block,
-            stm_relevant=stm_relevant_text,
+            stm_relevant=stm_relevant_text, chat_id=chat_id,
         )
         if note_kind == "reminder":
             kwargs["reminder_context"] = context_note
@@ -7055,7 +7861,9 @@ class BotInstance:
             messages, **settings)
         if not answer:
             logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
-            return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
+            return self._pipeline_failure_reply(
+                user_id, chat_id, kind="models_unavailable",
+                lang=detect_dialogue_language(user_input, stm_messages, user_id))
 
         # Защита от обрыва по max_tokens — та же логика, что в основном процессе сообщений.
         # Для webchat догенерация отключена (см. process_message): «continue» в

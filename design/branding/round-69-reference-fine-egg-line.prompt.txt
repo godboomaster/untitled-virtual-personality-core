@@ -1,0 +1,12 @@
+Built-in image_gen. Full edit target: 100-circular-head-square-logo.png. Egg linework reference: references/egg-fine-ink-line-style-01.png. Output: 101-fine-egg-line-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: square black-and-white ghost logo, eggshell linework refinement.
+Input image 1: COMPLETE LOGO EDIT TARGET, 100-circular-head-square-logo.png.
+Input image 2: LINE-STYLE REFERENCE FOR THE EGGSHELL ONLY, references/egg-fine-ink-line-style-01.png. The user wants the egg linework to resemble this reference.
+Primary request: redraw ONLY the LOWER EGGSHELL's outer contour, jagged rim and crack lines with the reference's delicate, lightly irregular, faceted ink linework.
+Replace the current very heavy black shell border with a clearly finer black outline, approximately 9–12 px at the 1254 px target scale, with subtle natural variation in thickness like the reference. Preserve the existing lower shell silhouette, size, position, main facet corners and open jagged rim. Give the contour a restrained hand-inked feel with crisp edges and occasional tiny changes of direction; keep it clean and intentional, not rough or fuzzy.
+Redraw the existing shell cracks as thin, angular branching fissures like those in the reference, approximately 3–5 px at target scale, tapering to fine points. Keep their current main locations and branching paths, but remove the heavy filled triangular thorn-like treatment. The cracks should feel like fine fractures in a fragile shell. Maintain a simple, legible pattern.
+Transfer ONLY the egg's LINE QUALITY from image 2. The lower shell stays white inside with black linework. Do not transfer cream/green colors, shading, internal botanical branches or vines, extra leaves, a whole closed egg or the reference's layout.
+Everything above the shell remains EXACTLY as in image 1: the true circular head with its thin outline, solid-black short narrow oval eyes, the two left leaves and white veins, the faceted interwoven collar, all its white cuts and openings, the torso sides and jagged hem and their current stroke widths. Preserve the white separator between the ghost hem and the shell rim. Keep the full square canvas, white background, margins, emblem scale and placement.
+Output ONE COMPLETE SQUARE black-and-white logo. No upper shell, new objects, text, colors, fill shading, gradients, texture, shadows, border or cropping. Only the lower eggshell's line treatment becomes finer and more like the reference.

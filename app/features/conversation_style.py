@@ -21,12 +21,17 @@
      frequent — то же, что natural (явный opt-in в вопрошающий стиль)
 
 3. Пост-обработка (предохранитель): если ответ всё же закончился вопросом
-   и серия предыдущих ответов с вопросом уже достигла лимита — ОДНА
-   регенерация с усиленным напоминанием (модель сама решает, был ли вопрос
-   нужным: нужный она оставит, рефлекторный перепишет). Программной обрезки
-   текста нет — она рискованна грамматически. Регенерация пропускается, когда
-   в ответе есть функциональные маркеры ([TODO_…], [INVENTORY_…], [PUNISH:…],
-   [OPEN_URL:…] и т.п., [ФN]) — потерять маркер хуже, чем пропустить вопрос.
+   и серия предыдущих ответов с вопросом уже достигла лимита — по умолчанию
+   код срезает финальное вопросительное предложение (trim_tail_question),
+   если после него остаётся хоть одно утверждение; иначе ответ остаётся как
+   есть. Осторожно: вопрос в кавычках (чужая речь), внутри кода, после
+   списка или двоеточия (выбор из вариантов) не трогаем. Пункт «Экономии
+   нейронки» question_regen (app/core/llm_economy) — как раньше, ОДНА
+   регенерация с усиленным напоминанием (второй полный вызов модели; она
+   сама решает, был ли вопрос нужным). И срезка, и регенерация пропускаются,
+   когда в ответе есть функциональные маркеры ([TODO_…], [INVENTORY_…],
+   [PUNISH:…], [OPEN_URL:…] и т.п., [ФN]) — потерять маркер хуже, чем
+   пропустить вопрос.
 
 Серия считается по STM-истории: сколько последних ответов ассистента подряд
 заканчивались вопросом (реплики пользователя между ними серию не сбрасывают —
@@ -58,9 +63,31 @@ _QUESTION_TAIL_RE = re.compile(r"[?？][?!？…]*[^\w]{0,6}$", re.UNICODE)
 _FUNCTIONAL_MARKERS_RE = re.compile(
     r"\[(?:TODO|INVENTORY|PUNISH|OPEN_URL|OPEN_APP|RUN_TASK)[A-Z_]*:|\[\s*Ф\s*\d")
 
+# Хвост ответа за финальным вопросом: *действия*/_действия_, эмодзи,
+# пунктуация, закрывающие кавычки и скобки — «Как тебе? 😊», «Правда?!»,
+# «Как тебе? *улыбается*»
+_TAIL_DECOR_RE = re.compile(r"(?:\s*(?:\*[^*\n]{1,80}\*|_[^_\n]{1,80}_|[^\w\s?？*_]))+\s*$")
+# Что из хвоста вернуть после срезки: действия и эмодзи (не пунктуацию)
+_DECOR_KEEP_RE = re.compile(r"\*[^*\n]{1,80}\*|_[^_\n]{1,80}_|[^\w\s.,!?？…»«\"'”“„)(\[\]:;–—-]+")
+# Закрывающая кавычка за вопросом — это чужая речь («Он спросил: «Идёшь?»»)
+_QUOTE_CLOSE_RE = re.compile(r"[»”\"']")
+# Граница перед последним предложением: конец предыдущего (.!?… и
+# закрывающие кавычки/скобки), конец *действия* (не **жирного**) или
+# перевод строки
+_SENT_BOUNDARY_RE = re.compile(r"(?:[.!?？…]+[)»\"”']*|(?<=[^\s*])\*)\s+|\n")
+# Строка-пункт списка: «- …», «* …», «• …», «1. …», «2) …»
+_LIST_LINE_RE = re.compile(r"^\s*(?:[-*•–—]|\d+[.)])\s")
+_ACTION_RE = re.compile(r"\*[^*\n]+\*|_[^_\n]+_")
+# Остаток кончается сокращением («т.е.», «e.g.») — точка была не концом
+# предложения, срезка оборвала бы мысль: «Отличная мысль, т.е.»
+_ABBR_END_RE = re.compile(
+    r"(?:\b(?:т\.\s?[едкпн]|и\.\s?т\.\s?[дп]|e\.\s?g|i\.\s?e|vs|etc|др|пр|см|напр|т\.\s?ч)|\b\w)\.$",
+    re.IGNORECASE)
+
 # Счётчики для наблюдаемости (снапшот — LivingPersona.get_state_for_ui)
 _STATS = {"notes_applied": 0, "regen_attempts": 0,
-          "regen_model_kept_question": 0, "regen_failures": 0}
+          "regen_model_kept_question": 0, "regen_failures": 0,
+          "trim_applied": 0, "trim_kept": 0}
 
 
 def get_stats() -> dict:
@@ -159,6 +186,76 @@ def should_regenerate(cfg: ConversationStyleConfig, answer: Optional[str],
         logger.debug("[ConvStyle] Регенерация пропущена: функциональные маркеры в ответе")
         return False
     return streak >= cfg.max_streak
+
+
+def _split_tail(text: str):
+    # (тело, хвост) — хвост из *действий*/эмодзи/пунктуации за последним словом
+    m = _TAIL_DECOR_RE.search(text)
+    if not m:
+        return text, ""
+    return text[:m.start()], text[m.start():]
+
+
+def _ends_with_question_decorated(text: Optional[str]) -> bool:
+    # Финальный вопрос, в т.ч. за хвостом из *действий*/эмодзи
+    if not text:
+        return False
+    if ends_with_question(text):
+        return True
+    return _split_tail(text.rstrip())[0].endswith(("?", "？"))
+
+
+def should_trim(cfg: ConversationStyleConfig, answer: Optional[str],
+                streak: int) -> bool:
+    """Нужна ли срезка финального вопроса кодом (слой 3 по умолчанию): как
+    should_regenerate, но вопрос виден и за хвостом из *действий*/эмодзи."""
+    if not cfg.limited or not _ends_with_question_decorated(answer):
+        return False
+    if has_functional_markers(answer):
+        logger.debug("[ConvStyle] Срезка пропущена: функциональные маркеры в ответе")
+        return False
+    return streak >= cfg.max_streak
+
+
+def trim_tail_question(answer: Optional[str]) -> Optional[str]:
+    """Срезает финальные вопросительные предложения ответа (слой 3 без
+    модели). None — резать нельзя, ответ остаётся как есть: после срезки не
+    осталось бы ни одного утверждения; вопрос в кавычках (чужая речь);
+    вопрос — пункт списка или идёт за списком/двоеточием (выбор из
+    вариантов); незакрытый блок кода; функциональные маркеры.
+    *Действия* и эмодзи из хвоста за вопросом возвращаются в конец."""
+    if not answer or has_functional_markers(answer):
+        return None
+    text = answer.rstrip()
+    body, decor = _split_tail(text)
+    if not body.endswith(("?", "？")) or _QUOTE_CLOSE_RE.search(decor):
+        return None
+    if body.count("```") % 2 or _LIST_LINE_RE.match(body.rsplit("\n", 1)[-1]):
+        return None
+    cut = len(body)
+    while True:
+        head = body[:cut].rstrip()
+        if not head.endswith(("?", "？")):
+            break
+        start = 0
+        for m in _SENT_BOUNDARY_RE.finditer(head):
+            start = m.end()
+        cut = start
+        if not cut:
+            break
+    remaining = body[:cut].rstrip()
+    # Осталось хоть одно утверждение (не только *действия* и знаки)?
+    if not re.search(r"\w{2,}", _ACTION_RE.sub(" ", remaining)):
+        _STATS["trim_kept"] += 1
+        return None
+    last_line = remaining.rsplit("\n", 1)[-1]
+    if (remaining.count("```") % 2 or _LIST_LINE_RE.match(last_line)
+            or remaining.rstrip("*_").endswith(":") or _ABBR_END_RE.search(remaining)):
+        _STATS["trim_kept"] += 1
+        return None
+    keep = _DECOR_KEEP_RE.findall(decor)
+    _STATS["trim_applied"] += 1
+    return remaining + (" " + " ".join(k.strip() for k in keep) if keep else "")
 
 
 _REGEN_INSTRUCTION = (

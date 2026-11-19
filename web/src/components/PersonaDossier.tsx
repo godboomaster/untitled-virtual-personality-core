@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Persona } from '../mockData';
 import { useI18n, useMockData } from '../i18n';
 import { api, CLEAR_PARTS, isNativeApp } from '../api';
 import type { ClearPart } from '../api';
-import { usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from './PersonaAvatar';
 import { refetchProviders, useApiOnline, useApiProviders, useApiPersonaLlm, refetchPersonaLlm } from '../apiData';
 import Memory from '../sections/Memory';
 import Tasks from '../sections/Tasks';
@@ -12,9 +12,13 @@ import Settings from '../sections/Settings';
 import ComputerControl from '../sections/ComputerControl';
 import LearningPanel from './LearningPanel';
 import FilesPanel from './FilesPanel';
+import LorePanel from './LorePanel';
+import PersonaModesPanel from './PersonaModesPanel';
+import PersonaPhrasesPanel from './PersonaPhrasesPanel';
 import InfoButton from '../components/InfoButton';
 import Icon from './icons';
 import Collapsible from './Collapsible';
+import { useTabStrip } from './useTabStrip';
 import { BACK_PANEL, backOpenAbove, useBackHandler } from '../backStack';
 import { useOfflineMode } from '../offline/state';
 import { getSettingsCopy } from '../offline/settingsCopy';
@@ -28,7 +32,7 @@ import ShortPromptModal from '../offline/ShortPromptModal';
 // Выбранные персоной модели по провайдерам (module-state, переживает перемонтирование)
 const modelChoices: Record<string, Record<string, string>> = {};
 
-type DossierTab = 'memory' | 'tasks' | 'initiative' | 'computer' | 'learning' | 'files' | 'settings';
+type DossierTab = 'memory' | 'tasks' | 'initiative' | 'computer' | 'learning' | 'lore' | 'modes' | 'phrases' | 'files' | 'settings';
 
 const baseTabs: DossierTab[] = ['memory', 'tasks', 'initiative', 'computer'];
 
@@ -47,7 +51,6 @@ interface PersonaDossierProps {
 export default function PersonaDossier({ persona, onClose, onClearDialog, onStmChange, stmEpoch, initialTab, model, onOpenYaml }: PersonaDossierProps) {
   const { t, lang } = useI18n();
   const { llmProviders, providerModels } = useMockData();
-  const avatars = usePersonaAvatars();
   const apiOnline = useApiOnline();
   // Телефон без связи с ядром: модели провайдеров — из копии настроек на
   // телефоне (только посмотреть), а не демо прототипа
@@ -152,35 +155,16 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
     ...(persona.features.includes('learning')
       ? [{ id: 'learning' as DossierTab, label: t('dossier.learning') }]
       : []),
+    { id: 'lore' as DossierTab, label: t('dossier.lore') },
+    { id: 'modes' as DossierTab, label: t('dossier.modes') },
+    { id: 'phrases' as DossierTab, label: t('dossier.phrases') },
     { id: 'files' as DossierTab, label: t('dossier.files') },
     { id: 'settings' as DossierTab, label: t('dossier.settings') },
   ];
 
   // Узкий экран: вкладки — одна строка с прокруткой вбок. Активная
   // выезжает к середине, края гаснут с той стороны, где есть ещё вкладки
-  const tabsRef = useRef<HTMLDivElement>(null);
-  const [tabsEdge, setTabsEdge] = useState({ left: false, right: false });
-  const updateTabsEdge = useCallback(() => {
-    const c = tabsRef.current;
-    if (!c) return;
-    const left = c.scrollLeft > 2;
-    const right = c.scrollLeft + c.clientWidth < c.scrollWidth - 2;
-    setTabsEdge((e) => (e.left === left && e.right === right ? e : { left, right }));
-  }, []);
-  useLayoutEffect(() => {
-    const c = tabsRef.current;
-    const el = c?.querySelector<HTMLElement>('.tab--active');
-    if (c && el && c.scrollWidth > c.clientWidth) {
-      const cr = c.getBoundingClientRect();
-      const r = el.getBoundingClientRect();
-      c.scrollTo({ left: c.scrollLeft + (r.left - cr.left) - (cr.width - r.width) / 2, behavior: 'smooth' });
-    }
-    updateTabsEdge();
-  }, [tab, tabs.length, updateTabsEdge]);
-  useEffect(() => {
-    window.addEventListener('resize', updateTabsEdge);
-    return () => window.removeEventListener('resize', updateTabsEdge);
-  }, [updateTabsEdge]);
+  const strip = useTabStrip(tab, tabs.length);
 
   // При смене персоны сбрасываем вкладку (активная могла скрыться) и подтверждение.
   // Первый запуск эффекта (открытие досье) вкладку не трогает — там может быть
@@ -219,7 +203,7 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
             <Icon name="chevronLeft" size={20} />
           </button>
           <div className="avatar avatar--large">
-            {avatars[persona.id] ? <img src={avatars[persona.id]} alt={persona.name} /> : persona.name.charAt(0)}
+            <PersonaAvatar persona={persona} followWithin=".dossier-head" />
           </div>
           <div className="dossier-title">
             <div className="dossier-name">{persona.name}</div>
@@ -234,12 +218,14 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
                 YAML
               </button>
             )}
-            {/* Что получает Gemma на телефоне вместо полного характера;
-                без связи — из данных персоны на телефоне */}
+            {/* Краткое описание: его получает Gemma на телефоне вместо полного
+                характера; без связи — из данных персоны на телефоне */}
             {(apiOnline || isNativeApp()) && (
               <button type="button" className="btn btn--chip" title={t('shortPrompt.open')} onClick={() => setShortOpen(true)}>
-                <Icon name="gem" size={13} />
-                <span className="chip-label">{t('dossier.shortPrompt')}</span>
+                <Icon name="card" size={13} />
+                {/* Узкое досье (телефон) — короткая подпись: длинная съедала имя */}
+                <span className="chip-label dossier-short-full">{t('dossier.shortPrompt')}</span>
+                <span className="chip-label dossier-short-brief">{t('dossier.shortPromptBrief')}</span>
               </button>
             )}
           </div>
@@ -249,9 +235,9 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
 
         {/* Вкладки досье */}
         <div
-          ref={tabsRef}
-          className={`tabs dossier-tabs${tabsEdge.left ? ' dossier-tabs--more-left' : ''}${tabsEdge.right ? ' dossier-tabs--more-right' : ''}`}
-          onScroll={updateTabsEdge}
+          ref={strip.ref}
+          className={strip.className}
+          onScroll={strip.onScroll}
         >
           {tabs.map((t) => (
             <button
@@ -272,6 +258,9 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
           {tab === 'initiative' && <Initiative personaId={persona.id} embedded />}
           {tab === 'computer' && <ComputerControl personaId={persona.id} />}
           {tab === 'learning' && <LearningPanel personaId={persona.id} />}
+          {tab === 'lore' && <LorePanel personaId={persona.id} />}
+          {tab === 'modes' && <PersonaModesPanel personaId={persona.id} />}
+          {tab === 'phrases' && <PersonaPhrasesPanel key={persona.id} personaId={persona.id} />}
           {tab === 'files' && <FilesPanel personaId={persona.id} />}
           {tab === 'settings' && (
             <>

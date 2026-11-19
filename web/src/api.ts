@@ -7,9 +7,13 @@
    хранится в localStorage под ключом vpc-api-token. */
 
 import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
-import type { PortraitData, PortraitSheet, PortraitSheetUpdate } from './portrait/portraitTypes';
+import type { EmotionMood, InitiativeBadge, PersonaMood, PortraitData, PortraitSheetUpdate } from './portrait/portraitTypes';
+import type { AnimSettings, AnimUpdate, PortraitAnim, PortraitAnims } from './portrait/animTypes';
+import type { FrameAtlas, FrameCut, FrameFix, FrameKind, FrameSourceData, FrameTiming } from './portrait/frames/frameTypes';
 import { getLinkConfig, linkFetch, refusalKey } from './link/client.ts';
 import type { PhoneActionReport } from './phone/notes';
+import type { GateRules } from './offline/gate';
+import type { LoreData } from './offline/lore';
 
 const BUILD_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
 const URL_KEY = 'vpc-api-url';
@@ -62,8 +66,18 @@ export function isLinkMode(): boolean {
 // запуска (BootGate) ловит событие и объясняет, что делать
 export const LINK_REVOKED_EVENT = 'vpc-link-revoked';
 
+// Ядра нет (телефон без компьютера, адрес не задан): запрос ушёл бы на
+// https://localhost самого WebView и вернул бы index.html — отказ сразу,
+// как от недоступной сети
+export class NoCoreError extends TypeError {
+  constructor() {
+    super('no core configured');
+  }
+}
+
 // Все запросы к API — отсюда: по каналу VPC Link или обычным fetch
 function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (!getLinkConfig() && !baseUrl) return Promise.reject(new NoCoreError());
   if (!getLinkConfig()) return fetch(`${baseUrl}${path}`, init);
   return linkFetch(path, init).catch((e: unknown) => {
     if (refusalKey(e) === 'link.errNotPaired') window.dispatchEvent(new Event(LINK_REVOKED_EVENT));
@@ -154,6 +168,13 @@ export const WEB_USER_ID = 'web_user';
 // при chat_id=null они в process_message не срабатывают
 export const WEB_CHAT_ID = 'web_user';
 
+export interface DesktopPortraitStatus {
+  connected: boolean;
+  shown: boolean;
+  persona: string;
+  pending: { id: string; persona: string; shown: boolean } | null;
+}
+
 export interface ApiPersona {
   id: string;
   name: string;
@@ -180,6 +201,31 @@ export interface TimezoneConfig {
   timezone: string;
   effective: string;
   source: 'env' | 'system';
+}
+
+// «Экономия нейронки» (app/core/llm_economy): пункт → true — модель (как
+// раньше), false — код (по умолчанию); groups — порядок пунктов в настройках
+export interface LlmEconomy {
+  items: Record<string, boolean>;
+  defaults: Record<string, boolean>;
+  groups: Record<string, string[]>;
+}
+
+// Скорость текста у аватара (app/core/avatar_text): слов в секунду (0 —
+// сразу всей частью) и секунд на часть облачка средней длины
+// Тема оформления веба на компьютере (app/core/ui_look): портрет на рабочем
+// столе берёт её у ядра — браузерный выбор панели не виден
+export interface UiLook {
+  skin: string | null;
+  personas: Record<string, string>;
+  theme: 'light' | 'dark' | null;
+}
+
+export interface AvatarText {
+  words_per_sec: number;
+  part_sec: number;
+  defaults: { words_per_sec: number; part_sec: number };
+  limits: { words_per_sec: [number, number]; part_sec: [number, number] };
 }
 
 // Запись лога ядра (GET /api/logs — режим разработчика)
@@ -229,12 +275,14 @@ export interface ApiChatResponse {
   provider: string | null; // кто реально ответил (с учётом fallback)
   model: string | null;
   control_mode?: boolean; // режим управления после этого сообщения — дебаунс отправки гасится
+  phone_mode?: boolean; // режим управления телефоном (app/features/phone_control)
   images?: string[]; // скриншоты страницы (dataURL) из режима управления
   reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
   answer_options?: AnswerOptions | null; // кнопки ответа на вопрос режима управления
   task?: TaskCard | null; // карточка задачи агента (итог хода; дальше — inbox)
   files?: SentFile[]; // файлы с компьютера ядра («пришли файл X»)
   reply_stm?: string | null; // текст ответа в истории, если другой (список файлов — заглушкой)
+  cancelled?: boolean; // ход остановлен («Стоп»): ответа нет, реплика в истории
 }
 
 // Карточка задачи агента (TaskAgent.task_card): статус, план заказа с
@@ -265,7 +313,9 @@ export interface AnswerOption {
 export interface AnswerOptions {
   kind: 'options' | 'yesno' | 'continue';
   options: AnswerOption[];
-  scope?: 'files'; // список «какой файл?» — кнопки и вне режима управления
+  // Кнопки и вне режима управления компьютером: список «какой файл?»,
+  // вопросы экрана телефона («Где управлять?», «Нажать «X»?», «Какое?»)
+  scope?: 'files' | 'phone';
 }
 
 // Части «Очистить диалог» (app/api/schemas.py: ClearPart) — в порядке кнопок досье
@@ -285,6 +335,12 @@ export class ApiError extends Error {
   }
 }
 
+// Маршрута нет в ядре вообще (а не «нет такой записи»): ядро запущено с кодом
+// старше веба — 404 FastAPI без своего текста
+export function isMissingRoute(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 404 && e.message === 'Not Found';
+}
+
 // Под id осталась память удалённой персоны (409 при создании/смене id):
 // keep — подхватить, fresh — старую в архив
 export type MemoryChoice = 'keep' | 'fresh';
@@ -302,6 +358,27 @@ export class StreamInterruptedError extends ApiError {
     super(0, detail);
   }
 }
+
+/** Аватар: id персоны (обычный) или «персона@режим» — аватар её режима
+ * (свои листы и анимации у YAML режима; app/api/avatar_modes.py). */
+export function splitAvatar(avatar: string): { persona: string; mode: string } {
+  const i = avatar.indexOf('@');
+  return i < 0 ? { persona: avatar, mode: '' } : { persona: avatar.slice(0, i), mode: avatar.slice(i + 1) };
+}
+
+export const avatarOf = (persona: string, mode?: string | null) => (mode ? `${persona}@${mode}` : persona);
+
+/** Путь портрета аватара: /api/personas/<p>/portrait<rest>, режим — ?mode= */
+function portraitUrl(avatar: string, rest = '', params: Record<string, string> = {}): string {
+  const { persona, mode } = splitAvatar(avatar);
+  const q = new URLSearchParams(params);
+  if (mode) q.set('mode', mode);
+  const qs = q.toString();
+  return `/api/personas/${encodeURIComponent(persona)}/portrait${rest}${qs ? `?${qs}` : ''}`;
+}
+
+const framesPath = (avatar: string, kind: FrameKind, id: string, tail = '') =>
+  portraitUrl(avatar, `/frames/${kind}/${encodeURIComponent(id)}${tail}`);
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, {
@@ -371,8 +448,10 @@ export interface OfflineMemoryResponse {
 }
 
 // Краткое описание персоны для модели телефона (app/features/short_prompt.py):
-// source — yaml (поле short_prompt персоны) или auto (составила модель);
-// status — ready, pending (составляется), failed (error — почему), none
+// source — yaml (своё: поле short_prompt персоны) или auto (составила модель);
+// status — ready, pending (составляется), failed (error — почему), none;
+// composing — готовое есть, а модель составляет новое (не вышло — error при
+// ready); prompt — запрос карточки одним текстом для своей нейросети
 export interface ShortPrompt {
   text: string;
   source: 'yaml' | 'auto' | '';
@@ -380,6 +459,8 @@ export interface ShortPrompt {
   at: number;
   chars?: number; // символов в полном характере
   error?: string;
+  composing?: boolean;
+  prompt?: string;
 }
 
 export interface OfflineKitResponse {
@@ -400,6 +481,7 @@ export interface OfflineKitResponse {
   // досье и личная память персоны — как в ответе ядра
   history_first_ts?: number;
   history_total?: number; // сообщений в памяти для телефона (GET …/offline/memory)
+  lore_stamp?: string; // версия лора персоны (GET …/offline/lore); '' — лора нет
   dossier?: string;
   self_memory?: string;
   // Город для погоды (её телефон берёт у Open-Meteo сам); null — выключено
@@ -408,14 +490,35 @@ export interface OfflineKitResponse {
   reminders: { id: string; ref: string; task: string | null; at: number; recurring: boolean }[];
   reminders_enabled: boolean;
   // те же правила, что в промпте ядра (self_memory, recall* — с версии 3)
-  rules: { web: string; env: string; self_memory?: string; recall_head?: string; recall?: string };
+  rules: {
+    web: string;
+    env: string;
+    self_memory?: string;
+    recall_head?: string;
+    recall?: string;
+    lore_head?: string;
+    lore_weak?: string;
+    lore?: string;
+    lore_gap?: string;
+  };
   notes: Record<'set' | 'ask_time' | 'past' | 'recurring' | 'scheduled' | 'extract', string> &
     Partial<Record<'not_understood' | 'declined', string>>;
-  search_gate: { address_words: string[]; smalltalk: string[]; self_patterns: string[] };
+  // Гейт веб-поиска (app/features/search_gate.py): чёрный список, белый (need) и пункт
+  // «Экономии нейронки» every_message — порт в offline/gate.ts
+  search_gate: GateRules;
+  // Режимы персоны (app/core/persona.py mode_kit): режим чата сейчас ("" —
+  // обычный), журнал [время, режим], пометка ответа каждого режима, строка
+  // «режим сейчас», правило к пометкам ({tags}) и заметка без пометок;
+  // null — режимов нет (offline/modeTags.ts)
+  // turn — заметка к реплике, если последний ответ в истории другого режима
+  // ({like} — образец голоса на языке реплики)
+  modes?: { current: string; log: [number, string][]; tags: Record<string, string>; now: string; tagged: string; note: string; turn?: string } | null;
+  // Образцы голоса нынешнего режима (voice_examples) и заметка к ним ({lines})
+  voice?: { lines: string[]; note: string } | null;
 }
 
 export const api = {
-  health: (init?: RequestInit) => request<{ status: string }>('/api/health', init),
+  health: (init?: RequestInit) => request<{ status: string; id?: string }>('/api/health', init),
 
   // VPC Link: телефоны, QR-код сопряжения, отвязка
   getLink: () => request<LinkStatus>('/api/link'),
@@ -434,10 +537,22 @@ export const api = {
     ),
   getShortPrompt: (persona: string) =>
     request<ShortPrompt>(`/api/personas/${encodeURIComponent(persona)}/offline/short-prompt`),
+  // Своё описание (пустое — убрать, составит модель персоны) или составленное
+  // на телефоне без ядра (source auto, crc — crc32 характера; другой — 409)
+  setShortPrompt: (persona: string, text: string, source: 'yaml' | 'auto' = 'yaml', crc?: number) =>
+    request<ShortPrompt>(`/api/personas/${encodeURIComponent(persona)}/offline/short-prompt`, {
+      method: 'PUT',
+      body: JSON.stringify({ text, source, ...(crc != null ? { crc } : {}) }),
+    }),
+  // «Составить заново» моделью персоны (своё описание убирается)
+  composeShortPrompt: (persona: string) =>
+    request<ShortPrompt>(`/api/personas/${encodeURIComponent(persona)}/offline/short-prompt/compose`, { method: 'POST' }),
   getOfflineMemory: (persona: string) =>
     request<OfflineMemoryResponse>(
       `/api/personas/${encodeURIComponent(persona)}/offline/memory?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
     ),
+  getOfflineLore: (persona: string) =>
+    request<LoreData>(`/api/personas/${encodeURIComponent(persona)}/offline/lore`),
   getOfflineProviders: (persona: string) =>
     request<{ providers: unknown[] }>(`/api/personas/${encodeURIComponent(persona)}/offline/providers`),
   offlineReminders: (persona: string, reminders: { id: string; task: string; at: number }[]) =>
@@ -445,7 +560,7 @@ export const api = {
       `/api/personas/${encodeURIComponent(persona)}/offline/reminders`,
       { method: 'POST', body: JSON.stringify({ user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID, reminders }) },
     ),
-  offlineImport: (persona: string, messages: { id: string; role: 'user' | 'assistant'; text: string; ts: number; source?: string }[]) =>
+  offlineImport: (persona: string, messages: { id: string; role: 'user' | 'assistant'; text: string; ts: number; source?: string; mode?: string }[]) =>
     request<{ imported: number; skipped: number }>(`/api/personas/${encodeURIComponent(persona)}/offline/import`, {
       method: 'POST',
       body: JSON.stringify({ user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID, messages }),
@@ -474,6 +589,13 @@ export const api = {
 
   // Пауза голосовой активации ядра («Коннор, …», WAKE_LISTEN) на seconds,
   // 0 — снять: пока открыт голосовой режим чата, голосом занят он
+  getDesktopPortrait: () => request<DesktopPortraitStatus>('/api/desktop/portrait'),
+  setDesktopPortrait: (persona: string, shown: boolean) =>
+    request<DesktopPortraitStatus>('/api/desktop/portrait', {
+      method: 'POST',
+      body: JSON.stringify({ persona, shown }),
+    }),
+
   holdWake: (seconds: number) =>
     request<{ held: boolean }>('/api/voice/wake/hold', {
       method: 'POST',
@@ -514,6 +636,16 @@ export const api = {
     request<{ status: string }>('/api/chat/clear', {
       method: 'POST',
       body: JSON.stringify({ persona, user_id: userId, chat_id: WEB_CHAT_ID, ...(parts ? { parts } : {}) }),
+    }),
+
+  // «Стоп»: оборвать ответ, который персона сейчас пишет в этот чат (ответ в
+  // историю не ляжет, стрим хода закончится cancelled). cancelled — сколько
+  // ходов оборвано; stopping — работает агент: он доделает шаг и ответит
+  // итогом; 0 и без stopping — останавливать нечего (ответ уже готов)
+  cancelChat: (persona: string, userId: string = WEB_USER_ID) =>
+    request<{ cancelled: number; stopping?: boolean }>('/api/chat/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ persona, user_id: userId, chat_id: WEB_CHAT_ID }),
     }),
 
   // Корзина очистки: снапшот последнего сброса (parts — стёртые части, null — всё)
@@ -600,6 +732,12 @@ export const api = {
   // Заметки пользователя (блок на главной): книжка персоны, свежие сверху
   getNotes: (persona: string) =>
     request<{ items: NoteEntry[] }>(`/api/personas/${encodeURIComponent(persona)}/notes`),
+  // Заметки, записанные на телефоне без ядра (offline/localNotes.ts)
+  importNotes: (persona: string, notes: { id: string; text: string; created_at: number; updated_at: number | null }[]) =>
+    request<{ imported: number; skipped: number }>(`/api/personas/${encodeURIComponent(persona)}/notes/import`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    }),
 
   addNote: (persona: string, text: string) =>
     request<{ note: NoteEntry }>(`/api/personas/${encodeURIComponent(persona)}/notes`, {
@@ -721,6 +859,18 @@ export const api = {
 
   regenerateWebhook: () =>
     request<{ ok: boolean; path: string }>('/api/integrations/webhook/regenerate', { method: 'POST' }),
+
+  // Сервисы телефона без компьютера → ядро (offline/phoneServices.ts): ключи,
+  // курсоры, правила и лента; ядро — главное, свои аккаунты не заменяет
+  importPhoneServices: (bundle: object) =>
+    request<{
+      ok: boolean;
+      moved: string[];
+      skipped: Record<string, string>;
+      rules: number;
+      items: number;
+      notify: string[];
+    }>('/api/integrations/import', { method: 'POST', body: JSON.stringify(bundle) }),
 
   getReminders: (persona: string) =>
     request<{ items: ReminderEntry[] }>(
@@ -852,20 +1002,105 @@ export const api = {
       body: JSON.stringify(patch),
     }),
 
-  // Живой портрет (голосовой режим): листы ракурсов головы
-  getPortrait: (persona: string) =>
-    request<PortraitData>(`/api/personas/${encodeURIComponent(persona)}/portrait`),
+  // Живой портрет (голосовой режим): листы ракурсов головы. avatar — id
+  // персоны или «персона@режим» (splitAvatar)
+  getPortrait: (avatar: string) => request<PortraitData>(portraitUrl(avatar)),
+  getInitiativeBadge: (persona: string) =>
+    request<InitiativeBadge>(portraitUrl(persona, '/initiative-badge')),
+  putInitiativeBadge: (persona: string, badge: InitiativeBadge) =>
+    request<InitiativeBadge>(portraitUrl(persona, '/initiative-badge'), {
+      method: 'PUT', body: JSON.stringify(badge),
+    }),
 
-  putPortraitSheet: (persona: string, sheet: PortraitSheet, body: PortraitSheetUpdate) =>
-    request<PortraitData>(`/api/personas/${encodeURIComponent(persona)}/portrait/${sheet}`, {
+  // Что показывать сейчас: аватар режима, включённого в основном чате
+  // (mode — режим, avatar — чьи листы; "" — обычные)
+  getLivePortrait: (persona: string) => request<PortraitData>(portraitUrl(persona, '', { live: '1' })),
+
+  // Что есть у аватаров режимов персоны ("" — обычный) и режим чата сейчас
+  getPortraitModes: (persona: string) => request<PortraitModesOverview>(portraitUrl(persona, '/modes')),
+
+  // Анимации перехода из режима from в режим to ("" — обычный) с атласами
+  getPortraitSwitch: (persona: string, from: string, to: string) =>
+    request<{ anims: PortraitAnim[] }>(portraitUrl(persona, '/switch', { from, to })),
+
+  // sheet — ключ листа: «A», «VO» или лист эмоции «id.A» (sheetKey)
+  putPortraitSheet: (avatar: string, sheet: string, body: PortraitSheetUpdate) =>
+    request<PortraitData>(portraitUrl(avatar, `/${encodeURIComponent(sheet)}`), {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
 
-  deletePortraitSheet: (persona: string, sheet: PortraitSheet) =>
-    request<PortraitData>(`/api/personas/${encodeURIComponent(persona)}/portrait/${sheet}`, {
+  deletePortraitSheet: (avatar: string, sheet: string) =>
+    request<PortraitData>(portraitUrl(avatar, `/${encodeURIComponent(sheet)}`), {
       method: 'DELETE',
     }),
+
+  // Эмоции портрета: id 'new' — новая (её id — в created ответа); mood:
+  // null — только по маркеру, не передан — прежнее условие
+  putPortraitEmotion: (avatar: string, id: string, name: string, hint: string, mood?: EmotionMood | null) =>
+    request<PortraitData>(portraitUrl(avatar, `/emotions/${encodeURIComponent(id)}`), {
+      method: 'PUT',
+      body: JSON.stringify(mood === undefined ? { name, hint } : { name, hint, mood }),
+    }),
+
+  // Настроение персоны сейчас (null — живого состояния нет): эмоции «по настроению»
+  getPortraitMood: (persona: string) =>
+    request<{ mood: PersonaMood | null }>(portraitUrl(splitAvatar(persona).persona, '/mood')),
+
+  deletePortraitEmotion: (avatar: string, id: string) =>
+    request<PortraitData>(portraitUrl(avatar, `/emotions/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+    }),
+
+  // «Показать на рабочем столе»: портрет на столе сменит выражение лица
+  showPortraitEmotion: (avatar: string, id: string) =>
+    request<{ ok: boolean }>(portraitUrl(avatar, `/emotions/${encodeURIComponent(id)}/show`), {
+      method: 'POST',
+    }),
+
+  // Анимации портрета на рабочем столе (app/api/portrait_anim.py): свои
+  // листы кадров; id 'new' — новая (id выдаёт ядро)
+  getPortraitAnims: (avatar: string, atlas = true) =>
+    request<PortraitAnims>(portraitUrl(avatar, '/anims', atlas ? {} : { atlas: '0' })),
+
+  putPortraitAnim: (avatar: string, id: string, body: AnimUpdate) =>
+    request<PortraitAnims>(portraitUrl(avatar, `/anims/${encodeURIComponent(id)}`), {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  deletePortraitAnim: (avatar: string, id: string) =>
+    request<PortraitAnims>(portraitUrl(avatar, `/anims/${encodeURIComponent(id)}`), { method: 'DELETE' }),
+
+  putPortraitAnimSettings: (avatar: string, settings: AnimSettings) =>
+    request<PortraitAnims>(portraitUrl(avatar, '/anims-settings'), {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }),
+
+  // «Проиграть на рабочем столе»: портрет получит её лентой реплик
+  playPortraitAnim: (avatar: string, id: string) =>
+    request<{ ok: boolean }>(portraitUrl(avatar, `/anims/${encodeURIComponent(id)}/play`), { method: 'POST' }),
+
+  // Редактор кадров (app/api/portrait_frames.py): источник — лист портрета
+  // или анимация; cutFrames — нарезка на пробу, без записи на диск
+  getFrames: (avatar: string, kind: FrameKind, id: string) =>
+    request<FrameSourceData>(framesPath(avatar, kind, id)),
+
+  getFrameSheet: async (avatar: string, kind: FrameKind, id: string): Promise<Blob> => {
+    const res = await apiFetch(framesPath(avatar, kind, id, '/sheet'), { headers: authHeader() });
+    if (!res.ok) {
+      noteAuthFailure(res);
+      throw new ApiError(res.status, `HTTP ${res.status}`);
+    }
+    return res.blob();
+  },
+
+  cutFrames: (avatar: string, kind: FrameKind, id: string, cut: FrameCut) =>
+    request<FrameAtlas>(framesPath(avatar, kind, id, '/cut'), { method: 'POST', body: JSON.stringify(cut) }),
+
+  putFrames: (avatar: string, kind: FrameKind, id: string, body: FrameCut & { fix: FrameFix; timing: FrameTiming | null; order?: number[] | null }) =>
+    request<FrameSourceData>(framesPath(avatar, kind, id), { method: 'PUT', body: JSON.stringify(body) }),
 
   // «Заглянул в комнату» (glance) или погладили живой портрет (pet): до LLM
   // доходит, только если разрешено фичей и лимитом
@@ -923,7 +1158,7 @@ export const api = {
   // pending — реплики, которые персона сейчас обрабатывает, отправленные с
   // других устройств (в историю они лягут вместе с ответом)
   getInbox: (persona: string, focused?: boolean) =>
-    request<{ messages: InboxMessage[]; generating?: boolean; pending?: PendingReply[]; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null }>(
+    request<{ messages: InboxMessage[]; generating?: boolean; pending?: PendingReply[]; last_ts?: number; control_mode?: boolean; phone_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null; avatar_mode?: string }>(
       `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}&client_id=${inboxClientId()}${focused ? '&focused=1' : ''}`,
     ),
 
@@ -932,6 +1167,15 @@ export const api = {
   waitChanges: (since: number | null, epoch: string, wait: number, signal: AbortSignal) =>
     request<{ version: number; epoch: string; personas: string[] | null }>(
       `/api/changes?${since == null ? '' : `since=${since}&epoch=${encodeURIComponent(epoch)}&wait=${wait}`}`,
+      { signal },
+    ),
+
+  // Лента реплик персон (app/api/said) — долгий опрос: реплики и пауза до
+  // ответа (heard — ваше сообщение, settled — ход кончился). Первый запрос —
+  // без since: сразу, только номер. emo — и эмоции лица (kind emo, текст — id)
+  waitSaid: (since: number | null, epoch: string, wait: number, signal: AbortSignal, emo = false) =>
+    request<{ messages: { persona: string; text: string; kind: string }[]; cursor: number; epoch: string }>(
+      `/api/said?chat_id=${WEB_CHAT_ID}${emo ? '&emo=1' : ''}${since == null ? '' : `&since=${since}&epoch=${encodeURIComponent(epoch)}&wait=${wait}`}`,
       { signal },
     ),
 
@@ -1029,6 +1273,37 @@ export const api = {
     request<TimezoneConfig>('/api/settings/timezone', {
       method: 'PUT',
       body: JSON.stringify({ timezone }),
+    }),
+
+  // ── Экономия нейронки: где вместо вызова модели работает код (все персоны) ──
+
+  getLlmEconomy: () => request<LlmEconomy>('/api/settings/llm-economy'),
+
+  // Частичная правка: только переданные пункты; ответ — всё состояние
+  setLlmEconomy: (items: Record<string, boolean>) =>
+    request<LlmEconomy>('/api/settings/llm-economy', {
+      method: 'PUT',
+      body: JSON.stringify({ items }),
+    }),
+
+  // ── Скорость текста у аватара (облачко портрета на столе и виджета) ──
+
+  getAvatarText: () => request<AvatarText>('/api/settings/avatar-text'),
+
+  // Частичная правка; ответ — всё состояние
+  setAvatarText: (patch: { words_per_sec?: number; part_sec?: number }) =>
+    request<AvatarText>('/api/settings/avatar-text', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  // ── Как выглядит веб на компьютере (портрет на столе рисует голову скином) ──
+
+  // Выбор целиком: общий скин, свои темы персон, схема; ответ — сохранённое
+  setUiLook: (look: UiLook) =>
+    request<UiLook>('/api/settings/ui-look', {
+      method: 'PUT',
+      body: JSON.stringify(look),
     }),
 
   // Логи ядра (режим разработчика): инкрементальная выборка по seq
@@ -1197,6 +1472,101 @@ export const api = {
     request<{ filename: string; content: string }>(
       `/api/personas/${encodeURIComponent(persona)}/files/${encodeURIComponent(filename)}/content`,
     ),
+
+  // ── Режимы персоны (досье → «Режимы», окно «Редактировать») ──
+
+  getPersonaPhrases: (persona: string) =>
+    request<PersonaPhraseBank>(`/api/personas/${encodeURIComponent(persona)}/phrases`),
+
+  savePersonaPhrases: (persona: string, group: PersonaPhraseGroup, variants: string[]) =>
+    request<{ ok: boolean; group: PersonaPhraseGroup }>(
+      `/api/personas/${encodeURIComponent(persona)}/phrases`,
+      { method: 'PUT', body: JSON.stringify({ group_id: group.id, revision: group.revision, variants }) },
+    ),
+
+  getPersonaModes: (persona: string) =>
+    request<PersonaModesList>(`/api/personas/${encodeURIComponent(persona)}/modes`),
+
+  getPersonaModeYaml: (persona: string, mode: string) =>
+    request<{ mode: string; yaml: string; builtin: boolean }>(
+      `/api/personas/${encodeURIComponent(persona)}/modes/${encodeURIComponent(mode)}`,
+    ),
+
+  savePersonaMode: (persona: string, mode: string, yaml: string, create = false) =>
+    request<PersonaModesList>(`/api/personas/${encodeURIComponent(persona)}/modes/${encodeURIComponent(mode)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ yaml, create }),
+    }),
+
+  uploadPersonaMode: (persona: string, file: File, opts: { mode?: string; overwrite?: boolean } = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    const q = new URLSearchParams();
+    if (opts.mode) q.set('mode', opts.mode);
+    if (opts.overwrite) q.set('overwrite', 'true');
+    const qs = q.toString();
+    return request<PersonaModesList>(`/api/personas/${encodeURIComponent(persona)}/modes${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  deletePersonaMode: (persona: string, mode: string) =>
+    request<PersonaModesList>(`/api/personas/${encodeURIComponent(persona)}/modes/${encodeURIComponent(mode)}`, {
+      method: 'DELETE',
+    }),
+
+  personaModeSkeleton: (persona: string, name: string, lang: string) =>
+    request<{ yaml: string; id: string }>(
+      `/api/personas/${encodeURIComponent(persona)}/mode-skeleton?name=${encodeURIComponent(name)}&lang=${encodeURIComponent(lang)}`,
+    ),
+
+  // ── Лор персоны (история и мир, в промпт — куски к реплике) ──
+
+  getLore: (persona: string) => request<LoreInfo>(`/api/personas/${encodeURIComponent(persona)}/lore`),
+
+  uploadLore: (persona: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<LoreInfo>(`/api/personas/${encodeURIComponent(persona)}/lore`, { method: 'POST', body: form });
+  },
+
+  deleteLore: (persona: string, filename: string) =>
+    request<LoreInfo>(
+      `/api/personas/${encodeURIComponent(persona)}/lore/${encodeURIComponent(filename)}`,
+      { method: 'DELETE' },
+    ),
+
+  getLoreFile: (persona: string, filename: string) =>
+    request<LoreFileView>(
+      `/api/personas/${encodeURIComponent(persona)}/lore/${encodeURIComponent(filename)}/view`,
+    ),
+
+  // Исходный файл лора (blob: заголовок с токеном простой ссылкой не передать)
+  loreOriginal: async (persona: string, filename: string): Promise<Blob> => {
+    const res = await apiFetch(
+      `/api/personas/${encodeURIComponent(persona)}/lore/${encodeURIComponent(filename)}/original`,
+      { headers: authHeader() },
+    );
+    if (!res.ok) {
+      noteAuthFailure(res);
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (typeof body?.detail === 'string') detail = body.detail;
+      } catch {
+        /* тело не JSON */
+      }
+      throw new ApiError(res.status, detail);
+    }
+    return res.blob();
+  },
+
+  searchLore: (persona: string, query: string, previous = '') =>
+    request<LoreSearchResult>(`/api/personas/${encodeURIComponent(persona)}/lore/search`, {
+      method: 'POST',
+      body: JSON.stringify({ query, previous }),
+    }),
 };
 
 export type ApiSkinScreen = 'chat' | 'dossier' | 'room';
@@ -1238,6 +1608,106 @@ export interface ApiSkinUpdate {
   screens?: Partial<Record<ApiSkinScreen, number | null>>; // null — убрать экран
   colors?: Record<string, string>;
   hue_shift?: number;
+}
+
+export interface LoreFile {
+  name: string;
+  chars: number;
+  chunks: number;
+  ts: number; // секунды
+  sections: { title: string; chunks: number }[];
+  original?: number; // байт исходного файла; нет — загружен до того, как их стали хранить
+}
+
+// Файл лора для просмотра: текст с заголовками, как его увидела нарезка, и сами куски
+export interface LoreFileView {
+  name: string;
+  chars: number;
+  chunks: number;
+  ts: number;
+  ext: string;
+  original: boolean; // исходный файл сохранён — можно открыть (PDF) или скачать
+  blocks: { h?: number; t: string }[]; // h — заголовок этого уровня, иначе абзац
+  pieces: { s: string; t: string }[]; // s — раздел куска
+}
+
+// Режим персоны (<id>_modes/<режим>.yaml): свой характер, память общая
+export interface PersonaModeInfo {
+  id: string;
+  kind: 'trigger' | 'master' | 'mortal'; // master/mortal — по собеседнику
+  builtin: boolean; // файл проекта: удалить нельзя, только переписать своим
+  overrides_builtin: boolean; // свой поверх встроенного: удаление вернёт встроенный
+  name: string;
+  description: string;
+  names: string[];
+  keywords: string[];
+  exit_keywords: string[];
+  mood: string | null;
+  hold_minutes: number | null;
+  error: string; // не пусто — режим не действует (YAML не читается, нет system_prompt)
+  updated?: number;
+}
+
+// GET /api/personas/{p}/portrait/modes (app/api/avatar_modes.overview):
+// режим ("" — обычный) → есть ли свой лист A, сколько своих анимаций (без
+// переходов) и переходов в него; active — режим основного чата сейчас
+export interface PortraitModesOverview {
+  modes: Record<string, { head: boolean; anims: number; switches: number }>;
+  active: string;
+}
+
+export interface PersonaPhraseGroup {
+  id: string;
+  section: 'errors' | 'kinds' | 'phrases';
+  key: string;
+  bucket: 'ok' | 'err' | null;
+  mode: string;
+  mode_name: string;
+  language: string;
+  variants: string[];
+  revision: string;
+  edited: boolean;
+  stale: boolean;
+  placeholders: string[];
+  required_placeholders: string[];
+  max_length: number;
+}
+
+export interface PersonaPhraseBank {
+  persona: string;
+  groups: PersonaPhraseGroup[];
+  generating: boolean;
+}
+
+export interface PersonaModesList {
+  persona: string;
+  modes: PersonaModeInfo[];
+  base_names: string[]; // обычные имена персоны — снимают режим, включённый по имени
+  folder: string;
+  skipped: string[]; // файлы в папке, которые ядро не возьмёт (.yml, id с пробелом)
+  saved?: string;
+  warnings?: string[];
+  reset?: boolean; // удалён свой файл — вернулся встроенный
+}
+
+export interface LoreInfo {
+  files: LoreFile[];
+  chars: number;
+  chunks: number;
+}
+
+export interface LoreHit {
+  file: string;
+  section: string;
+  text: string;
+  similarity: number;
+  words: boolean; // совпало редкое слово реплики
+}
+
+export interface LoreSearchResult {
+  hits: LoreHit[];
+  weak: boolean;
+  skipped: 'smalltalk' | 'off_topic' | 'no_lore' | null;
 }
 
 export interface FileEntry {
@@ -1507,6 +1977,92 @@ export async function fetchSentFile(file: SentFile): Promise<Blob> {
     throw new ApiError(res.status, detail);
   }
   return res.blob();
+}
+
+/** Import one path from the core computer. Keep credentials in headers. */
+export async function importPlayerPath(path: string): Promise<Blob> {
+  const res = await apiFetch('/api/player/import-path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    noteAuthFailure(res);
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch { /* keep HTTP status */ }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+}
+
+export interface BrowserPlayerStatus {
+  source?: 'youtube' | 'youtube_music' | 'local' | 'library';
+  running: boolean;
+  state: 'stopped' | 'waiting' | 'playing' | 'paused' | 'buffering' | 'error';
+  headless: boolean;
+  title: string;
+  url: string;
+  position: number;
+  duration: number;
+  volume: number;
+  muted: boolean;
+  error: string;
+  playlist_id?: string | null;
+  playlist_name?: string | null;
+  queue_index?: number | null;
+  queue_length?: number | null;
+  save_error?: string;
+}
+
+export function browserPlayerStatus(): Promise<BrowserPlayerStatus> {
+  return request('/api/player/browser');
+}
+
+export type MusicProvider = 'youtube' | 'youtube_music';
+export function getPlayerSettings(): Promise<{ provider: MusicProvider }> {
+  return request('/api/player/settings');
+}
+export function setPlayerProvider(provider: MusicProvider): Promise<{ provider: MusicProvider }> {
+  return request('/api/player/settings', { method: 'PUT', body: JSON.stringify({ provider }) });
+}
+export function playSong(query: string, provider: MusicProvider, headless: boolean, volume: number): Promise<BrowserPlayerStatus> {
+  return request('/api/player/play', { method: 'POST', body: JSON.stringify({ query, provider, headless, volume }) });
+}
+
+export function playBrowserMusic(url: string, headless: boolean, volume: number): Promise<BrowserPlayerStatus> {
+  return request('/api/player/browser/play', { method: 'POST', body: JSON.stringify({ url, headless, volume }) });
+}
+
+export interface SavedSong {
+  id: string; url: string; title: string; source: MusicProvider; origin: string; created: number;
+}
+export interface MusicPlaylist { id: string; name: string; track_ids: string[]; created: number }
+export interface MusicCatalog { revision: number; tracks: SavedSong[]; playlists: MusicPlaylist[]; playlist_id?: string }
+export function getMusicCatalog(): Promise<MusicCatalog> { return request('/api/player/saved'); }
+export function saveSongLink(url: string, title = '', playlist_id?: string): Promise<MusicCatalog> {
+  return request('/api/player/saved', { method: 'POST', body: JSON.stringify({ url, title, playlist_id }) });
+}
+export function deleteSongLink(id: string): Promise<MusicCatalog> { return request(`/api/player/saved/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+export function createMusicPlaylist(name: string): Promise<MusicCatalog> { return request('/api/player/playlists', { method: 'POST', body: JSON.stringify({ name }) }); }
+export function updateMusicPlaylist(id: string, change: { name?: string; track_ids?: string[]; add_track_id?: string; remove_track_id?: string }): Promise<MusicCatalog> {
+  return request(`/api/player/playlists/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(change) });
+}
+export function deleteMusicPlaylist(id: string): Promise<MusicCatalog> { return request(`/api/player/playlists/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+export function playMusicPlaylist(playlist_id: string | undefined, track_id: string | undefined, headless: boolean, volume: number): Promise<BrowserPlayerStatus> {
+  return request('/api/player/playlists/play', { method: 'POST', body: JSON.stringify({ playlist_id, track_id, headless, volume }) });
+}
+
+export type PlayerCommand = 'pause' | 'resume' | 'stop' | 'volume' | 'volume_up' | 'volume_down' | 'seek' | 'next' | 'previous';
+export function controlBrowserMusic(command: PlayerCommand, value?: number): Promise<BrowserPlayerStatus> {
+  return request('/api/player/browser/control', { method: 'POST', body: JSON.stringify({ command, value }) });
+}
+
+export function updateLibraryPlayer(client: string, status: Pick<BrowserPlayerStatus, 'state' | 'title' | 'position' | 'duration' | 'volume'>,
+  activate: boolean, ack?: string, error?: string): Promise<{ active: boolean; commands: { id: string; command: PlayerCommand; value?: number }[] }> {
+  return request('/api/player/library', { method: 'POST', body: JSON.stringify({ client, status, activate, ack, error }) });
 }
 
 // Арт-направление скина (POST /api/skins/direction): сюжет, палитра с ролями,

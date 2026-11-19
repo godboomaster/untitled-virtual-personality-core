@@ -381,6 +381,25 @@ def main():
                     "u", "c", "U", "ru")
     check("E1: составная цель — хвост не потерян («…закажи её»)",
           ta_goals == ["найди пиццу закажи её"])
+    # 29.10: «найди мне горький шоколад с апельсином» в режиме управления
+    # ушло персоне (веб-поиск), а на «да» маркер открыл главную wildberries.
+    # Фраза — команда (модель спрошена), «найди мне <товар>» — задача агенту
+    b = mkbot()
+    choc = "найди мне горький шоколад с апельсином"
+    b._cc_fast_path(choc, choc, "u", "c", "U", "ru")
+    check("29.10: «найди мне <товар>» — похоже на команду, модель спрошена",
+          len(b.computer_control.llm_calls) == 1
+          and "шоколад" in b.computer_control.llm_calls[0])
+    b = mkbot(llm_result=({"kind": "task", "goal": choc}, None),
+              task_agent=ta)
+    ta_goals = []
+    b._task_agent_turn = lambda *a, **kw: (ta_goals.append(kw.get("goal")),
+                                           "TA")[1]
+    r = b._cc_fast_path(choc, choc, "u", "c", "U", "ru")
+    check("29.10: task «найди мне <товар>» — агенту, без маркера и pending",
+          ta_goals == [choc] and r == "TA"
+          and b.computer_control.get_pending("c") is None
+          and not b.computer_control.executed)
     from app.bot_instance import BotInstance as _BI
     check("E1: «скачай отчёт с сайта X» — не разовое скачивание здесь",
           _BI._cc_parse_page_command("скачай отчёт с сайта вуз") is None

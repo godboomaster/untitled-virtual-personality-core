@@ -1,0 +1,7 @@
+Built-in image_gen. Edit target: 44-ribbon-base-offset-ghost.png. Locally round the small outward transitions directly beneath the black ribbon while retaining straight body edges and the black collar base.
+
+Precise small local edit to the supplied ghost-and-cracked-egg logo.
+Change ONLY the two little outward offsets at the BOTTOM of the black neck ribbon, where the ribbon transitions into the straight widening body edges.
+Currently those offsets have sharp right-angle stair-step corners. Gently ROUND AND SMOOTH those corners with a small-radius flowing transition. Preserve the modest outward offset itself; it should remain visible but softly rounded, not a hard step. The transition starts directly from the solid BLACK bottom of the ribbon, with NO white patch, white shoulder or gap between ribbon and offset. Keep the area solid black. Make both sides match.
+The rounding is LOCAL, confined to roughly one or two outline widths immediately under the collar. After that small smooth shoulder, the body edges must continue as the same STRAIGHT sloping lines all the way to the shell. Do not curve the whole body or reintroduce folds.
+Preserve everything else exactly: circular head and eyes, collar size, white fold-free body, sharp angular body/shell zigzag, both ivory shell pieces, fractures and facets, all colors, composition, outlines and white background. No new details or text.

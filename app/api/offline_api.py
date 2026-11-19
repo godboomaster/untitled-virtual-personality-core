@@ -40,11 +40,12 @@ from typing import Optional
 
 import numpy as np
 
+from app.core import lore
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import user_language_line
 from app.core.paths import data_dir
 from app.core.persona import (ENV_RULE, SELF_MEMORY_RULE, STM_RELEVANT_HEAD, STM_RELEVANT_RULE,
-                              WEB_SOURCE_PRIORITY, persona_prompt)
+                              VOICE_NOTE, WEB_SOURCE_PRIORITY, persona_prompt)
 from app.core.st_embedder import ST_MODEL_NAME
 from app.features import short_prompt
 
@@ -121,6 +122,60 @@ REMINDER_NOTES = {
         "Morning means 09:00, afternoon 15:00, evening 19:00, night 23:00 unless an hour is given."
     ),
 }
+
+
+# Телефон без компьютера вовсе (скачан только APK, ядра нет или персона
+# создана на телефоне, а кита с ядра на нём ни одного): правила и заметки
+# напоминаний — без «вернусь на компьютер». Телефон берёт их из базового
+# кита, вшитого в приложение (build_base_kit → web/src/offline/baseKit.ts,
+# scripts/gen_offline_base_kit.py; --check сверяет копию)
+STANDALONE_RULES = (
+    "You are answering in the user's phone app, and no computer is connected right now, "
+    "so you have no tools beyond what the app gives you. You remember the recent "
+    "conversation, the facts listed below and what the app notes from your earlier "
+    "conversation. Stay fully in character and keep replies short and conversational. "
+    "Reminders are handled by the app: confirm one only when a note from the app says "
+    "it was set, and never claim to have set one otherwise. Web search results, when present, are given "
+    "below — you can't browse by yourself. Don't claim to add to-dos or inventory, open "
+    "sites or control a computer — if asked, say it isn't available in the phone app yet. "
+    "Don't invent facts about the user beyond what is listed below or noted from your "
+    "earlier conversation."
+)
+
+STANDALONE_NOTES = {
+    "recurring": ("The user asked for a repeating reminder{task}. Repeating reminders aren't "
+                  "available in the phone app — say so briefly and offer a one-time reminder "
+                  "instead."),
+}
+
+
+def build_base_kit() -> dict:
+    """Общее для всех персон без кита с ядра — вшивается в приложение.
+
+    То же, что build_kit кладёт в каждый кит (правила к выдаче поиска и к
+    строке окружения, заметки напоминаний, гейт поиска, правило вопросов по
+    умолчанию, описания погодных кодов), но правила — для телефона без
+    компьютера. Без персоны, памяти и секретов."""
+    from app.features.conversation_style import DEFAULT_FREQUENCY, build_style_note
+    from app.features.env_context import _WMO_DESC
+    notes = {**REMINDER_NOTES, **STANDALONE_NOTES}
+    return {
+        "version": KIT_VERSION,
+        "rules_text": STANDALONE_RULES,
+        "style": build_style_note(DEFAULT_FREQUENCY) or "",
+        # Правила лора — и персонам, созданным на телефоне: лор им можно
+        # загрузить прямо там (web/src/offline/localLore.ts)
+        "rules": {"web": WEB_SOURCE_PRIORITY, "env": ENV_RULE, "self_memory": SELF_MEMORY_RULE,
+                  "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE,
+                  "lore_head": lore.HEAD, "lore_weak": lore.WEAK_HEAD, "lore": lore.RULE,
+                  "lore_gap": lore.GAP_RULE},
+        "notes": {k: v.replace("{{", "{").replace("}}", "}") for k, v in notes.items()},
+        "search_gate": _search_gate(),
+        "weather_codes": {str(k): v for k, v in _WMO_DESC.items()},
+        # Запрос краткого описания для модели телефона (short_prompt.CARD_PROMPT):
+        # телефон без ядра составляет его сам или отдаёт промпт человеку
+        "card_prompt": short_prompt.CARD_PROMPT,
+    }
 
 
 def _persona_name(bot, persona_id: str) -> str:
@@ -215,6 +270,18 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
         except Exception as e:
             logger.warning(f"[Offline] {persona_id}: напоминания для кита не собраны: {e}")
 
+    # Режимы персоны (app/core/persona_modes): режим чата и журнал — телефон
+    # помечает в истории ответы другого режима, как ядро; образцы голоса
+    # режима (voice_examples) — в конец системного блока
+    modes, voice = None, None
+    if persona is not None:
+        try:
+            modes = persona.mode_kit(key)
+            lines = persona.voice_examples((modes or {}).get("current") or None)
+            voice = {"lines": lines, "note": VOICE_NOTE} if lines else None
+        except Exception as e:
+            logger.debug(f"[Offline] {persona_id}: режимы для кита не собраны: {e}")
+
     return {
         "version": KIT_VERSION,
         "persona": persona_id,
@@ -244,11 +311,17 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
         "env": _env_location(),
         "reminders": reminders,
         "reminders_enabled": rm is not None,
+        # Версия лора: разошлась с копией на телефоне — забрать (build_lore)
+        "lore_stamp": lore.store_for(persona_id).stamp(),
         "rules": {"web": WEB_SOURCE_PRIORITY, "env": ENV_RULE, "self_memory": SELF_MEMORY_RULE,
-                  "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE},
+                  "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE,
+                  "lore_head": lore.HEAD, "lore_weak": lore.WEAK_HEAD, "lore": lore.RULE,
+                  "lore_gap": lore.GAP_RULE},
         # Подстановка на телефоне — простой заменой {now}/{task}/{when}/{list}
         "notes": {k: v.replace("{{", "{").replace("}}", "}") for k, v in REMINDER_NOTES.items()},
         "search_gate": _search_gate(),
+        "modes": modes,
+        "voice": voice,
     }
 
 
@@ -363,6 +436,16 @@ def build_memory(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
     return out
 
 
+def build_lore(persona_id: str) -> dict:
+    """Лор персоны для телефона: куски и их векторы. Телефон берёт его, когда
+    метка в ките (lore_stamp) разошлась с его копией: лор меняется редко."""
+    data = lore.store_for(persona_id).export()
+    chunks = [{**c, "v": pack_vector(v)} for c, v in zip(data["chunks"], data["vectors"])]
+    dim = int(data["vectors"].shape[1]) if chunks else 0
+    return {"persona": persona_id, "stamp": data["stamp"], "chunks": chunks,
+            "vectors": {"model": ST_MODEL_NAME, "dim": dim} if chunks else None}
+
+
 def _env_location() -> Optional[dict]:
     """Город пользователя для погоды на телефоне (погоду телефон берёт сам у
     Open-Meteo) — если местоположение включено в настройках."""
@@ -383,10 +466,17 @@ def _env_location() -> Optional[dict]:
 def _search_gate() -> dict:
     """Шаблоны гейта веб-поиска (app/features/search_gate.py): телефон без
     ноутбука ищет по тем же правилам. Регулярки — синтаксис Python; \\w
-    телефон заменяет на буквы Unicode."""
+    телефон заменяет на буквы Unicode. need — белый список (когда поиск
+    нужен), every_message — пункт «Экономии нейронки» search_every_message:
+    искать на всё, кроме связок, как раньше."""
+    from app.core import llm_economy
     from app.features import search_gate as g
     return {"address_words": sorted(g._ADDRESS_WORDS), "smalltalk": sorted(g._SMALLTALK),
-            "self_patterns": list(g._SELF_PATTERNS)}
+            "self_patterns": list(g._SELF_PATTERNS),
+            "need": {k: list(v) for k, v in g._NEED.items()},
+            "need_limits": {"fresh_min_words": g.FRESH_MIN_WORDS,
+                            "topic_short_words": g.TOPIC_SHORT_WORDS},
+            "every_message": llm_economy.enabled("search_every_message")}
 
 
 def provider_creds(bot) -> list[dict]:
@@ -490,10 +580,21 @@ def import_messages(bot, chat_id: str, user_id: str, messages: list[dict],
                     continue
                 # Время с телефона, но не из будущего (часы телефона могут спешить)
                 at = min(float(m.get("ts") or 0) or time.time(), time.time())
+                # bulk — пачкой больше обычного (MemoryManager.EXTRACT_EVERY_BULK)
                 if role == "user":
-                    bot.memory.add_message("user", text, user_id, chat_id, user_name, timestamp=at)
+                    bot.memory.add_message("user", text, user_id, chat_id, user_name, timestamp=at,
+                                           bulk=True)
                 else:
-                    bot.memory.add_message("assistant", text, user_id, chat_id, timestamp=at)
+                    bot.memory.add_message("assistant", text, user_id, chat_id, timestamp=at, bulk=True)
+                    # Телефон отвечал режимом из кита — в журнал режимов чата:
+                    # ответ другого режима потом будет помечен в истории
+                    mode = m.get("mode")
+                    note_at = getattr(getattr(bot, "persona", None), "note_mode_at", None)
+                    if isinstance(mode, str) and callable(note_at):
+                        try:
+                            note_at(key, mode, at)
+                        except Exception as e:
+                            logger.debug(f"[Offline] {bot.context}: режим офлайн-ответа не записан: {e}")
         seen_list = (seen_list + [str(m.get("id")) for m in fresh])[-_SEEN_KEEP:]
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(path, {"ids": seen_list})

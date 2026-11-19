@@ -593,7 +593,6 @@ html[data-skin='laboratory'] .home-presence::after,
 html[data-skin='laboratory'] .skin-theme-card::after,
 html[data-skin='laboratory'] .dossier-panel::after,
 html[data-skin='laboratory'] .home-telemetry::after,
-html[data-skin='laboratory'] .home-dossier::after,
 html[data-skin='laboratory'] .start-guide-steps::after {
   content: '';
   position: absolute;
@@ -2055,56 +2054,6 @@ html[data-skin='laboratory'] .persona-tele-value {
   font-family: var(--font-disp);
   font-size: 19px;
   font-weight: 700;
-}
-
-/* Модули консоли на главной — панели манги вместо срезанных углов */
-html[data-skin='laboratory'] .home-dossier {
-  position: relative;
-  clip-path: none;
-  border: var(--lab-bw) solid var(--lab-ink);
-  background: var(--lab-paper);
-  transition: transform 0.25s ease, background 0.15s;
-}
-
-html[data-skin='laboratory'] .home-dossier:hover {
-  transform: translate(-2px, -2px);
-  background: var(--lab-paper);
-}
-
-html[data-skin='laboratory'] .home-dossier:hover::after {
-  transform: translate(calc(var(--lab-sh) + 2px), calc(var(--lab-sh) + 2px));
-}
-
-html[data-skin='laboratory'] .home-dossier h3 {
-  font-family: var(--font-disp);
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-html[data-skin='laboratory'] .home-dossier p {
-  font-size: 13.5px;
-  color: var(--lab-ink-2);
-}
-
-html[data-skin='laboratory'] .home-dossier-index {
-  align-self: flex-start;
-  padding: 1px 7px;
-  background: var(--lab-ink);
-  color: var(--lab-on-ink);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-}
-
-html[data-skin='laboratory'] .home-dossier-foot {
-  border-top: var(--lab-bw) dashed var(--lab-line-soft);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--lab-graphite);
-}
-
-html[data-skin='laboratory'] .home-dossier-foot .go {
-  color: var(--lab-ink);
 }
 
 /* «Старт»: шкала прогресса — линейка, маршруты — индексы, шаги — лист */

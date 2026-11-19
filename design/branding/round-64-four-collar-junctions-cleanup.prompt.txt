@@ -1,0 +1,15 @@
+Built-in image_gen. Full edit target: 95-user-faceted-infinity-collar-square-logo.png. Location guide: references/four-collar-junctions-markup-01.png. Output: 96-clean-four-collar-junctions-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: precise cleanup of four marked joins in the existing square ghost logo.
+Input image 1: COMPLETE LOGO EDIT TARGET, 95-user-faceted-infinity-collar-square-logo.png.
+Input image 2: CROPPED LOCATION GUIDE with four pink circles, references/four-collar-junctions-markup-01.png. Pink marks ONLY identify four small repair locations. They are not part of the design and must not appear in the output.
+Primary request: professionally finish ONLY the four circled neck junctions, while keeping the user's current faceted interwoven collar.
+1. UPPER LEFT, head contour to collar/leaf attachment: remove the stray needle-like slivers and doubled tiny triangular cuts. Create one clean deliberate white interruption with neatly aligned neighboring black contours. The head outline and its collar continuation should read as one natural underlying path with a small section erased.
+2. LOWER LEFT, collar/leaf attachment to torso outline: tidy the pointed stroke end and surrounding white notch. Make the torso stroke resume cleanly on its implied trajectory, with a short clear white separation. Keep the two leaves distinct.
+3. UPPER RIGHT, head contour to upper right collar strand: remove the tiny spur/sliver at the end of the head arc. Align the local collar endpoint and head endpoint so their outer and inner contours logically continue across a small white gap.
+4. LOWER RIGHT, lower right collar strand to torso outline: tidy and align the two facing stroke ends. Make the white interruption short, clean and even, with consistent black stroke thickness across it.
+Use narrow carefully placed white cuts appropriate to the existing logo, around 6–8 px at full image scale. Make only tiny local contour adjustments within the marked joins. Keep the natural flow and delicate faceted design; avoid bulky connector blocks, new elbow-shaped neck pieces, extra bars or mechanical-looking joints. Remove burrs and accidental fragments and keep each intended opening crisp.
+CRITICAL: preserve the EXACT current angular woven infinity-like collar construction between the four junctions: the long asymmetric left and right white openings, central diagonal over-under crossing, pointed corners, stripe widths and two outlined left leaves with their veins. Do not simplify, reshape or replace that collar. Preserve its location, height and width.
+Everything outside the four small repair spots stays as in image 1: the round head and solid black short oval eyes, body height and outline, jagged hem, white shell separator, entire lower shell and cracks, large overall scale, placement, square full framing, margins and white background.
+Output ONE COMPLETE SQUARE black-and-white logo, crisp flat vector-like contours. No pink annotations, crop marks, text, colors, upper shell, added symbols, gradients, shadows, texture or new objects.

@@ -28,7 +28,7 @@ from app.core.telegram_sender import TelegramMessageSender
 from app.core.message_pacing import send_delay as _send_delay
 from app.features.file_sender import prepare_response, cleanup_files
 from app.features.reply_context import extract_reply_context
-from app.features import screen_look
+from app.features import phone_control, screen_look
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,18 @@ def _md_to_html(text: str) -> str:
     ==выделение== — жирным.
     """
     return _rich_formatter.to_current_html(text)
+
+
+def _called_kw(bot, text: str) -> dict:
+    """called_as для process_message: каким именем персону позвали (Telegram
+    срезает его до бота), — имя режима персоны включает режим
+    (app/core/persona_modes). Заготовки ботов без called_name — пусто."""
+    get = getattr(bot, "called_name", None)
+    try:
+        name = get(text or "") if callable(get) else None
+    except Exception:
+        name = None
+    return {"called_as": name} if name else {}
 
 
 def _process_labeled(bot: BotInstance, text: str, **kwargs) -> tuple:
@@ -372,6 +384,7 @@ def create_handlers(bot: BotInstance) -> dict:
 
         lines = [
             "═══ ЧТО Я УМЕЮ ═══",
+            "/commands — команды привязанного робота",
             "",
             "💬 Общение",
             "— Отвечаю на trigger-слово, reply на моё сообщение или в личке.",
@@ -455,6 +468,8 @@ def create_handlers(bot: BotInstance) -> dict:
             ]
         if bot._web_search_enabled:
             lines.append("/web — вкл/выкл веб-поиск в этом чате")
+        if bot.persona._triggers():
+            lines.append("/mode — режим персоны: список, /mode <режим>, /mode off")
         if bot.self_memory and is_owner:
             lines.append("/reset_diary — очистить мой дневник (owner)")
 
@@ -468,6 +483,13 @@ def create_handlers(bot: BotInstance) -> dict:
             ]
 
         await update.message.reply_text("\n".join(lines))
+
+    async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from app.features import device_commands
+        chat_id = str(update.effective_chat.id)
+        reply = await asyncio.to_thread(device_commands.render, persona_name,
+                                        " ".join(context.args or ()), bot.chat_user_language(chat_id))
+        await update.message.reply_text(reply)
 
     async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = str(update.effective_chat.id)
@@ -648,6 +670,13 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text("Веб-поиск включён.")
         else:
             await update.message.reply_text("Веб-поиск выключен.")
+
+    async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Режимы персоны (app/core/persona_modes): список, включить, снять
+        chat_id = str(update.effective_chat.id)
+        args = " ".join(context.args or [])
+        await update.message.reply_text(
+            bot.mode_command(chat_id, args, lang=bot.chat_user_language(chat_id)))
 
     async def todo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.todo_manager:
@@ -935,6 +964,7 @@ def create_handlers(bot: BotInstance) -> dict:
             # управления «экран» — страница агента, её смотрит сам режим
             screen_raw = None
             if (screen_look.is_screen_request(clean_text) and _is_owner(bot, user_id)
+                    and not phone_control.mentions_phone(clean_text)
                     and not bot.control_mode_on(chat_id)):
                 await update.message.reply_text("Смотрю на экран...")
                 lang = detect_language(clean_text) or bot.chat_user_language(chat_id)
@@ -977,6 +1007,7 @@ def create_handlers(bot: BotInstance) -> dict:
                         raw_user_text=screen_raw,
                         # «Открой/пришли файл X» — из Telegram файл присылается
                         file_delivery="send",
+                        **_called_kw(bot, text),
                     )
                 finally:
                     typing_task.cancel()
@@ -1112,6 +1143,7 @@ def create_handlers(bot: BotInstance) -> dict:
                         # подписи, а не на извлечённый из файла текст — иначе «да»
                         # где-то в содержимом документа подтверждало бы клик/shell
                         raw_user_text=caption_clean,
+                        **_called_kw(bot, caption),
                     )
                     logger.info(f"[{provider_label}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
                     photos = bot.pop_pending_photos(chat_id)
@@ -1215,6 +1247,7 @@ def create_handlers(bot: BotInstance) -> dict:
                         # См. handle_document: подтверждение pending-действия — только
                         # по подписи, OCR-текст изображения в неё не подмешивается
                         raw_user_text=caption_clean,
+                        **_called_kw(bot, caption),
                     )
                     logger.info(f"[{provider_label}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
                     photos = bot.pop_pending_photos(chat_id)
@@ -1305,6 +1338,7 @@ def create_handlers(bot: BotInstance) -> dict:
     return {
         "start": start,
         "help": help_cmd,
+        "commands": commands_cmd,
         "stats": stats_cmd,
         "erase": erase_cmd,
         "clear": clear_cmd,
@@ -1321,6 +1355,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "reset_files": reset_files_cmd if bot.file_db else None,
         "ratelimits": ratelimits_cmd,
         "web": web_cmd if bot._web_search_enabled else None,
+        "mode": mode_cmd,
         "todo": todo_cmd if bot.todo_manager else None,
         "notes": notes_cmd if bot.notes is not None else None,
         "reminders": reminders_cmd if bot.reminder_manager else None,
@@ -1384,9 +1419,9 @@ def register_handlers(app: Application, bot: BotInstance):
             await handler(update, context)
         return run
 
-    for name in ("start", "help", "stats", "erase", "clear", "last", "reset", "forget",
+    for name in ("start", "help", "commands", "stats", "erase", "clear", "last", "reset", "forget",
                  "context", "relations", "resetall", "ltm_privacy", "ltm_export",
-                 "reset_diary", "files", "reset_files", "ratelimits", "web",
+                 "reset_diary", "files", "reset_files", "ratelimits", "web", "mode",
                  "todo", "notes", "reminders", "cancel_reminder", "inventory", "remind",
                  "add_todo", "add_inventory", "learn", "stop_learning"):
         if h.get(name):

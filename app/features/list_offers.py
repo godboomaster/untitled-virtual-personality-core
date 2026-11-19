@@ -139,12 +139,14 @@ class ListOffers:
 
     def begin(self, chat_id, kind: str, value, user_id=None,
               user_name: str = "", question: str = "",
-              task: Optional[str] = None) -> None:
+              task: Optional[str] = None, extra: Optional[dict] = None) -> None:
         # task — текст пункта под номером value (вопрос «Отметить пункт №N?»):
-        # по нему «да» сверяет, что номер всё ещё указывает туда же
+        # по нему «да» сверяет, что номер всё ещё указывает туда же.
+        # extra — данные вопроса для того, кто на него отвечает (cc_mode:
+        # имя телефона, если выполнить можно и там)
         with self._lock:
             self._offers[str(chat_id)] = {
-                "kind": kind, "value": value, "task": task,
+                "kind": kind, "value": value, "task": task, "extra": dict(extra or {}),
                 "user_id": str(user_id) if user_id else None,
                 "user_name": user_name or "", "question": question,
                 "asked_at": time.time(), "message_ids": []}

@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 56-thicker-flat-ribbon-ghost.png. Enlarge the ghost relative to the eggshell while preserving its proportions and design.
+
+Precise edit of the supplied ghost-and-cracked-egg logo.
+Make the ENTIRE GHOST approximately 15% LARGER RELATIVE TO THE EGGSHELL: enlarge its head, eyes, black ribbon and white body together proportionally. Keep its lower body emerging from the same opening in the lower eggshell, using that shell opening as the anchor so the ghost grows upward and outward. Preserve the ghost's exact current design: subtly wide face, tall narrow capsule eyes, flat face-to-ribbon edge, slightly thicker thin black ribbon, smooth small offsets and straight slender fold-free body.
+Keep the two eggshell pieces at their CURRENT SIZE, with the same facets, cracks and coloring. Maintain a small clear gap between the enlarged head and the floating upper shell piece; shift that upper shell fragment slightly upward/right ONLY if necessary to avoid overlap. Do not shrink the shell or enlarge the entire canvas content uniformly. The goal is specifically a larger, more prominent ghost within the same egg emblem.
+Preserve the sharp lower shell boundary, all styling, colors and white background. Keep the full emblem inside the frame with adequate margins; no clipping, extra details or text.

@@ -1,0 +1,5 @@
+Built-in image_gen. Edit target: 50-flat-ribbon-face-edge-ghost.png. Subtly widen the face horizontally while preserving its height and the rest of the emblem.
+
+Precise local edit of the supplied ghost-and-cracked-egg logo.
+Make ONLY the ghost's HEAD/FACE just a little wider HORIZONTALLY, by approximately 7–8%, centered on its current centerline. Keep the head's vertical height and vertical position unchanged. The result should be a very subtly horizontally elongated rounded face, not a dramatically wide oval.
+Keep the two dark vertical capsule eyes the same shape, height and width, with the same calm expression and approximately the same spacing. Preserve the straight horizontal contact edge between the face and the thin black ribbon. Keep the ribbon, smooth lower offsets and slender straight-sided white body unchanged. Preserve both eggshell pieces, sharp body-to-shell seam, fractures, facets, colors, outlines, framing and white background. No other edits, no text or new elements.

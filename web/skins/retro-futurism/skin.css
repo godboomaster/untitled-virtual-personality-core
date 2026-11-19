@@ -1811,8 +1811,7 @@ html[data-skin='retro-futurism'] .home-block-num {
 }
 
 /* Карточки присутствия */
-html[data-skin='retro-futurism'] .home-presence,
-html[data-skin='retro-futurism'] .home-dossier {
+html[data-skin='retro-futurism'] .home-presence {
   border: 1.5px solid var(--border-soft);
   border-radius: 24px;
   background-color: var(--bg-panel);
@@ -1821,8 +1820,7 @@ html[data-skin='retro-futurism'] .home-dossier {
   clip-path: none;
 }
 
-html[data-skin='retro-futurism'] .home-presence:hover,
-html[data-skin='retro-futurism'] .home-dossier:hover {
+html[data-skin='retro-futurism'] .home-presence:hover {
   border-color: var(--rf-orange);
   background-color: var(--bg-panel-2);
   box-shadow: var(--shadow-card-hover), 0 0 0 4px rgba(246, 114, 58, 0.1);
@@ -1911,7 +1909,7 @@ html[data-skin='retro-futurism'] .home-feed-persona {
   color: var(--rf-gold-ink);
 }
 
-/* Терминалы (журнал системы, демо-окно «Старта», команда запуска) —
+/* Терминалы (демо-окно «Старта», команда запуска) —
    янтарный люминофор, сканлайны, мягкая виньетка */
 html[data-skin='retro-futurism'] .home-term,
 html[data-skin='retro-futurism'] .start-guide-dlg {

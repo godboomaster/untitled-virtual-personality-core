@@ -1,18 +1,26 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { registerPlugin } from '@capacitor/core';
 import { api, apiHost, AUTH_REQUIRED_EVENT, LINK_REVOKED_EVENT, getApiToken, getApiUrl, isLinkMode, isNativeApp, normalizeApiUrl, setApiToken, setApiUrl } from '../api';
 import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from '../link/client.ts';
 import QrScanner from '../link/QrScanner';
 import { syncSystemBars } from '../nativeBars';
 import { stopBgInbox } from '../bgInbox';
+import { forgetPhoneControlServer } from '../phone/control';
 import { forgetWakeServer } from '../wakeWord';
-import { hasOfflinePersonas, refetchPersonas, seedOfflinePersonas } from '../apiData';
-import { setOfflineBoot } from '../offline/state';
+import { hasOfflinePersonas, offlinePersonaList, refetchPersonas, seedOfflinePersonas } from '../apiData';
+import { CORE_DENIED_EVENT, setOfflineBoot } from '../offline/state';
+import { ensureBundledPersonas } from '../offline/localPersonas';
+import { BUNDLED_PERSONAS } from '../offline/bundledPersonas';
+import { isStandalone, setStandaloneChosen } from '../standalone';
+import { discoverCores, scanCores } from '../coreFinder';
+import type { DiscoveredCore } from '../coreFinder';
+import { forgetCoreId } from '../coreId';
 import { useI18n } from '../i18n';
 import { getInitialTheme } from '../useAppTheme';
 import { DetroitBackground } from '../effects/DetroitBackground';
 import { useAppliedSkin } from '../skinTheme';
+import { SkinPartsContext } from '../skinParts';
+import type { SkinBootPhase } from '../skinParts';
 
 /* Экран запуска: Vite поднимается за секунду, а ядро API (импорты, прогрев
    ботов) — заметно дольше. Без гейта приложение успевало отрисоваться на
@@ -29,7 +37,17 @@ import { useAppliedSkin } from '../skinTheme';
    спрашивает его адрес и токен, а «ядро не отвечает» объясняет, что
    проверить, и даёт сменить сервер (MOCK там не нужен). Основной путь —
    QR-код с компьютера: защищённый канал VPC Link (link/client.ts), адрес и
-   токен — запасной. */
+   токен — запасной; «Найти» спрашивает сеть «кто тут ядро?» (ответчик ядра —
+   app/link/discovery.py). Компьютера нет вовсе — «Пользоваться без
+   компьютера»: приложение открывается сразу и дальше запускается без этого
+   экрана (standalone.ts), персоны — встроенные и свои, ответы — облаком по
+   ключам телефона или Gemma на телефоне.
+   Ядро уже настроено — приложение на телефоне тоже открывается сразу, не
+   дожидаясь его: персоны из снимка, ответы до связи — без ядра, связь —
+   подписью в шапке (App: ищу / на связи / нет связи); ответило — всё
+   переключается само (offline/state.ts). Сюда приложение возвращается
+   только по 401 (токен) и отказу ядра (CORE_DENIED_EVENT). Экран с опросом
+   остаётся для явного подключения: новый адрес, QR-код, токен. */
 
 const NATIVE = isNativeApp();
 // Пауза между попытками достучаться до ядра; до ноутбука по сети — реже,
@@ -53,24 +71,56 @@ type Stage = 0 | 1 | 2;
 // Запрос токена: need — токена нет, wrong — сохранённый не подошёл
 type Auth = null | 'need' | 'wrong';
 
-// «Найти» в форме адреса: ядро в той же Wi-Fi ищет плагин CoreFinder (Java)
-interface CoreFinderPlugin {
-  find(opts: { port: number }): Promise<{ found: string[]; nets: string[] }>;
+// «Найти» в форме адреса: ядро в той же Wi-Fi (coreFinder.ts)
+const DISCOVER_WAIT_MS = 1500;
+
+// Найденное ядро в форме адреса: адрес для поля и подпись кнопки выбора
+interface FoundCore {
+  addr: string;
+  label: string;
 }
-let coreFinder: CoreFinderPlugin | undefined;
 
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** Без компьютера: встроенные персоны (один раз), список персон без ядра,
+ * режим ответов без ядра. */
+function startStandalone() {
+  ensureBundledPersonas(BUNDLED_PERSONAS, offlinePersonaList().map((p) => p.id));
+  seedOfflinePersonas(true);
+  setOfflineBoot(true);
+}
+
+/** Ядро настроено, но ещё не ответило: персоны из снимка (до первого
+ * подключения — пусто), режим ответов без ядра до его ответа. */
+function startBeforeCore() {
+  seedOfflinePersonas(true);
+  setOfflineBoot(true);
+}
+
 export default function BootGate({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const skinApplied = useAppliedSkin() != null;
+  // Скин может нарисовать экран по-своему (parts.tsx → BootScreen): поля и
+  // кнопки остаются здесь, скин получает их готовыми
+  const SkinBoot = useContext(SkinPartsContext)?.BootScreen;
   const [stage, setStage] = useState<Stage>(0);
   const [attempt, setAttempt] = useState(1);
   const [elapsed, setElapsed] = useState(0);
-  const [open, setOpen] = useState(false); // приложение смонтировано
+  // Приложение смонтировано; на телефоне — сразу: без компьютера (выбрано
+  // раньше) или с настроенным ядром, не дожидаясь его
+  const [open, setOpen] = useState(() => {
+    if (!NATIVE) return false;
+    if (isStandalone()) {
+      startStandalone();
+      return true;
+    }
+    if (!getApiUrl() && !isLinkMode()) return false;
+    startBeforeCore();
+    return true;
+  });
   const [copied, setCopied] = useState(false);
   const [auth, setAuth] = useState<Auth>(null);
   const [tokenDraft, setTokenDraft] = useState('');
@@ -80,7 +130,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
   const [urlBad, setUrlBad] = useState(false);
   // Поиск ядра в сети: идёт, найденные адреса (несколько — на выбор), итог
   const [finding, setFinding] = useState(false);
-  const [foundHosts, setFoundHosts] = useState<string[]>([]);
+  const [foundHosts, setFoundHosts] = useState<FoundCore[]>([]);
   const [findMsg, setFindMsg] = useState<string | null>(null);
   // Ядро ответило отказом (403 — удалённый доступ без API_TOKEN и т. п.):
   // в приложении остаёмся на экране и показываем причину
@@ -91,7 +141,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
   const [pairing, setPairing] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
   const [run, setRun] = useState(0); // смена — запуск последовательности заново (после ввода токена)
-  const openRef = useRef(false);
+  const openRef = useRef(open);
   const serverFormRef = useRef<HTMLFormElement>(null);
   useEffect(() => {
     openRef.current = open;
@@ -106,9 +156,10 @@ export default function BootGate({ children }: { children: ReactNode }) {
     syncSystemBars(document.documentElement.getAttribute('data-theme') ?? getInitialTheme());
   }, []);
 
-  // Опрос ядра → загрузка персон → открытие приложения
+  // Опрос ядра → загрузка персон → открытие приложения (открыто сразу — опрос
+  // ведёт шапка, apiData)
   useEffect(() => {
-    if (server) return;
+    if (server || openRef.current) return;
     let cancelled = false;
     let timer: number | undefined;
     const startedAt = Date.now();
@@ -190,6 +241,25 @@ export default function BootGate({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
   }, []);
 
+  // Ядро на связи, но не пускает (открылись, не дождавшись его) — назад на
+  // экран запуска с причиной и «Сменить сервер»
+  useEffect(() => {
+    const onDenied = (e: Event) => {
+      setDenied((e as CustomEvent<string>).detail);
+      setStage(1);
+      setOpen(false);
+    };
+    window.addEventListener(CORE_DENIED_EVENT, onDenied);
+    return () => window.removeEventListener(CORE_DENIED_EVENT, onDenied);
+  }, []);
+
+  // Форма адреса открылась — сразу спросить сеть «кто тут ядро?» (молча:
+  // никто не ответил — подсказки нет, перебор адресов — по «Найти»)
+  useEffect(() => {
+    if (server && NATIVE && !open) void findCore(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server, open]);
+
   // Телефон отвязали на компьютере, пока приложение открыто — назад на
   // экран запуска с объяснением и кнопкой «Подключить заново»
   useEffect(() => {
@@ -222,6 +292,12 @@ export default function BootGate({ children }: { children: ReactNode }) {
     }
     setApiUrl(url);
     setUrlDraft(url);
+    // Другое ядро — прежний id не наш (иначе поиск «переехавшего» ядра
+    // вернул бы прежнее)
+    forgetCoreId();
+    // Компьютер появился — дальше запуск через него (накопленное без него
+    // переедет при первой связи)
+    setStandaloneChosen(false);
     if (tokenDraft.trim()) setApiToken(tokenDraft.trim());
     setTokenDraft('');
     setUrlBad(false);
@@ -232,27 +308,57 @@ export default function BootGate({ children }: { children: ReactNode }) {
     setRun((n) => n + 1);
   };
 
-  const findCore = async () => {
-    // Порт — из набранного адреса, если он там есть
+  // «Кто тут ядро?» широковещательно; не ответил никто — перебор своей /24 на
+  // порту из набранного адреса (ядра без ответчика). quiet — автопоиск при
+  // открытии формы: без перебора и без «не найдено»
+  const findCore = async (quiet = false) => {
     const typed = normalizeApiUrl(urlDraft);
     const port = (typed && Number(new URL(typed).port)) || DEFAULT_API_PORT;
     setFinding(true);
     setFoundHosts([]);
-    setFindMsg(null);
+    setFindMsg(quiet ? null : t('boot.findAsking'));
     setUrlBad(false);
     try {
-      coreFinder ??= registerPlugin<CoreFinderPlugin>('CoreFinder');
-      const { found, nets } = await coreFinder.find({ port });
+      // Прежний адрес — и напрямую: в сети без широковещания он ответит так
+      const prev = typed ?? (getApiUrl() || null);
+      const hosts = prev ? [new URL(prev).hostname] : [];
+      let cores: DiscoveredCore[] = [];
+      try {
+        cores = (await discoverCores(DISCOVER_WAIT_MS, hosts)).found;
+      } catch (e) {
+        if (quiet || (e as { code?: string }).code === 'no_wifi') throw e;
+      }
+      const withApi = cores.filter((c) => c.api > 0);
+      if (withApi.length === 1) {
+        const c = withApi[0];
+        const addr = `${c.host}:${c.api}`;
+        setUrlDraft(addr);
+        setFindMsg(t(c.token ? 'boot.findCore' : 'boot.findCoreNoToken', { name: c.name, host: addr }));
+        return;
+      }
+      if (withApi.length > 1) {
+        setFoundHosts(withApi.map((c) => ({ addr: `${c.host}:${c.api}`, label: `${c.name} · ${c.host}:${c.api}` })));
+        setFindMsg(t('boot.findMany'));
+        return;
+      }
+      if (cores.length) {
+        setFindMsg(t('boot.findLinkOnly', { name: cores[0].name, host: cores[0].host }));
+        return;
+      }
+      if (quiet) return;
+      setFindMsg(t('boot.findScanning', { port }));
+      const { found, nets } = await scanCores(port);
       if (found.length === 1) {
         setUrlDraft(found[0]);
         setFindMsg(t('boot.findOne', { host: found[0] }));
       } else if (found.length > 1) {
-        setFoundHosts(found);
+        setFoundHosts(found.map((h) => ({ addr: h, label: h })));
         setFindMsg(t('boot.findMany'));
       } else {
         setFindMsg(t('boot.findNone', { net: nets.join(', '), port }));
       }
     } catch (e) {
+      if (quiet) return;
       const code = (e as { code?: string }).code;
       setFindMsg(code === 'no_wifi' ? t('boot.findNoWifi') : t('boot.findFailed', { err: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -271,6 +377,8 @@ export default function BootGate({ children }: { children: ReactNode }) {
     setPairError(null);
     try {
       await pair(offer, deviceName());
+      forgetCoreId();
+      setStandaloneChosen(false);
       setCodeDraft('');
       setAuth(null);
       setDenied(null);
@@ -290,6 +398,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
     stopBgInbox();
     // И голосовая активация — по прежнему адресу
     forgetWakeServer();
+    forgetPhoneControlServer();
     // По каналу — забыть ноутбук (ключ этого телефона больше не нужен)
     if (getLinkConfig()) setLinkConfig(null);
     setUrlDraft(getApiUrl());
@@ -323,9 +432,278 @@ export default function BootGate({ children }: { children: ReactNode }) {
       state: auth || denied ? 'fail' : stage > 1 ? 'ok' : stage === 1 ? 'run' : 'wait',
     },
   ];
-  const tag = { ok: '[ OK ]', run: '[ .. ]', wait: '[ -- ]', fail: '[FAIL]' };
+  const tag = { ok: t('boot.tagOk'), run: t('boot.tagRun'), wait: t('boot.tagWait'), fail: t('boot.tagFail') };
   // Горящие ячейки прогресса: по трети на каждый пройденный этап
   const litCells = Math.round((CELLS * (stage + 1)) / 3);
+
+  // Пояснение под заголовком: что происходит и что делать
+  const lead =
+    server
+      ? t('boot.serverLead')
+      : auth
+        ? t('boot.authLead')
+        : denied
+          ? denied
+          : stage === 2
+            ? t('boot.ready')
+            : offline
+              ? NATIVE
+                ? isLinkMode()
+                  ? t(getLinkConfig()?.u ? 'link.offlineLead' : 'link.offlineLeadNoRelay', { name: getLinkConfig()?.n ?? '' })
+                  : t('boot.remoteOfflineLead', { host: apiHost() })
+                : t('boot.offlineLead')
+              : t('boot.lead');
+  const phase: SkinBootPhase = server
+    ? 'server'
+    : auth
+      ? 'auth'
+      : denied
+        ? 'denied'
+        : offline
+          ? 'offline'
+          : stage === 2
+            ? 'ready'
+            : stage === 1
+              ? 'personas'
+              : 'run';
+  // Поля и кнопки: команда запуска, QR-код и адрес ядра, токен, «без API»
+  const controls = (
+    <>
+      {offline && !NATIVE && (
+        <div className="boot-cmd">
+          <div className="boot-cmd-label">{t('boot.offlineCmd')}</div>
+          <div className="boot-cmd-row">
+            <code>
+              <span className="boot-cmd-prompt">$</span> {API_START_CMD}
+            </code>
+            <button type="button" className="boot-cmd-copy" onClick={copyCmd}>
+              {copied ? t('boot.copied') : t('boot.copy')}
+            </button>
+          </div>
+        </div>
+      )}
+      {offline && <p className="boot-hint">{t('boot.offlineWait')}</p>}
+
+      {server && (
+        <div className="boot-cmd boot-link">
+          <div className="boot-cmd-label">{t('link.bootLabel')}</div>
+          <button type="button" className="btn btn--primary" disabled={pairing} onClick={() => setScanning(true)}>
+            {pairing ? t('link.pairing') : t('link.scan')}
+          </button>
+          <form
+            className="boot-cmd-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void pairWith(codeDraft);
+            }}
+          >
+            <span className="boot-cmd-prompt">$</span>
+            <input
+              className="boot-token-input"
+              type="text"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder={t('link.codePh')}
+              value={codeDraft}
+              onChange={(e) => {
+                setCodeDraft(e.target.value);
+                setPairError(null);
+              }}
+            />
+            <button type="submit" className="boot-cmd-copy" disabled={!codeDraft.trim() || pairing}>
+              {t('link.codeSubmit')}
+            </button>
+          </form>
+          {pairError && <p className="boot-hint">{pairError}</p>}
+          <div className="boot-cmd-label boot-link-or">{t('link.orAddress')}</div>
+        </div>
+      )}
+      {scanning && <QrScanner onResult={(text) => void pairWith(text)} onClose={() => setScanning(false)} />}
+
+      {server && (
+        <form
+          ref={serverFormRef}
+          className="boot-cmd boot-server"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitServer();
+          }}
+        >
+          <label className="boot-cmd-label" htmlFor="boot-url">
+            {t('boot.serverLabel')}
+          </label>
+          <div className="boot-cmd-row">
+            <span className="boot-cmd-prompt">$</span>
+            <input
+              id="boot-url"
+              className="boot-token-input"
+              type="text"
+              inputMode="url"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder="192.168.1.5:8000"
+              autoFocus
+              value={urlDraft}
+              onChange={(e) => {
+                setUrlDraft(e.target.value);
+                setUrlBad(false);
+              }}
+            />
+            <button type="button" className="boot-cmd-copy" disabled={finding} onClick={() => void findCore()}>
+              {finding ? t('boot.finding') : t('boot.find')}
+            </button>
+          </div>
+          {findMsg && <p className="boot-hint boot-find-hint">{findMsg}</p>}
+          {foundHosts.length > 1 && (
+            <div className="boot-found">
+              {foundHosts.map((h) => (
+                <button
+                  key={h.addr}
+                  type="button"
+                  className={`boot-cmd-copy${h.addr === urlDraft ? ' is-active' : ''}`}
+                  onClick={() => {
+                    setUrlDraft(h.addr);
+                    setUrlBad(false);
+                  }}
+                >
+                  {h.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <label className="boot-cmd-label" htmlFor="boot-url-token">
+            {t('boot.authLabel')}
+          </label>
+          <div className="boot-cmd-row">
+            <span className="boot-cmd-prompt">$</span>
+            <input
+              id="boot-url-token"
+              className="boot-token-input"
+              type="password"
+              autoComplete="current-password"
+              placeholder={getApiToken() ? t('boot.serverTokenKeep') : ''}
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+            />
+            <button type="submit" className="boot-cmd-copy" disabled={!urlDraft.trim()}>
+              {t('boot.serverSubmit')}
+            </button>
+          </div>
+          {urlBad && <p className="boot-hint">{t('boot.serverBad')}</p>}
+        </form>
+      )}
+
+      {server && (
+        <div className="boot-actions">
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => {
+              setStandaloneChosen(true);
+              startStandalone();
+              setOpen(true);
+            }}
+          >
+            {t('boot.standalone')}
+          </button>
+          <p className="boot-hint">{t('boot.standaloneHint')}</p>
+        </div>
+      )}
+
+      {auth && (
+        <form
+          className="boot-cmd"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitToken();
+          }}
+        >
+          <label className="boot-cmd-label" htmlFor="boot-token">
+            {t('boot.authLabel')}
+          </label>
+          <div className="boot-cmd-row">
+            <span className="boot-cmd-prompt">$</span>
+            <input
+              id="boot-token"
+              className="boot-token-input"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+            />
+            <button type="submit" className="boot-cmd-copy" disabled={!tokenDraft.trim()}>
+              {t('boot.authSubmit')}
+            </button>
+          </div>
+          {auth === 'wrong' && <p className="boot-hint">{t('boot.authWrong')}</p>}
+        </form>
+      )}
+
+      {NATIVE && !server && offline && hasOfflinePersonas() && (
+        <div className="boot-actions">
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => {
+              // Без ноутбука: персоны из снимка, отвечают облако или модель телефона
+              if (seedOfflinePersonas()) {
+                setOfflineBoot(true);
+                setOpen(true);
+              }
+            }}
+          >
+            {t('offline.bootButton')}
+          </button>
+          <p className="boot-hint">{t('offline.bootHint')}</p>
+        </div>
+      )}
+
+      {NATIVE && !server && (offline || auth || denied) && (
+        <div className="boot-actions">
+          <button type="button" className="btn btn--ghost" onClick={changeServer}>
+            {isLinkMode() ? t('link.repair') : t('boot.serverChange')}
+          </button>
+        </div>
+      )}
+
+      {!NATIVE && stage === 0 && elapsed >= SKIP_AFTER_MS && (
+        <div className="boot-actions">
+          <button
+            type="button"
+            className={`btn ${offline ? 'btn--primary' : 'btn--ghost'}`}
+            onClick={() => setOpen(true)}
+          >
+            {t('boot.skip')}
+          </button>
+        </div>
+      )}
+    </>
+  );
+
+  if (SkinBoot) {
+    return (
+      <div className={`boot boot--skin${stage === 2 ? ' boot--done' : ''}${stopped ? ' boot--offline' : ''}`}>
+        <div className="boot-panel boot-panel--skin" role={stopped ? 'alert' : 'status'} aria-live="polite">
+          <SkinBoot
+            phase={phase}
+            lead={lead}
+            host={apiHost() || '—'}
+            attempt={attempt}
+            elapsed={formatElapsed(elapsed)}
+            polling={!server}
+            native={NATIVE}
+            t={t}
+          >
+            {controls}
+          </SkinBoot>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`boot${stage === 2 ? ' boot--done' : ''}${stopped ? ' boot--offline' : ''}`}>
@@ -350,23 +728,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
         <h1 className="home-title glitch boot-title" data-text="Virtual Persona Core">
           Virtual Persona Core
         </h1>
-        <p className="boot-lead">
-          {server
-            ? t('boot.serverLead')
-            : auth
-              ? t('boot.authLead')
-              : denied
-                ? denied
-                : stage === 2
-                  ? t('boot.ready')
-                  : offline
-                    ? NATIVE
-                      ? isLinkMode()
-                        ? t(getLinkConfig()?.u ? 'link.offlineLead' : 'link.offlineLeadNoRelay', { name: getLinkConfig()?.n ?? '' })
-                        : t('boot.remoteOfflineLead', { host: apiHost() })
-                      : t('boot.offlineLead')
-                    : t('boot.lead')}
-        </p>
+        <p className="boot-lead">{lead}</p>
 
         {/* Форма подключения: ядро не опрашивается — шаги и счётчики пусты,
             а на телефоне форма и без них едва влезает в экран */}
@@ -393,206 +755,12 @@ export default function BootGate({ children }: { children: ReactNode }) {
 
             <div className="boot-meta">
               <span>{t('boot.attempt', { n: attempt })}</span>
-              <span>T+{formatElapsed(elapsed)}</span>
+              <span>{t('boot.elapsed', { time: formatElapsed(elapsed) })}</span>
             </div>
           </>
         )}
 
-        {offline && !NATIVE && (
-          <div className="boot-cmd">
-            <div className="boot-cmd-label">{t('boot.offlineCmd')}</div>
-            <div className="boot-cmd-row">
-              <code>
-                <span className="boot-cmd-prompt">$</span> {API_START_CMD}
-              </code>
-              <button type="button" className="boot-cmd-copy" onClick={copyCmd}>
-                {copied ? t('boot.copied') : t('boot.copy')}
-              </button>
-            </div>
-          </div>
-        )}
-        {offline && <p className="boot-hint">{t('boot.offlineWait')}</p>}
-
-        {server && (
-          <div className="boot-cmd boot-link">
-            <div className="boot-cmd-label">{t('link.bootLabel')}</div>
-            <button type="button" className="btn btn--primary" disabled={pairing} onClick={() => setScanning(true)}>
-              {pairing ? t('link.pairing') : t('link.scan')}
-            </button>
-            <form
-              className="boot-cmd-row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void pairWith(codeDraft);
-              }}
-            >
-              <span className="boot-cmd-prompt">$</span>
-              <input
-                className="boot-token-input"
-                type="text"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                placeholder={t('link.codePh')}
-                value={codeDraft}
-                onChange={(e) => {
-                  setCodeDraft(e.target.value);
-                  setPairError(null);
-                }}
-              />
-              <button type="submit" className="boot-cmd-copy" disabled={!codeDraft.trim() || pairing}>
-                {t('link.codeSubmit')}
-              </button>
-            </form>
-            {pairError && <p className="boot-hint">{pairError}</p>}
-            <div className="boot-cmd-label boot-link-or">{t('link.orAddress')}</div>
-          </div>
-        )}
-        {scanning && <QrScanner onResult={(text) => void pairWith(text)} onClose={() => setScanning(false)} />}
-
-        {server && (
-          <form
-            ref={serverFormRef}
-            className="boot-cmd boot-server"
-            noValidate
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitServer();
-            }}
-          >
-            <label className="boot-cmd-label" htmlFor="boot-url">
-              {t('boot.serverLabel')}
-            </label>
-            <div className="boot-cmd-row">
-              <span className="boot-cmd-prompt">$</span>
-              <input
-                id="boot-url"
-                className="boot-token-input"
-                type="text"
-                inputMode="url"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                placeholder="192.168.1.5:8000"
-                autoFocus
-                value={urlDraft}
-                onChange={(e) => {
-                  setUrlDraft(e.target.value);
-                  setUrlBad(false);
-                }}
-              />
-              <button type="button" className="boot-cmd-copy" disabled={finding} onClick={() => void findCore()}>
-                {finding ? t('boot.finding') : t('boot.find')}
-              </button>
-            </div>
-            {findMsg && <p className="boot-hint boot-find-hint">{findMsg}</p>}
-            {foundHosts.length > 1 && (
-              <div className="boot-found">
-                {foundHosts.map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    className={`boot-cmd-copy${h === urlDraft ? ' is-active' : ''}`}
-                    onClick={() => {
-                      setUrlDraft(h);
-                      setUrlBad(false);
-                    }}
-                  >
-                    {h}
-                  </button>
-                ))}
-              </div>
-            )}
-            <label className="boot-cmd-label" htmlFor="boot-url-token">
-              {t('boot.authLabel')}
-            </label>
-            <div className="boot-cmd-row">
-              <span className="boot-cmd-prompt">$</span>
-              <input
-                id="boot-url-token"
-                className="boot-token-input"
-                type="password"
-                autoComplete="current-password"
-                placeholder={getApiToken() ? t('boot.serverTokenKeep') : ''}
-                value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.target.value)}
-              />
-              <button type="submit" className="boot-cmd-copy" disabled={!urlDraft.trim()}>
-                {t('boot.serverSubmit')}
-              </button>
-            </div>
-            {urlBad && <p className="boot-hint">{t('boot.serverBad')}</p>}
-          </form>
-        )}
-
-        {auth && (
-          <form
-            className="boot-cmd"
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitToken();
-            }}
-          >
-            <label className="boot-cmd-label" htmlFor="boot-token">
-              {t('boot.authLabel')}
-            </label>
-            <div className="boot-cmd-row">
-              <span className="boot-cmd-prompt">$</span>
-              <input
-                id="boot-token"
-                className="boot-token-input"
-                type="password"
-                autoComplete="current-password"
-                autoFocus
-                value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.target.value)}
-              />
-              <button type="submit" className="boot-cmd-copy" disabled={!tokenDraft.trim()}>
-                {t('boot.authSubmit')}
-              </button>
-            </div>
-            {auth === 'wrong' && <p className="boot-hint">{t('boot.authWrong')}</p>}
-          </form>
-        )}
-
-        {NATIVE && !server && offline && hasOfflinePersonas() && (
-          <div className="boot-actions">
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => {
-                // Без ноутбука: персоны из снимка, отвечают облако или модель телефона
-                if (seedOfflinePersonas()) {
-                  setOfflineBoot(true);
-                  setOpen(true);
-                }
-              }}
-            >
-              {t('offline.bootButton')}
-            </button>
-            <p className="boot-hint">{t('offline.bootHint')}</p>
-          </div>
-        )}
-
-        {NATIVE && !server && (offline || auth || denied) && (
-          <div className="boot-actions">
-            <button type="button" className="btn btn--ghost" onClick={changeServer}>
-              {isLinkMode() ? t('link.repair') : t('boot.serverChange')}
-            </button>
-          </div>
-        )}
-
-        {!NATIVE && stage === 0 && elapsed >= SKIP_AFTER_MS && (
-          <div className="boot-actions">
-            <button
-              type="button"
-              className={`btn ${offline ? 'btn--primary' : 'btn--ghost'}`}
-              onClick={() => setOpen(true)}
-            >
-              {t('boot.skip')}
-            </button>
-          </div>
-        )}
+        {controls}
       </div>
     </div>
   );

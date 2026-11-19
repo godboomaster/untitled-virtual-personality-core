@@ -557,13 +557,15 @@ def test_api():
     def req(**kw):
         return ChatRequest(persona="connor", message="x", **kw)
 
-    def rq(host="127.0.0.1:8000", **headers):
-        return SimpleNamespace(headers={"host": host, **headers})
+    def rq(host="127.0.0.1:8000", peer="127.0.0.1", **headers):
+        return SimpleNamespace(headers={"host": host, **headers}, client=SimpleNamespace(host=peer))
 
     D = server_mod._file_delivery
     check("веб на этом компьютере — открыть", D(rq(), req()) == "open")
     check("localhost — открыть", D(rq("localhost:8000"), req()) == "open")
     check("адрес в сети (телефон по Wi-Fi) — прислать", D(rq("192.168.1.5:8000"), req()) == "send")
+    check("устройство в сети с Host: localhost — прислать", D(rq("localhost:8000", peer="192.168.1.20"), req()) == "send")
+    check("свой фронт (Origin localhost:5173) — открыть", D(rq(origin="http://localhost:5173"), req()) == "open")
     check("VPC Link — прислать", D(rq(**{"x-vpc-link": "dev1"}), req()) == "send")
     check("приложение (client=app) — прислать", D(rq(), req(client="app")) == "send")
     check("через прокси — прислать", D(rq(**{"x-forwarded-for": "1.2.3.4"}), req()) == "send")
@@ -663,7 +665,9 @@ def test_api():
         check("чужой id — 404", c.get("/api/files/" + "A" * 32).status_code == 404)
         check("кривой id — 404", c.get("/api/files/..%2F..%2Fetc").status_code == 404)
         server_mod._api_token = "s3cr3t"
-        check("с API_TOKEN без токена — 401", c.get(files[0]["url"]).status_code == 401)
+        lan_c = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
+        check("с API_TOKEN без токена (из сети) — 401", lan_c.get(files[0]["url"]).status_code == 401)
+        check("с этой машины — без токена", c.get(files[0]["url"]).status_code == 200)
         check("с токеном — 200", c.get(files[0]["url"], headers={"Authorization": "Bearer s3cr3t"}).status_code == 200)
         target.unlink()
         check("файл исчез — 410", c.get(files[0]["url"], headers={"Authorization": "Bearer s3cr3t"}).status_code == 410)

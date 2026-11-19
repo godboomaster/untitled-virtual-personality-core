@@ -943,6 +943,94 @@ _REPEATABLE_RE = re.compile(
     r"вперёд|вперед|назад|\bback\b|увелич|уменьш|increase|decrease|плюс|"
     r"минус|загрузить|обновить|refresh|reload|retry|повтор|листа|scroll",
     re.IGNORECASE)
+# Крестик окна: «Закрыть», «Close», «× (Закрыть корзину)». Не переключатель:
+# два «закрыть» подряд по одному адресу — обычно два разных окна. 29.10 на
+# dodopizza окно способа получения легло поверх окна товара — страж повтора
+# спросил человека, «не отменит ли» второй крестик выбор, и окно товара
+# осталось перекрывать корзину
+_CLOSE_LABEL_RE = re.compile(
+    r"^\W*(?:закрыть|скрыть|close|dismiss|schlie(?:ß|ss)en|fermer|cerrar)"
+    r"(?![^\W\d_])", re.IGNORECASE)
+# Способ получения заказа в окне сайта: «Указать адрес доставки», «Забрать
+# из пиццерии», «Самовывоз», «Delivery», «Pickup» (_receive_options)
+_RECEIVE_RE = re.compile(
+    r"доставк|доставить|самовывоз|забрать|заберу|pick[\s-]?up|deliver|"
+    r"carry[\s-]?out|take[\s-]?away|abhol|liefer|livraison|retrait",
+    re.IGNORECASE)
+# Пункт выбора в окне способа получения (_receive_pick): адрес («улица
+# Геодезическая, 4/1», «Красный проспект 101») или статус точки («Закрыто»,
+# «Открыто до 23:00»)
+_PLACE_RE = re.compile(
+    r"(?<![^\W\d_])(?:ул|улица|пр|просп|проспект|пер|переулок|шоссе|б-р|"
+    r"бульвар|наб|набережная|пл|площадь|мкр|микрорайон|корп|street|st|"
+    r"avenue|ave|road|rd|blvd|lane|straße|strasse|platz|rue|"
+    r"закрыт[оа]?|открыт[оа]?|круглосуточно|closed|open\s+(?:until|now|24))"
+    r"(?![^\W\d_])|работает\s+до|opens?\s+at|"
+    r"[^\W\d_]{3,},?\s+\d{1,4}[а-яa-z]?(?:/\d{1,3})?"
+    r"(?![\d.,]|\s*(?:см|cm|мл|ml|л|l|г|g|кг|kg|шт|pcs|₽|руб|%))",
+    re.IGNORECASE)
+# Кнопка, которой окно принимает выбранный пункт: «Выбрать», «Забрать
+# отсюда», «Доставить сюда», «Сохранить» (_receive_pick)
+_PICK_CONFIRM_RE = re.compile(
+    r"\W*(?:выбрать|забрать\s+(?:отсюда|здесь|тут)|заберу\s+(?:отсюда|"
+    r"здесь)|доставить\s+сюда|привезти\s+сюда|сохранить|подтвердить"
+    r"(?:\s+адрес)?|готово|choose|select|confirm(?:\s+address)?|save|"
+    r"pick\s+up\s+here|deliver\s+here|use\s+this\s+(?:address|store))\W*",
+    re.IGNORECASE)
+# Поле адреса человека: значение — только его (_type_gate)
+_ADDRESS_FIELD_RE = re.compile(
+    r"(?<![^\W\d_])(?:адрес\w*|улиц\w*|дом|квартир\w*|кв|подъезд\w*|"
+    r"этаж\w*|домофон\w*|индекс|address|street|apartment|apt|flat|"
+    r"entrance|floor|house|zip|postcode|postal)(?![^\W\d_])", re.IGNORECASE)
+# Пустая корзина в прочитанном тексте: «Пока тут пусто» (Додо), «Корзина
+# пуста», «Your cart is empty» (_cart_empty_note)
+_CART_EMPTY_RE = re.compile(
+    r"корзин\w*\s+(?:пока\s+|сейчас\s+)?пуст|пуст\w*\s+корзин|"
+    r"(?:тут|здесь)\s+(?:пока\s+)?пусто|ой,?\s+пусто|"
+    r"(?:cart|basket|bag)\s+is\s+(?:currently\s+)?empty|"
+    r"empty\s+(?:cart|basket)|warenkorb\s+ist\s+leer|panier\s+est\s+vide",
+    re.IGNORECASE)
+# Поле данных самого человека (подпись): телефон, почта, имя, пароль, код
+# из SMS. Значение туда — только от человека; промокод — не его данные
+_PERSONAL_FIELD_RE = re.compile(
+    r"телефон|(?<![^\W\d_])(?:phone|mobile|tel|handy|e-?mail|почт[аыуе]|"
+    r"имя|фамили\w*|отчеств\w*|(?:first|last|full|your)[\s_-]?name|"
+    r"vorname|nachname|prénom|парол\w*|password|passwort|смс|sms|otp)"
+    r"(?![^\W\d_])|(?<!промо)код\s+(?:из|подтвержд)|"
+    r"(?:verification|confirmation|one[\s-]?time)\s+code", re.IGNORECASE)
+
+
+def _value_key(text) -> str:
+    """Значение поля для сравнения: телефон/код (в основном цифры) —
+    последние 10 цифр (маска «+7 (___)» и 8/+7 не мешают), прочее — без
+    регистра и лишних пробелов."""
+    s = " ".join(str(text or "").split())
+    digits = re.sub(r"\D", "", s)
+    if len(digits) >= 4 and len(digits) * 2 >= len(re.sub(r"\s", "", s)):
+        return "#" + digits[-10:]
+    return s.casefold()
+
+
+def _value_in(text, sources) -> bool:
+    """Есть ли значение среди слов человека (ответы, цель, бриф): телефон —
+    по цифрам («8 999 123-45-67» — тот же, что «+79991234567»)."""
+    key = _value_key(text)
+    if not key or key == "#":
+        return True
+    hay = [str(s or "") for s in sources]
+    if key.startswith("#"):
+        return any(key[1:] in re.sub(r"\D", "", s) for s in hay)
+    low = " \n".join(" ".join(s.split()).casefold() for s in hay)
+    if key in low:
+        return True
+    if "@" in key or any(ch.isdigit() for ch in key):
+        return False
+    # Имя в другом падеже («запиши на Маргариту» → «Маргарита»): каждое
+    # слово — основой (без двух последних букв) среди слов человека
+    words = re.findall(r"[^\W\d_]+", key)
+    return bool(words) and all(
+        re.search(r"(?<![^\W\d_])" + re.escape(w[:max(3, len(w) - 2)]), low)
+        for w in words)
 
 
 # Адрес корзины/оформления/заказа (фаза, где любой submit — возможный коммит)
@@ -1015,6 +1103,33 @@ def _cart_verdict(before: dict, after: dict) -> str:
            for k in ("count", "sum")):
         return "same"
     return "unknown"
+
+
+def _receive_options(items: List[dict], new: List[str]) -> List[str]:
+    """Окно, которым сайт ответил на «В корзину», спрашивает способ
+    получения: его кнопки (md), появившиеся после клика (new — подписи
+    _page_state), со словами доставки/самовывоза → варианты для вопроса
+    человеку. 29.10 на dodopizza («Указать адрес доставки», «Забрать из
+    пиццерии») модель закрывала окно, и товар не ложился. Шторка корзины
+    (итог, «К оформлению», слово «корзина») — не оно: «Бесконтактная
+    доставка» в ней — опция заказа."""
+    from app.features.computer_control import checkout_step_label
+    fresh, opts = set(new), []
+    for it in items:
+        if not it.get("md") or it.get("ed"):
+            continue
+        lab = " ".join(_item_label(it).split())
+        if _ADD_TO_CART_RE.search(lab):
+            continue  # кнопка окна товара под ним
+        if _CART_WORD_RE.search(lab) or _TOTAL_RE.search(lab + " 0 ₽") \
+                or checkout_step_label({"kind": "click", "element": lab}):
+            return []
+        key = " ".join(str(it.get("text") or it.get("aria")
+                           or it.get("title") or "").split())[:40]
+        if key in fresh and _RECEIVE_RE.search(lab) \
+                and lab[:LABEL_MAX] not in opts:
+            opts.append(lab[:LABEL_MAX])
+    return opts[:4]
 
 
 # Корзина отдельной страницей (не оформление): /cart, /basket, /korzina
@@ -2368,7 +2483,13 @@ _STEP_RULES = (
     "memory.\n"
     "- An open dialog hides the rest of the page: when the next step "
     "is outside it (the cart, another item or section), close it "
-    "first.\n"
+    "first. Except a dialog the site opened in reply to add to cart "
+    "that asks how to get the order (delivery or pickup): the item is "
+    "not in the cart until that is chosen — never close it; the system "
+    "asks the user, then click their choice. The pickup point or the "
+    "delivery address that follows is their choice too: ask them, listing "
+    "the options with their status (open/closed), never pick one "
+    "yourself.\n"
     "- If no site is named: for an order or a purchase, search first "
     "and open the result that fits — before the first shop is opened "
     "the system asks the user where to order, offering the results; "
@@ -2378,6 +2499,12 @@ _STEP_RULES = (
     "from memory (in a question or in open): addresses come only from "
     "search results, pages seen in this task, the user's words or "
     "earlier tasks.\n"
+    "- A goal to find something to buy (\"find me X\", X — goods) ends "
+    "on the item's page, not on the shop's main page: open a shop that "
+    "sells it (if several fit equally, search first and ask which), "
+    "search for X there, offer the matching items (name — price) and "
+    "open the one the user picks; reply done once its page is open, "
+    "without adding it to the cart unless asked.\n"
     "- If the user's earlier tasks are listed above and the goal does "
     "not name a site: before opening anything, ask a yes/no question "
     "offering the site used last time (e.g. \"Order on <site> like "
@@ -2403,9 +2530,14 @@ _STEP_RULES = (
     "female surname). If the results show several different plausible "
     "matches, ask the user which one, listing them — do not pick one "
     "yourself.\n"
-    "- Never make up or guess passwords, codes or card details; enter "
-    "the user's private values only through the placeholders the "
-    "system lists (when there are any). Never pay: when the next step "
+    "- Never make up or guess passwords, codes, card details or the "
+    "user's phone, email or name: when a form needs them and the user "
+    "has not given them, ask — one question for all of them. Enter the "
+    "user's private values only through the placeholders the "
+    "system lists (when there are any). A field that is filled in while "
+    "the button stays disabled or the field is marked invalid — the site "
+    "rejected the value: tell the user what the page says and ask, do "
+    "not type it again. Never pay: when the next step "
     "is payment, reply done saying the user takes over from here.\n"
     "- Irreversible steps (placing an order, submitting a form, "
     "booking, sending a message) are confirmed by the system: just "
@@ -2939,6 +3071,10 @@ class TaskAgent:
         if not n or not exact or not _bare_choice(s, opts[n - 1]):
             return None
         opt = opts[n - 1]
+        if pick == "receive":
+            # Способ получения — выбор в окне сайта, не слот брифа: голый
+            # вариант бриф не меняет, кликнет его модель (_receive_step)
+            return "способ получения", {}
         if pick == "section":
             # Раздел каталога — не позиция и не слот: бриф как был, раздел
             # откроет _browse_answer
@@ -3525,6 +3661,28 @@ class TaskAgent:
                if status not in ("cancelled", "stopped") else None)
         return [{"text": t, "state": "done" if d else "current" if i == cur
                  else "todo"} for i, (d, t) in enumerate(steps)]
+
+    def log_lines(self, chat_id) -> frozenset:
+        """Строки журнала карточки чата (как в task_card: живой прогон или
+        итог ещё CARD_TTL_SEC) — чтобы лента реплик портрета вырезала их из
+        ответа хода, как веб из пузырей. Зовут из записи в историю, в том
+        числе посреди хода (notify) — лок с ожиданием: замкнуть ход на себе
+        он не должен."""
+        key = str(chat_id)
+        if not self._lock.acquire(timeout=1.0):
+            return frozenset()
+        try:
+            run = self._runs.get(key)
+            if run is not None and time.time() - run["touched"] <= RUN_TTL_SEC:
+                log = list(run.get("ui_log") or ())
+            else:
+                kept = self.__dict__.get("_cards", {}).get(key)
+                log = (list(kept["card"].get("log") or ())
+                       if kept and time.time() - kept["ts"] <= CARD_TTL_SEC
+                       else [])
+        finally:
+            self._lock.release()
+        return frozenset(str(x.get("text") or "") for x in log)
 
     def has_run(self, chat_id) -> bool:
         # Есть ли у чата прогон (без побочных эффектов active(): протухший
@@ -4130,6 +4288,11 @@ class TaskAgent:
                 # решает дальше с этим знанием, а не молчаливый стоп
                 self._record(run, aw["line"],
                              f"NOT done — the user declined and said: \"{msg}\"")
+                # Тот же шаг снова — не вопросом (29.10: «ввести номер?» —
+                # «нет» — «ввести номер?» — «нет» — стоп «хожу по кругу»),
+                # пока человек не сказал ничего нового (_ask_confirm)
+                run.setdefault("declined", {})[aw["line"]] = \
+                    self._said_mark(run)
         elif aw.get("kind") == "continue":
             verdict = _confirm_verdict(msg, names)
             if verdict != "YES":
@@ -4300,6 +4463,9 @@ class TaskAgent:
         replay = self._replay_step(run, chat_id, router, obs)
         if replay is not None:
             return replay
+        receive = self._receive_step(run, chat_id, obs)
+        if receive:
+            return receive
         browse = self._browse_step(run, chat_id, router, obs) \
             or self._plan_step(run, chat_id, obs, router)
         if browse:
@@ -4764,6 +4930,10 @@ class TaskAgent:
                 # Гейт execute пропускает Enter агента без «да» только с этой
                 # меткой кода (модель её поставить не может)
                 a["search_enter"] = True
+            if pressed == "Escape":
+                shut = self._receive_close(run, line, obs, a)
+                if shut:
+                    return shut
             if ComputerControlManager.risky_label(a) or (
                     pressed in _SUBMIT_KEYS and not search_enter):
                 return self._ask_confirm(run, a, line)
@@ -4856,11 +5026,12 @@ class TaskAgent:
                 run["obs_extra"] = {"text": text,
                                     "private": bool(obs.get("private")),
                                     "hist": len(run["history"])}
-                self._record(run, "read the page", (
+                self._record(run, "read the page", ((
                     "ok — the SAME text as the previous read (shown below): "
                     "what you look for is not in the page text; use the "
                     "element list or find instead of reading again")
                     if same else "ok — the text is shown below")
+                    + self._cart_empty_note(run, text))
             else:
                 self._record(run, "read the page", f"failed: {detail}")
             return ("progress", self._t("task_reading"))
@@ -5155,7 +5326,10 @@ class TaskAgent:
             if not (before.get("cart") or {}).get("found") and seen_cart:
                 before = dict(before, cart=seen_cart)
             self._note_cart(run, cart_check, before, cur, new,
-                            unchanged=not notes)
+                            unchanged=not notes,
+                            receive=(_receive_options(items, new)
+                                     if not private
+                                     and not before.get("private") else []))
         elif cart_watch is not None and not private \
                 and not before.get("private"):
             # Товар кликом по своей карточке (без «В корзину») — добавлен,
@@ -5191,7 +5365,8 @@ class TaskAgent:
         return f" | expected \"{exp[:60]}\": {seen}"
 
     def _note_cart(self, run: dict, check: dict, before: dict, cur: dict,
-                   new: List[str], unchanged: bool = False):
+                   new: List[str], unchanged: bool = False,
+                   receive: List[str] = ()):
         """Клик «В корзину» — дошёл ли товар, решает только корзина в шапке:
         её счётчик или сумма до клика и после (_cart_state). Выросли —
         добавлено; видны и не выросли — НЕ добавлено (повтор вслепую не
@@ -5223,7 +5398,26 @@ class TaskAgent:
             if st.get("sum") is not None:
                 parts.append(f"{st['sum']:g}")
             return ", ".join(parts) or "empty"
-        if verdict == "added":
+        if receive and verdict != "added":
+            # Сайт ответил окном способа получения (_receive_options): товара
+            # в корзине нет, пока его не выбрали. Вопрос человеку — до хода
+            # модели (_receive_step); клики выбора сверяются с корзиной
+            # (_execute: cart_watch). 29.10 модель закрывала это окно по
+            # заметке «open the cart… before anything else»
+            run["receive"] = {"key": key, "label": lab,
+                              "opts": list(receive)}
+            run["sigs"] = []
+            note = (" — NOT added yet: the site answered with a dialog that "
+                    "asks how to get the order ("
+                    + "; ".join(f'"{o}"' for o in receive)
+                    + "). The item goes into the cart only after that "
+                    "choice; closing the dialog cancels it, so never close "
+                    "it. The system asks the user; then click their choice "
+                    "in the dialog and follow the site's steps (an address, "
+                    "a pickup point) — the system watches the cart")
+        elif verdict == "added":
+            # Способ получения выбран (или не понадобился) — окно позади
+            run.pop("receive", None)
             run["cart_miss"] = {}
             # Сайт заказа для памяти — где корзина реально выросла
             run["cart_host"] = urlsplit(str(cur.get("url") or "")).hostname
@@ -5299,6 +5493,15 @@ class TaskAgent:
         line = _cand_line(n, dict(it, text=lab, ctx=ctx), lab_max=LABEL_MAX)
         if it.get("ed"):
             line += " — input field"
+            # Заполнено ли и принял ли сайт (_FIELD_STATE_JS): поле без этих
+            # признаков модель считала пустым и вписывала номер по кругу.
+            # Значения нет — только факт; в тексте ошибки — без телефонов
+            if it.get("fv"):
+                line += ", filled in"
+            if it.get("iv"):
+                er = _mask_numbers(it.get("er"))[:80]
+                line += (f", the site marks it invalid: \"{er}\"" if er
+                         else ", the site marks it invalid")
         if it.get("vp") is False:
             line += " — below the visible area"
         if it.get("dis"):
@@ -5656,10 +5859,20 @@ class TaskAgent:
         if item.get("dis"):
             # Неактивный контрол: клик ничего не сделает (Playwright «нажимал»
             # его force-кликом и отчитывался «сделано») — чего-то не хватает
+            # После ввода на этом сайте — и «сайт не принял значение»: 29.10
+            # «Продолжить» у формы входа Додо осталась неактивной после
+            # номера, и модель по кругу вписывала тот же номер
+            host = f"{obs.get('host') or ''}|"
+            typed = any(k.startswith(host) for k in run.get("typed") or ())
             self._record(run, f"{act['action']} \"{_item_label(item)[:LABEL_MAX]}\"",
                          "NOT performed — this element is disabled (inactive); "
                          "something required is missing (an option, a field, "
-                         "an agreement checkbox)")
+                         "an agreement checkbox)" + (
+                             " or the site does not accept a value already "
+                             "entered (look for an error next to the "
+                             "fields). Do not retype the same value: tell the "
+                             "user what the page says and ask them"
+                             if typed else ""))
             return ("progress", None)
         if act["action"] == "click":
             line = f"click \"{_item_label(item)[:LABEL_MAX] or label}\""
@@ -5702,6 +5915,13 @@ class TaskAgent:
                     "select what they chose"))
                 return ("progress", None)
             a = dict(base, kind="click", choose={"path": "task_agent"})
+            if item.get("md") and _CLOSE_LABEL_RE.search(_label_of(item)):
+                shut = self._receive_close(run, line, obs, a)
+                if shut:
+                    return shut
+            pick = self._receive_pick(run, item, obs, line)
+            if pick:
+                return pick
             link = link_facts(item)
             if link:
                 # Справочная ссылка «Доставка и оплата» — факты ссылки в
@@ -5772,7 +5992,8 @@ class TaskAgent:
                     # историю бота заглушкой
                     self._note_private(run, q)
                 out = self._ask_confirm(run, a, line, question=q)
-                run["awaiting"]["facts"] = facts
+                if out[0] == "pause":
+                    run["awaiting"]["facts"] = facts
                 return out
             if dialog:
                 # Вопрос показывает текст окна: «ОК» сам по себе ни о чём
@@ -5875,6 +6096,10 @@ class TaskAgent:
         a = dict(base, kind="type", text=text)
         if _is_payment(label) or ComputerControlManager.risky_label(a):
             return self._payment_handoff(run, label)
+        gate = self._type_gate(run, chat_id, item, obs, label, line, raw,
+                               text, submit=bool(act.get("submit")))
+        if gate is not None:
+            return gate
         if act.get("submit"):
             a["submit"] = True
         if item.get("sn") or secret:
@@ -5945,6 +6170,27 @@ class TaskAgent:
             return ("adding to the cart was never confirmed by the cart counter "
                     "— open the cart and check its contents")
         return None
+
+    @staticmethod
+    def _cart_empty_note(run: dict, text) -> str:
+        """Прочитана пустая корзина («Пока тут пусто», «Your cart is
+        empty»), а задача числит добавления, которые корзина не подтвердила
+        (счётчика не было видно), — их там нет: из корзины задачи их долой,
+        план снова покажет позиции недобавленными. 29.10 план держал ✓ «it
+        is in the cart» при пустой корзине, модель ходила по кругу «Корзина
+        → закрыть». Сверенные ростом корзины и лежавшее до задачи не
+        трогаем. → заметка к строке чтения или ""."""
+        if not _CART_EMPTY_RE.search(str(text or "")[:600]):
+            return ""
+        adds = run.get("cart_adds") or []
+        gone = [x for x in adds if not x.get("verified") and not x.get("pre")]
+        if not gone:
+            return ""
+        run["cart_adds"] = [x for x in adds if x not in gone]
+        names = ", ".join(dict.fromkeys(f'"{x["key"]}"' for x in gone))
+        return (f". The cart is empty: {names} did NOT get into it, the plan "
+                "shows it as not done again — add it, then check how the "
+                "site reacts (a dialog may ask for something first)")
 
     def _cart_fact(self, run: dict) -> Optional[str]:
         # Корзина по странице — к итогу человеку (факт, а не слова модели)
@@ -6364,6 +6610,14 @@ class TaskAgent:
                                  "opens the matching section and shows it; if "
                                  "the section was not shown, scroll to its "
                                  "items and ask the user, listing them"))
+        rc = run.get("receive") or {}
+        rc_item = _brief_pick(rc["key"], items) if rc.get("key") else None
+        rc_note = ("not in the cart yet: the site asked how to get the order "
+                   "(" + "; ".join(f'"{o}"' for o in rc.get("opts") or ())
+                   + ") — click the user's choice there; the pickup point "
+                   "or address after it is the user's choice too (ask them, "
+                   "listing the options with their status); never close "
+                   "it")
         for b in items:
             # Добавленное — своей позиции брифа (_brief_pick): «Кола Зеро»
             # корзины не отмечает «Колу» при обеих в брифе
@@ -6371,9 +6625,22 @@ class TaskAgent:
             done = len(hit) >= (b.get("qty") or 1)
             # Лежало в корзине до задачи (прочитал код, _cart_look) — ✓ тоже
             pre = done and all(x.get("pre") for x in hit)
+            # Корзина нажатие не подтвердила (счётчика не видно) — ✓, чтобы
+            # не класть второй раз, но не «лежит»: 29.10 план до конца
+            # писал «it is in the cart» при пустой корзине
+            sure = all(x.get("verified") for x in hit)
+            if not done and b is rc_item:
+                steps.append((False, f"put \"{self._item_text(b)}\" into the "
+                                     f"cart — {rc_note}"))
+                continue
             steps.append((done, f"put \"{self._item_text(b)}\" into the cart"
                           + (" — it was in the cart before this task" if pre
-                             else " — it is in the cart" if done else "")))
+                             else " — it is in the cart" if done and sure
+                             else " — add to cart was pressed, but the cart "
+                                  "did not confirm it: check it when you "
+                                  "open the cart" if done else "")))
+        if rc and rc_item is None:
+            steps.append((False, f"put the item into the cart — {rc_note}"))
         for key in dict.fromkeys(x["key"] for x in adds
                                  if _brief_pick(x["key"], items) is None):
             steps.append((True, f"\"{key}\" is in the cart"))
@@ -8108,10 +8375,11 @@ class TaskAgent:
           scroll/невыполненное) и страница на него отреагировала.
         Не трогаем: явно невыбранный элемент (on=0 — прошлый клик не
         включил или его отменили), поля ввода, счётчики/листание
-        (_REPEATABLE_RE), клик после перехода на другой адрес."""
+        (_REPEATABLE_RE), крестики окон (_CLOSE_LABEL_RE), клик после
+        перехода на другой адрес."""
         lab = _label_of(item)
         if not lab or item.get("ed") or item.get("on") == 0 \
-                or _REPEATABLE_RE.search(lab):
+                or _REPEATABLE_RE.search(lab) or _CLOSE_LABEL_RE.search(lab):
             return None
         hist = run["history"]
         # Одноимённых элементов на странице несколько («Добавить» у каждого
@@ -8135,6 +8403,175 @@ class TaskAgent:
                        or "→ NOT" in h for h in after)
             return i if idle else None
         return None
+
+    @staticmethod
+    def _typed_key(host, label) -> str:
+        return f"{host or ''}|{' '.join(str(label or '').split()).casefold()}"
+
+    def _type_gate(self, run: dict, chat_id, item: dict, obs: dict,
+                   label: str, line: str, raw: str, text: str,
+                   submit: bool = False
+                   ) -> Optional[Tuple[str, Optional[str]]]:
+        """Ввод, который делать нельзя или незачем. Поле данных человека
+        (телефон, почта, имя, пароль, код из SMS) — только его значением:
+        29.10 на оформлении Додо модель вписала номер, которого человек не
+        давал, а «да» на «ввести «***(12)»» он давал вслепую — маска
+        скрывала, что номер не его. То же значение в уже заполненное поле —
+        ничего не меняет: номер, который сайт не принял («Продолжить»
+        неактивна), модель вписывала по кругу, пока не сработал стоп."""
+        hay = " ".join(str(item.get(k) or "") for k in ("text", "aria",
+                                                        "title"))
+        # Адрес — тоже его; поле окна способа получения (поиск пиццерии,
+        # адрес доставки) — тем более: точку и адрес выбирает человек
+        own = (item.get("sn") or _PERSONAL_FIELD_RE.search(hay)
+               or _ADDRESS_FIELD_RE.search(hay)
+               or (run.get("receive") and item.get("md")))
+        if own and not item.get("qs") and text == raw and text.strip():
+            srcs = [run.get("goal") or ""]
+            srcs += [str(a) for _q, a in run.get("qa") or ()]
+            srcs += [str(s) for s in run.get("said") or ()]
+            brief = run.get("brief") or {}
+            srcs += [str(brief.get(k) or "") for k in _BRIEF_KEYS]
+            srcs += list(self._hidden(run, chat_id))
+            for rec in run.get("past") or ():
+                srcs.append(json.dumps(rec, ensure_ascii=False))
+            if not _value_in(text, srcs):
+                self._record(run, line, (
+                    "NOT performed — the user never gave this value: never "
+                    "make up their personal data (a phone, an email, a name, "
+                    "a password, a code from an SMS). Ask the user for it — "
+                    "one question with everything this form needs from them"))
+                return ("progress", None)
+        if item.get("fv") and not submit:
+            import hashlib
+            was = (run.get("typed") or {}).get(
+                self._typed_key(obs.get("host"), label))
+            if was and was == hashlib.sha256(
+                    _value_key(text).encode()).hexdigest()[:16]:
+                self._record(run, line, (
+                    "NOT performed — this field already holds this value "
+                    "(typed before, the field is filled): typing it again "
+                    "changes nothing. If a button stays disabled or the field "
+                    "is marked invalid, the site does not accept the value — "
+                    "tell the user what the page says and ask them what to "
+                    "enter instead"))
+                return ("progress", None)
+        return None
+
+    def _receive_open(self, run: dict, obs: dict) -> bool:
+        # Окно способа получения (run["receive"]) ещё на экране
+        opts = set((run.get("receive") or {}).get("opts") or ())
+        return bool(opts) and any(
+            it.get("md") and " ".join(_item_label(it).split())[:LABEL_MAX]
+            in opts for it in obs.get("shown") or ())
+
+    def _receive_step(self, run: dict, chat_id, obs: dict
+                      ) -> Optional[Tuple[str, str]]:
+        """Сайт ответил на «В корзину» окном способа получения (_note_cart:
+        run["receive"]) — до хода модели вопрос человеку с вариантами окна:
+        доставка или самовывоз — его выбор, не модели. Один раз за прогон:
+        дальше выбор — в его ответах, модель кликает его. Окна уже нет —
+        не спрашиваем."""
+        rc = run.get("receive")
+        if not rc or run.get("receive_asked") or obs.get("private") \
+                or not self._receive_open(run, obs):
+            return None
+        run["receive_asked"] = True
+        # Ответы с этого места — про способ получения и пункт (_place_named)
+        rc["qa0"] = len(run.get("qa") or ())
+        site = str(obs.get("host") or "").removeprefix("www.")
+        options = "\n".join(f"- {o}" for o in rc["opts"])
+        key = str(rc.get("key") or "")
+        q = (self._t("task_receive_any", site=site, options=options)
+             if not key or _ADD_TO_CART_RE.search(key) else
+             self._t("task_receive", site=site, item=key, options=options))
+        run["awaiting"] = {"kind": "ask", "question": q, "private": False,
+                           "pick": "receive"}
+        self._audit_note(run, chat_id, "task_ask", q)
+        return ("pause", q)
+
+    def _receive_close(self, run: dict, line: str, obs: dict, a: dict
+                       ) -> Optional[Tuple[str, Optional[str]]]:
+        """Крестик или Escape, пока открыто окно способа получения: закрыть
+        его — отменить добавление (29.10 так не легли оба товара). Первый
+        раз — назад модели; настаивает — «да» человека."""
+        if not self._receive_open(run, obs):
+            return None
+        rc = run["receive"]
+        if rc.get("close_bounced"):
+            # «да» человека — окно закроется, товар не ляжет: план больше не
+            # ведёт к выбору в нём (_execute)
+            a["receive_close"] = True
+            return self._ask_confirm(run, a, line, question=self._phrase(
+                "task_receive_close",
+                "Закрыть окно, где сайт спрашивает, как получить заказ? Тогда "
+                "товар в корзину не ляжет. (да/нет)"))
+        rc["close_bounced"] = True
+        run["sigs"] = []
+        self._record(run, line, (
+            "NOT performed — this dialog asks how to get the order ("
+            + "; ".join(f'"{o}"' for o in rc["opts"]) + "): closing it "
+            "cancels adding the item to the cart. Click the option the user "
+            "chose; if they have not answered yet, ask them"))
+        return ("progress", None)
+
+    def _receive_pick(self, run: dict, item: dict, obs: dict, line: str
+                      ) -> Optional[Tuple[str, Optional[str]]]:
+        """Пункт самовывоза или адрес доставки в окне сайта — выбор
+        человека: 29.10 после «Забрать из пиццерии» модель сама взяла первую
+        пиццерию списка — «Геодезическая, 4/1 Закрыто» — и нажала «Выбрать».
+        Пока человек пункт не назвал и на вопрос о нём не ответил, клик по
+        пункту или по кнопке принятия выбора — назад модели: спросить его,
+        перечислив пункты окна со статусом."""
+        rc = run.get("receive")
+        if not rc or not run.get("receive_asked") or not item.get("md") \
+                or item.get("cov") or obs.get("private"):
+            return None
+        lab = " ".join(_item_label(item).split())
+        if lab[:LABEL_MAX] in (rc.get("opts") or ()) \
+                or _CLOSE_LABEL_RE.search(lab):
+            return None
+        place = bool(_PLACE_RE.search(lab))
+        if not place and not _PICK_CONFIRM_RE.fullmatch(lab):
+            return None
+        mark = rc.get("pick_qa")
+        if rc.get("picked") or (mark is not None
+                                and len(run.get("qa") or ()) > mark) \
+                or (place and self._place_named(run, rc, lab, obs)):
+            # Человек ответил на вопрос о пункте или назвал его сам —
+            # дальше клики по его ответу, и «Выбрать» после них
+            rc["picked"] = rc.get("picked") or place
+            return None
+        rc["pick_qa"] = len(run.get("qa") or ())
+        run["sigs"] = []
+        self._record(run, line, (
+            "NOT performed — the pickup point or the delivery address is the "
+            "user's choice, not yours. Ask the user: list the options this "
+            "dialog shows with their status (open/closed, hours); then click "
+            "the one they name"))
+        return ("progress", None)
+
+    @staticmethod
+    def _place_named(run: dict, rc: dict, lab: str, obs: dict) -> bool:
+        """Пункт уже назван человеком («самовывоз с Геодезической»): слово
+        подписи, отличающее пункт от других в окне (город и «улица» есть у
+        всех — не в счёт), — основой среди его слов с вопроса о способе
+        получения (и в цели)."""
+        said = [run.get("goal") or ""] + [
+            str(a) for _q, a in (run.get("qa") or [])[rc.get("qa0", 0):]]
+        low = " ".join(" ".join(said).split()).casefold()
+        others = [" ".join(_item_label(it).split()).casefold()
+                  for it in obs.get("shown") or ()
+                  if it.get("md") and not it.get("cov")
+                  and _PLACE_RE.search(_item_label(it))]
+        for w in re.findall(r"[^\W\d_]{4,}", lab.casefold()):
+            if _PLACE_RE.fullmatch(w) or (len(others) > 1
+                                          and all(w in o for o in others)):
+                continue
+            if re.search(r"(?<![^\W\d_])"
+                         + re.escape(w[:max(4, len(w) - 2)]), low):
+                return True
+        return False
 
     def _bounce_option(self, run: dict, a: dict, line: str, label: str,
                        item: dict) -> Tuple[str, Optional[str]]:
@@ -8181,7 +8618,10 @@ class TaskAgent:
             f"NOT performed — you already clicked \"{label[:LABEL_MAX]}\" at "
             f"step {prev + 1} and it took effect{state}. It works as an "
             "option/toggle: clicking it again would most likely undo it. "
-            "Treat it as done and go on with the next step. Only if it "
+            "Treat it as done and go on with the next step. If what you "
+            "need is inside its block but not in the list (an option of a "
+            "filter or a section), use find with that option's text "
+            "instead. Only if it "
             "really has to be clicked again, repeat the click — the user "
             "will be asked to confirm")
         return ("progress", None)
@@ -8403,9 +8843,26 @@ class TaskAgent:
         return {"kind": "continue", "ts": time.time(),
                 "user_id": run.get("turn_user")}
 
+    @staticmethod
+    def _said_mark(run: dict) -> int:
+        """Сколько человек сказал за прогон (ответы и реплики): растёт —
+        значит, сказал что-то новое."""
+        return len(run.get("qa") or ()) + len(run.get("said") or ())
+
     def _ask_confirm(self, run: dict, a: dict, line: str,
                      question: Optional[str] = None
                      ) -> Tuple[str, Optional[str]]:
+        if (run.get("declined") or {}).get(line) == self._said_mark(run):
+            # На этот же шаг человек только что ответил «нет» — второй раз
+            # не спрашиваем: модель решает, что делать вместо
+            for k in ("confirm_ctx", "confirm_tag", "confirm_query",
+                      "confirm_cart_key"):
+                run.pop(k, None)
+            self._record(run, line, (
+                "NOT performed — the user has just said no to exactly this "
+                "step: do not propose it again. Ask the user what to do "
+                "instead, saying what the page shows"))
+            return ("progress", None)
         # ts/user_id: «да» принимается CONFIRM_TTL_SEC и только от автора
         # хода; ctx — блок элемента (одноимённые кнопки, _confirmed_fresh)
         ctx = run.pop("confirm_ctx", None)
@@ -8522,6 +8979,25 @@ class TaskAgent:
                     and not _NOT_PRODUCT_RE.search(lab):
                 run["cart_watch"] = {"label": lab, "key": name[:60],
                                      "hist_idx": len(run["history"]) - 1}
+        if ok and a.get("kind") == "type" and not a.get("submit"):
+            # Что уже вписано в поле — отпечатком, не значением (_type_gate:
+            # то же значение в заполненное поле второй раз не вводим)
+            import hashlib
+            run.setdefault("typed", {})[self._typed_key(
+                a.get("host"), a.get("element"))] = hashlib.sha256(
+                _value_key(a.get("text")).encode()).hexdigest()[:16]
+        if ok and a.get("receive_close"):
+            # Окно способа получения закрыто с «да» человека
+            run.pop("receive", None)
+        elif ok and a.get("kind") in ("click", "type", "key") \
+                and run.get("receive") and "cart_check" not in run \
+                and "cart_watch" not in run:
+            # Способ получения выбирают кликами в окне сайта (адрес,
+            # пиццерия); товар ляжет, когда сайт примет выбор, — рост
+            # корзины засчитывается ему (_note_effect → _note_cart)
+            rc = run["receive"]
+            run["cart_watch"] = {"label": rc["label"], "key": rc["key"],
+                                 "hist_idx": len(run["history"]) - 1}
         # База сравнения «до/после» — последнее наблюдение; эффект допишет
         # следующий _observe
         if run.get("page_state") is not None:

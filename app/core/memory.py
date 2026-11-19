@@ -92,6 +92,25 @@ def _notify_stm_write(context: str, chat_key: str) -> None:
             logger.debug(f"[STM] слушатель записи: {e}")
 
 
+# Кто узнаёт сам текст новой реплики: (контекст, ключ чата, роль, текст) →
+# None. Только реплики, сказанные сейчас, — без переписки задним числом
+# (timestamp у add_message). API ведёт по нему ленту реплик персон для
+# портрета на рабочем столе (app/api/said)
+_stm_message_hooks: list = []
+
+
+def on_stm_message(fn) -> None:
+    _stm_message_hooks.append(fn)
+
+
+def _notify_stm_message(context: str, chat_key: str, role: str, content: str) -> None:
+    for fn in list(_stm_message_hooks):
+        try:
+            fn(context, chat_key, role, content)
+        except Exception as e:
+            logger.debug(f"[STM] слушатель реплик: {e}")
+
+
 # summarize_user: консолидация отменена, потому что факты пользователя
 # поменяли за время её LLM-вызова (forget, правка) — попытку не теряем
 SUMMARY_CONFLICT = -2
@@ -339,6 +358,7 @@ class ShortTermMemory:
             buf.append(entry)
             self._stamp_last_message(filter_id, entry["timestamp"])
             _notify_stm_write(self.context, filter_id)
+            _notify_stm_message(self.context, filter_id, role, content)
             return
         entry["timestamp"] = saved
         with self._lock:
@@ -1710,10 +1730,15 @@ class MemoryManager:
     # съедала бы дневную квоту и спамила служебный чат.
     EXTRACT_EVERY = 15
     EXTRACT_EVERY_LIGHT = 6
+    # Перенос переписки с телефона (offline_api.import_messages): сотни
+    # сообщений разом — пачки крупнее, без консолидации, иначе перенос
+    # длинной истории — десятки вызовов модели подряд
+    EXTRACT_EVERY_BULK = 30
 
     def add_message(self, role: str, content: str, user_id: str = "default",
                     chat_id: str = None, user_name: str = None,
-                    light_mode: bool = None, timestamp: float = None):
+                    light_mode: bool = None, timestamp: float = None,
+                    bulk: bool = False):
         """
         Добавить сообщение в память.
         Факты для LTM извлекаются в фоновом потоке пакетами: каждые
@@ -1727,6 +1752,7 @@ class MemoryManager:
             light_mode: урезанный контекст (local-primary / light_context) —
                      интервал 6 вместо 15; None — определить по роутеру.
             timestamp: время сообщения из прошлого (см. ShortTermMemory).
+            bulk: перенос пачкой (EXTRACT_EVERY_BULK, без консолидации).
         """
         self.stm.add_message(role, content, user_id, chat_id, user_name,
                              timestamp=timestamp)
@@ -1742,6 +1768,8 @@ class MemoryManager:
                     self.ltm.main_router
                     and self.ltm.main_router.is_local_primary())
             every = self.EXTRACT_EVERY_LIGHT if light_mode else self.EXTRACT_EVERY
+            if bulk:
+                every = self.EXTRACT_EVERY_BULK
             with self._counter_lock:
                 self._extract_counters[user_id] = self._extract_counters.get(user_id, 0) + 1
                 count = self._extract_counters[user_id]
@@ -1774,7 +1802,7 @@ class MemoryManager:
                                                  origin_chat=chat_id, user_name=user_name,
                                                  lang=batch_lang)
 
-        if role == "user" and self.enable_ltm_extraction:
+        if role == "user" and self.enable_ltm_extraction and not bulk:
             # Периодическая консолидация LTM
             with self._counter_lock:
                 self._user_msg_counters[user_id] = self._user_msg_counters.get(user_id, 0) + 1

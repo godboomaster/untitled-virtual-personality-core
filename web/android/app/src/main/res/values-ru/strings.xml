@@ -11,6 +11,8 @@
     <string name="bg_channel_messages_desc">Напоминания и сообщения персон, когда приложение закрыто</string>
     <string name="bg_test_title">Проверка</string>
     <string name="bg_test_text">Уведомления о сообщениях персон работают</string>
+    <!-- Общая стопка уведомлений (NotifyStack) -->
+    <string name="notify_you">Вы</string>
     <!-- Виджет «Инициатива» (InitiativeWidget) -->
     <string name="widget_initiative_label">Инициатива персон</string>
     <string name="widget_initiative_desc">Сообщения, которые персоны пишут сами</string>
@@ -52,6 +54,20 @@
     <string name="portrait_w_offline">Нет связи с ядром — портрет появится, когда оно ответит</string>
     <string name="portrait_w_gone">Персоны больше нет</string>
     <string name="portrait_w_preview">Живой портрет персоны</string>
+    <string name="portrait_w_write">Написать: %1$s</string>
+    <string name="portrait_w_user">Вы: %1$s</string>
+    <string name="portrait_in_hint">Сообщение</string>
+    <string name="portrait_in_send">Отправить</string>
+    <string name="portrait_in_mic">Надиктовать</string>
+    <string name="portrait_in_listening">Говорите…</string>
+    <string name="portrait_in_sending">Отправляю…</string>
+    <string name="portrait_in_denied">Ядро не пускает — проверьте токен в приложении (раздел «Подключение»)</string>
+    <string name="portrait_in_no_mic">Нет доступа к микрофону</string>
+    <string name="portrait_in_no_speech">Распознавания речи на телефоне нет — надиктуйте с клавиатуры</string>
+    <string name="portrait_in_not_heard">Ничего не расслышано — попробуйте ещё раз</string>
+    <string name="portrait_in_mic_error">Распознавание речи не сработало</string>
+    <string name="portrait_in_failed">Сообщение для %1$s не дошло — текст остался в окне «Написать»</string>
+    <string name="portrait_in_failed_last">Прошлое сообщение не дошло — ядро ответило ошибкой. Отправить ещё раз?</string>
     <!-- Голосовая активация по имени (WakeWordService) -->
     <string name="wake_channel">Слушать по имени</string>
     <string name="wake_channel_desc">Тихое уведомление, пока приложение слушает имя персоны</string>
@@ -74,6 +90,8 @@
     <!-- Голосом без ядра: что сказать самой службе (PhoneVoiceOps.say, WakeWordService) -->
     <string name="wake_say_offline_later">Ядро не отвечает. Отвечу, когда откроете приложение</string>
     <string name="wake_say_offline_queued">Ядро не отвечает, а без него ответить некому. Реплика ждёт в чате</string>
+    <string name="wake_say_phone_later">Отвечу, когда откроете приложение</string>
+    <string name="wake_say_phone_queued">Ответить нечем: нет ключа облачной модели и Gemma на телефоне. Реплика ждёт в чате</string>
     <string name="wake_say_offline_slow">Ответ будет в чате</string>
     <string name="wake_act_open_ok">Открываю %1$s</string>
     <string name="wake_act_alarm_ok">Будильник на %1$s поставлен</string>
@@ -96,4 +114,28 @@
     <string name="wake_tap_alarm">Поставить будильник на %1$s</string>
     <string name="wake_tap_timer">Запустить таймер</string>
     <string name="wake_tap_alarms">Открыть будильники</string>
+    <!-- Управление экраном (PhoneControlService): название и описание в спец. возможностях -->
+    <string name="phone_control_label">Virtual Persona: управление экраном</string>
+    <string name="phone_control_desc">Персона нажимает, вводит текст и листает на этом телефоне, когда вы просите в чате («на телефоне нажми «Отправить»»). Команды приходят только от вашего ядра Virtual Persona. Необратимое (отправить, удалить, подтвердить) — только после вашего «да», оплату не нажимает никогда, банковские приложения, пароли и коды входа не читает и не трогает.</string>
+    <string name="avatar_overlay_channel">Аватар поверх приложений</string>
+    <string name="avatar_overlay_title">%1$s поверх приложений</string>
+    <string name="avatar_overlay_title_any">Аватар поверх приложений</string>
+    <string name="avatar_overlay_text">Тап — погладить, потянуть — переставить, двумя пальцами — размер, долгое — меню</string>
+    <string name="avatar_overlay_hide">Убрать</string>
+    <string name="avatar_gaze_label">Virtual Persona: куда вы нажимаете</string>
+    <string name="avatar_gaze_desc">Аватар поверх приложений смотрит туда, где вы нажимаете или печатаете. Служба получает только место нажатого элемента на экране: текст экрана не читает и никуда ничего не отправляет. Ещё служба видит, открыта ли клавиатура (только типы окон), — пока вы печатаете, нажатия проходят сквозь аватар. События приходят, только пока аватар на экране.</string>
+    <string name="avatar_overlay_text_pass">Нажатия проходят сквозь аватар к приложению под ним</string>
+    <string name="avatar_overlay_pass">Сквозь касания</string>
+    <string name="avatar_overlay_catch">Ловить касания</string>
+    <string name="avatar_menu_write">Написать</string>
+    <string name="avatar_menu_persona">Сменить персону</string>
+    <string name="avatar_menu_app">Открыть приложение</string>
+    <string name="avatar_menu_back">Назад</string>
+    <string name="avatar_menu_no_personas">Листов головы других персон на телефоне пока нет</string>
+    <string name="portrait_w_out">%1$s: поверх приложений</string>
+    <string name="portrait_w_away">%1$s сейчас поверх приложений. Коснитесь, чтобы вернуть</string>
+    <string name="portrait_w_no_overlay">Разрешите «Поверх других приложений»: в приложении «Аватар» → «Поверх»</string>
+    <string name="avatar_menu_widget">На виджет</string>
+    <string name="portrait_w_back">Вернуть</string>
+    <string name="portrait_w_switch">Сменить персону</string>
 </resources>

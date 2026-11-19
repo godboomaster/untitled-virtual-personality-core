@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 58-centered-ghost.png. Recolor both eggshell interiors pure white and remove all shaded facets, retaining outlines, fracture marks and the ghost.
+
+Precise color edit to the supplied ghost-and-cracked-egg logo.
+Make BOTH EGGSHELL PIECES uniformly PURE WHITE (#FFFFFF) inside their existing dark outlines. Remove all beige, ivory, pink or tan fills, all shaded facet polygons, gradients, highlights and shadows from the eggshell. The shell interiors must be completely flat white with no shading.
+Preserve the eggshells' exact outer contours, broken rims, existing dark crack lines, outline thickness, size, position and orientation. Keep their current dark outlines and fracture marks; do not remove or redraw the cracks.
+Preserve the entire centered enlarged ghost exactly: white face and body, tall narrow eyes, flat collar interface, black ribbon, smooth offsets and straight body edges. Preserve the composition, framing and solid white background. No other changes, text, texture or new details.

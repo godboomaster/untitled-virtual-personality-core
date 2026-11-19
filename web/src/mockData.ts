@@ -4,6 +4,8 @@
 // Структурные значения (статусы, исходы, типы файлов, теги, фичи) — стабильные
 // коды, одинаковые в обоих наборах; их подписи лежат в словарях i18n.
 
+import { BUILTIN_AVATARS } from './room/avatarDefaults';
+
 export type PersonaStatus = 'online' | 'silent' | 'typing' | 'frozen';
 export type InitiativeOutcome = 'answered' | 'ignored' | 'pending';
 export type PersonaFileKind = 'lesson' | 'dump' | 'export' | 'image' | 'document';
@@ -55,7 +57,7 @@ export interface ChatMessage {
   read?: boolean; // сообщение бота прочитано пользователем (чат видим/в фокусе)
   // Без ноутбука (web/src/offline): кто ответил — облако с телефона, модель
   // телефона; у реплики пользователя queued — ждёт связи
-  offline?: 'cloud' | 'local' | 'queued' | 'reminder';
+  offline?: 'cloud' | 'local' | 'queued' | 'reminder' | 'notify';
   // Напоминание, поставленное этой репликой без ноутбука (карточка с отменой)
   offlineReminder?: { id: string; task: string; at: number };
 }
@@ -197,10 +199,12 @@ export interface RoomPastime {
 
 // Дефолтный аватар персоны (совпадает с опциями конструктора в Room.tsx)
 export interface RoomAvatarPreset {
-  head: 'circle' | 'square' | 'hex' | 'diamond';
-  eyes: number; // индекс в eyeOptions
+  // Первые четыре — исходные; остальные добавлены 04.11.2026 (контуры — room/avatarHead)
+  head: 'circle' | 'square' | 'hex' | 'diamond' | 'squircle' | 'hexv' | 'octagon' | 'pent' | 'capsule' | 'screen' | 'can';
+  eyes: number; // вид глаз — индекс в room/avatarEyes EYE_DEFS (0–21)
   accessory: number; // индекс в accessoryOptions
   shade: number; // индекс оттенка серого
+  body?: number; // тело и одежда — индекс в room/avatarBody bodyOptions; нет — обычное
 }
 
 export interface RoomConfig {
@@ -786,7 +790,7 @@ const roomConfigsRu: Record<string, RoomConfig> = {
     ],
     mood: 'лёгкая обида',
     energy: '72%',
-    avatar: { head: 'hex', eyes: 0, accessory: 0, shade: 1 },
+    avatar: BUILTIN_AVATARS.connor,
   },
   // Версо — мастерская художника: мольберт, рамы, банки с кистями, ворона
   verso: {
@@ -802,7 +806,7 @@ const roomConfigsRu: Record<string, RoomConfig> = {
     ],
     mood: 'меланхолия',
     energy: '54%',
-    avatar: { head: 'diamond', eyes: 2, accessory: 3, shade: 0 },
+    avatar: BUILTIN_AVATARS.verso,
   },
   // Ассистент — стерильный минимализм: серверная стойка вместо полки
   assistant: {
@@ -816,7 +820,7 @@ const roomConfigsRu: Record<string, RoomConfig> = {
     ],
     mood: 'нейтральность',
     energy: '99%',
-    avatar: { head: 'square', eyes: 1, accessory: 0, shade: 3 },
+    avatar: BUILTIN_AVATARS.assistant,
   },
   // Версо (группа) — гостевой режим: минимум вещей, без питомца
   verso_ru_group: {
@@ -831,7 +835,7 @@ const roomConfigsRu: Record<string, RoomConfig> = {
     ],
     mood: 'сдержанность',
     energy: '47%',
-    avatar: { head: 'diamond', eyes: 2, accessory: 3, shade: 2 },
+    avatar: BUILTIN_AVATARS.verso_ru_group,
   },
 };
 
@@ -1367,7 +1371,7 @@ const roomConfigsEn: Record<string, RoomConfig> = {
     ],
     mood: 'slightly hurt',
     energy: '72%',
-    avatar: { head: 'hex', eyes: 0, accessory: 0, shade: 1 },
+    avatar: BUILTIN_AVATARS.connor,
   },
   verso: {
     props: ['rug', 'poster', 'curtains', 'desk', 'chair', 'bed', 'plant', 'easel', 'frames', 'brushJars'],
@@ -1382,7 +1386,7 @@ const roomConfigsEn: Record<string, RoomConfig> = {
     ],
     mood: 'melancholy',
     energy: '54%',
-    avatar: { head: 'diamond', eyes: 2, accessory: 3, shade: 0 },
+    avatar: BUILTIN_AVATARS.verso,
   },
   assistant: {
     props: ['clock', 'desk', 'serverRack'],
@@ -1395,7 +1399,7 @@ const roomConfigsEn: Record<string, RoomConfig> = {
     ],
     mood: 'neutral',
     energy: '99%',
-    avatar: { head: 'square', eyes: 1, accessory: 0, shade: 3 },
+    avatar: BUILTIN_AVATARS.assistant,
   },
   verso_ru_group: {
     props: ['poster', 'desk', 'chair', 'easel'],
@@ -1409,7 +1413,7 @@ const roomConfigsEn: Record<string, RoomConfig> = {
     ],
     mood: 'reserved',
     energy: '47%',
-    avatar: { head: 'diamond', eyes: 2, accessory: 3, shade: 2 },
+    avatar: BUILTIN_AVATARS.verso_ru_group,
   },
 };
 

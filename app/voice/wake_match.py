@@ -22,6 +22,10 @@ from typing import Iterable, Optional
 MAX_LEAD = 2
 # Имя распознаватель может склеить или разбить: окно до стольких слов
 MAX_WINDOW = 3
+# Текст латиницей — от английской модели. В английском «r» после гласной
+# часто не звучит («Conna» вместо «Connor» у британцев): конечное «р» имени
+# можно не услышать за столько (только латиницей — по-русски «мира» не «mirror»)
+NON_RHOTIC = 0.5
 
 _LATIN = [
     ("sch", "ш"), ("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"), ("ts", "ц"),
@@ -58,6 +62,27 @@ def to_cyrillic(text: str) -> str:
     модель латиницу не закодирует. «Connor» → «коннор»."""
     s = _translit(text.lower().replace("ё", "е"))
     return " ".join("".join(ch if "а" <= ch <= "я" else " " for ch in s).split())
+
+
+_CYR_LATIN = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo", "ж": "zh", "з": "z",
+    "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+    "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def is_latin_word(text: str) -> bool:
+    return any("a" <= ch <= "z" for ch in text.lower()) and not any("а" <= ch <= "я" or ch == "ё" for ch in text.lower())
+
+
+def to_latin(text: str) -> str:
+    """Имя латиницей, заглавными — подсказка английской модели (её токены
+    заглавные). «Жабка» → «ZHABKA». Лучше, когда у персоны есть своё
+    написание латиницей (WakePhrase.latin): «KONNOR» модели не подсказывает
+    «CONNOR»."""
+    s = "".join(_CYR_LATIN.get(ch, ch) for ch in text.lower())
+    return " ".join("".join(ch if "a" <= ch <= "z" or ch == "'" else " " for ch in s).split()).upper()
 
 
 def phonetic_key(text: str) -> str:
@@ -116,6 +141,12 @@ class WakePhrase:
     persona: str
     phrase: str
     key: str
+    # То же имя латиницей из trigger_words персоны («коннор» → «connor»;
+    # одинаковое по звуку в список не входит) — подсказка английской модели
+    latin: str = ""
+    # Имя режима персоны (id режима; "" — обычное имя): у персоны с
+    # режимами слушатель передаёт ядру, каким именем её позвали
+    mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -128,10 +159,11 @@ class WakeHit:
 
 
 def wake_phrases(personas: Iterable[dict], only: Optional[Iterable[str]] = None) -> list[WakePhrase]:
-    """Имена для пробуждения из ответа GET /api/personas: features.trigger_words.
-    Персоны без своих trigger_words голосом не будятся (имя вроде «Ассистент» —
-    обычное слово). only — ограничить списком id (WAKE_PERSONAS). Одинаковое
-    по звуку имя у двух персон достаётся первой."""
+    """Имена для пробуждения из ответа GET /api/personas: features.trigger_words
+    и имена режимов персоны (modes[].names — «Девиант, …» будит её же и
+    включает режим). Персоны без своих trigger_words голосом не будятся (имя
+    вроде «Ассистент» — обычное слово). only — ограничить списком id
+    (WAKE_PERSONAS). Одинаковое по звуку имя у двух персон достаётся первой."""
     allow = {p.strip() for p in only or () if p.strip()} or None
     seen: set[str] = set()
     out: list[WakePhrase] = []
@@ -139,15 +171,23 @@ def wake_phrases(personas: Iterable[dict], only: Optional[Iterable[str]] = None)
         pid = str(p.get("id") or "")
         if not pid or (allow is not None and pid not in allow):
             continue
-        words = (p.get("features") or {}).get("trigger_words") or []
-        for w in words:
-            if not isinstance(w, str) or not w.strip():
-                continue
+        words = [(w, "") for w in (p.get("features") or {}).get("trigger_words") or []
+                 if isinstance(w, str) and w.strip()]
+        for m in p.get("modes") or []:
+            if isinstance(m, dict) and m.get("id"):
+                words += [(w, str(m["id"])) for w in m.get("names") or []
+                          if isinstance(w, str) and w.strip()]
+        latin: dict[str, str] = {}
+        for w, _ in words:
+            if is_latin_word(w):
+                latin.setdefault(phonetic_key(w), w.strip())
+        for w, mode in words:
             key = phonetic_key(w)
             if len(key) < 3 or key in seen:
                 continue
             seen.add(key)
-            out.append(WakePhrase(persona=pid, phrase=w.strip(), key=key))
+            out.append(WakePhrase(persona=pid, phrase=w.strip(), key=key,
+                                  latin=latin.get(key, ""), mode=mode))
     return out
 
 
@@ -162,14 +202,18 @@ def match_wake(text: str, phrases: list[WakePhrase]) -> Optional[WakeHit]:
             end = start + size
             if end > len(tokens):
                 break
-            key = phonetic_key("".join(t.group() for t in tokens[start:end]))
+            window = "".join(t.group() for t in tokens[start:end])
+            key = phonetic_key(window)
             if not key:
                 continue
+            latin = is_latin_word(window)
             for ph in phrases:
                 # Окно заметно длиннее имени — это уже не имя
                 if len(key) > len(ph.key) + 3:
                     continue
                 d = key_distance(key, ph.key)
+                if latin and len(ph.key) > 3 and ph.key.endswith("р"):
+                    d = min(d, key_distance(key, ph.key[:-1]) + NON_RHOTIC)
                 if d > tolerance(ph.key):
                     continue
                 # Лучшее — ближе по звуку, затем раньше в реплике, затем длиннее

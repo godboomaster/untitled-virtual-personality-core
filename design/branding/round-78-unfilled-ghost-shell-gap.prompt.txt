@@ -1,0 +1,10 @@
+Built-in image_gen. Edit target: 111-simple-leaves-monochrome-ghost-logo.png. Output: 112-background-gap-monochrome-ghost-logo.png. The gap shows the surrounding background; the canvas remains opaque.
+
+Use case: precise-object-edit
+Asset type: remove fill from the narrow ghost/eggshell separation in the selected monochrome logo.
+Input image 1: sole edit target, 111-simple-leaves-monochrome-ghost-logo.png.
+Primary request: make the narrow zigzag GAP BETWEEN THE GHOST'S BOTTOM HEM AND THE EGGSHELL'S FRONT RIM unfilled negative space, showing the surrounding background.
+The gap is the pale bone-colored narrow ribbon between the two parallel black zigzag contours at the ghost/shell boundary. Remove ONLY that pale bone fill from this entire narrow ribbon. Show the SAME muted stone/parchment-GRAY background color and subtle background texture seen outside the emblem through this gap, smoothly continuous with the adjacent exterior background. It should look like a clean cutout between the floating ghost and the shell.
+Preserve BOTH original dark bordering contours exactly, their zigzag corner locations, separation width, sharp edges and original stroke weights. Do not join the two contours, add a gray stroke, create a shadow or alter the shapes. Only the ribbon's interior changes from pale bone fill to visible gray background.
+Keep the ghost head, torso interior and the shell interior their existing pale bone color. Keep both simple dark leaves with ONE light central vein each, original collar and openings, eyes, true circular head, three crack groups, open upper-left shell corner, line wear and engraved/aged monochrome character exactly unchanged. Preserve full square framing, original overall size and positioning.
+Output ONE complete square logo. Background remains as in the input. No new objects, detached upper shell, rear wall, symbols, text, borders, colors or redesign. Change only the fill inside the narrow zigzag gap separating the ghost and eggshell.

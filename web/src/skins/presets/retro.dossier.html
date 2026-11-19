@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="ru" data-vpc-active="dossier">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="vpc-skin-contract" content="3" />
+<meta name="vpc-skin-name" content="Ретрофутуризм" />
+<meta name="vpc-skin-author" content="Virtual Persona Core" />
+<meta name="vpc-skin-version" content="1.0" />
+<title>Ретрофутуризм — dossier</title>
+<style>
+  /* «Ретрофутуризм»: киноафиша космической фантастики 1975 года — синий
+     космос, кремовая рамка, четырёхполосная закатная лента (золото,
+     оранжевый, гранат, бирюза) как фирменный знак, круглые иллюминаторы
+     вместо аватаров, геометрический гротеск капсом. Тёмная тема основная,
+     светлая — та же афиша на кремовой бумаге. */
+  :root {
+    --bg: #0f1820;
+    --panel: #172531;
+    --panel2: #1e3240;
+    --ink: #fadac1;
+    --muted: #a9b6b4;
+    --line: #2f4756;
+    --accent: #f6723a;
+    --teal: #50a3ab;
+    --gold: #f2b950;
+    --garnet: #c43b39;
+    --on-accent: #0f1820;
+    --persona-bg: #1e3240;
+    --persona-ink: #fadac1;
+    --user-bg: #fadac1;
+    --user-ink: #0f1820;
+    --field: #0f1820;
+    --track: #0f1820;
+    --danger: #e2524f;
+    --scene: #0f1820;
+    --rw: 1px;
+    --bw: 2px;
+    --f-disp: Futura, "Century Gothic", "Avenir Next", "Trebuchet MS", sans-serif;
+    --f-text: "Avenir Next", "Century Gothic", "Segoe UI", "Noto Sans", sans-serif;
+    --f-mono: "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+    --band: linear-gradient(180deg, var(--gold) 0 25%, var(--accent) 25% 50%, var(--garnet) 50% 75%, var(--teal) 75% 100%);
+    --band-x: linear-gradient(90deg, var(--gold) 0 25%, var(--accent) 25% 50%, var(--garnet) 50% 75%, var(--teal) 75% 100%);
+    --scrim: color-mix(in srgb, var(--bg) 70%, transparent);
+
+    --vpc-shell-bg: var(--bg);
+    --vpc-shell-panel: var(--panel);
+    --vpc-shell-text: var(--ink);
+    --vpc-shell-dim: var(--muted);
+    --vpc-shell-border: var(--line);
+    --vpc-shell-accent: var(--accent);
+    --vpc-shell-font: "Avenir Next", "Century Gothic", "Segoe UI", "Noto Sans", sans-serif;
+    --vpc-shell-font-disp: Futura, "Century Gothic", "Avenir Next", "Trebuchet MS", sans-serif;
+    --vpc-shell-font-mono: "SF Mono", Menlo, Consolas, monospace;
+    --vpc-shell-radius: 14px;
+    --vpc-shell-shadow: none;
+  }
+  html[data-theme="light"] {
+    --bg: #f4dcc3;
+    --panel: #fdefdf;
+    --panel2: #f7e2cb;
+    --ink: #182b36;
+    --muted: #5e544c;
+    --line: #dcbc9e;
+    --accent: #cf4f1c;
+    --teal: #2b7a82;
+    --gold: #d9951d;
+    --garnet: #b02f2d;
+    --on-accent: #fdefdf;
+    --persona-bg: #fdefdf;
+    --persona-ink: #182b36;
+    --user-bg: #182b36;
+    --user-ink: #fadac1;
+    --field: #fffaf3;
+    --track: #f7e2cb;
+    --danger: #b02f2d;
+    --scene: #182b36;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-text);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+  }
+  [hidden] { display: none !important; }
+  [data-vpc-screen] { display: none; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .count { font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .sep { color: var(--muted); }
+  .head-avatar {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    font-family: var(--f-disp);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .head-id { flex: 1; min-width: 0; }
+  .head-name {
+    font-family: var(--f-disp);
+    font-size: 18px;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-sub {
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mark { flex: none; }
+  [data-collapsed]:not([data-expanded]) > [data-extra] { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  .card {
+    min-width: 0;
+    background: var(--panel);
+    border: var(--bw) solid var(--line);
+    padding: 14px 16px;
+  }
+  .card-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-family: var(--f-disp);
+    font-size: 15px;
+    line-height: 1.25;
+  }
+  .list { display: flex; flex-direction: column; }
+  .row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 0;
+    border-bottom: var(--rw) solid var(--line);
+  }
+  .list > .row:last-child, .list > .fact:last-child, .list > .ini:last-child { border-bottom: none; }
+  .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .tag {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .i-btn {
+    flex: none;
+    min-width: 24px;
+    padding: 3px 6px;
+    background: none;
+    border: var(--rw) solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.1;
+  }
+  .i-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .form { display: flex; gap: 6px; margin-top: 12px; }
+  .form--wrap { flex-wrap: wrap; }
+  .form input, .form select {
+    flex: 1 1 140px;
+    min-width: 0;
+    padding: 7px 9px;
+    background: var(--field);
+    border: var(--rw) solid var(--line);
+    border-radius: 0;
+    outline: none;
+  }
+  .form input.narrow { flex: 0 1 96px; }
+  .form button {
+    flex: none;
+    padding: 7px 12px;
+    background: none;
+    border: var(--bw) solid var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .form button:hover { background: var(--accent); color: var(--on-accent); }
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+
+  html[data-vpc-active="dossier"] [data-vpc-screen="dossier"] { display: flex; }
+  .dossier { height: 100vh; width: 100%; flex-direction: column; overflow: hidden; }
+  .d-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 12px 18px;
+    background: var(--panel);
+    border-bottom: var(--bw) solid var(--line);
+  }
+  .d-close {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: none;
+    border: var(--bw) solid var(--line);
+  }
+  .d-close:hover { border-color: var(--accent); color: var(--accent); }
+  .tabs {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    padding: 0 12px;
+    background: var(--panel);
+    border-bottom: var(--bw) solid var(--line);
+  }
+  .tab {
+    display: inline-flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.tab-active { color: var(--ink); }
+  .tabs--sub { padding: 0; margin-bottom: 14px; background: none; }
+  .d-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; }
+  .page { display: none; }
+  .page.page-active { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-content: start; }
+  .page.page-active[data-tab-panel="memory"] { display: block; }
+  .card--wide { grid-column: 1 / -1; }
+  .subpage { display: none; }
+  .subpage.page-active { display: block; }
+  .fact, .ini { padding: 8px 0; border-bottom: var(--rw) solid var(--line); }
+  .fact-text { overflow-wrap: anywhere; }
+  .diary { padding: 8px 0; }
+  .diary + .diary { border-top: var(--rw) solid var(--line); }
+  .stm-author { flex: none; min-width: 64px; font-family: var(--f-mono); font-size: 11px; color: var(--accent); }
+  .stm[data-role="user"] .stm-author { color: var(--muted); }
+  .todo .todo-check { color: transparent; }
+  .todo[data-done] .todo-check { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .todo[data-done] .todo-text { text-decoration: line-through; color: var(--muted); }
+  .reminder[data-active="false"] { opacity: .5; }
+  .reminder-time { flex: none; font-family: var(--f-mono); font-size: 12px; color: var(--accent); }
+  .expand {
+    width: 100%;
+    margin-top: 10px;
+    padding: 6px;
+    background: none;
+    border: var(--rw) dashed var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .expand:hover { color: var(--accent); border-color: var(--accent); }
+  .expand .when-expanded { display: none; }
+  .expand[data-expanded] .when-expanded { display: inline; }
+  .expand[data-expanded] .when-collapsed { display: none; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field-label { font-size: 11.5px; color: var(--muted); }
+  .field input {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--field);
+    border: var(--rw) solid var(--line);
+    border-radius: 0;
+    outline: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .stats { margin: 4px 0; font-size: 13px; color: var(--muted); }
+  .stats b { color: var(--ink); font-weight: 600; }
+  .bar-label { margin-top: 8px; }
+  .progress { height: 8px; margin: 6px 0 8px; background: var(--track); border: var(--rw) solid var(--line); }
+  .progress-fill { width: 0; height: 100%; background: var(--accent); transition: width .3s; }
+  .alert { margin: 8px 0; padding: 6px 10px; border: var(--bw) solid var(--accent); color: var(--accent); font-size: 12px; }
+  .course { padding: 4px 0; }
+  .course-subject { font-family: var(--f-disp); font-size: 16px; }
+  .course[data-status="finished"] .course-status { color: var(--muted); }
+  .provider, .pmodel { flex-wrap: wrap; align-items: center; }
+  .provider[data-main="true"] .main-btn { display: none; }
+  .provider[data-main="true"] .provider-name { font-weight: 700; }
+  .provider[data-backup="false"] .backup-btn { opacity: .35; }
+  .provider-name { font-weight: 600; }
+  .pmodel input {
+    flex: 1 1 160px;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--field);
+    border: var(--rw) solid var(--line);
+    border-radius: 0;
+    outline: none;
+    font-family: var(--f-mono);
+    font-size: 12px;
+  }
+  .flags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .flag { padding: 4px 10px; background: none; border: var(--rw) solid var(--line); color: var(--muted); font-size: 12px; }
+  .flag[data-enabled="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .danger-btn { padding: 7px 14px; background: none; border: var(--bw) solid var(--danger); color: var(--danger); font-weight: 600; }
+  .danger-btn:hover { background: var(--danger); color: var(--on-accent); }
+  @media (max-width: 760px) {
+    .d-head { gap: 10px; padding: 10px 12px; }
+    .d-head .head-avatar { width: 34px; height: 34px; font-size: 15px; }
+    .d-head .head-name { font-size: 16px; }
+    .mark { display: none; }
+    .tabs:not(.tabs--sub) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0; }
+    .tabs:not(.tabs--sub) .tab {
+      flex-wrap: wrap;
+      align-content: center;
+      gap: 0 5px;
+      padding: 8px 4px;
+      font-size: 13px;
+      line-height: 1.2;
+      white-space: normal;
+      text-align: center;
+    }
+    .tabs--sub .tab { padding: 8px 8px; font-size: 13px; }
+    .d-body { padding: 12px; }
+    .page.page-active { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .card { padding: 12px; }
+    .row { flex-wrap: wrap; }
+    .stm-author { min-width: 0; }
+  }
+
+  .kicker, .ctx-fold summary {
+    font-family: var(--f-disp);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .18em;
+    color: var(--accent);
+  }
+  .count { color: var(--teal); font-weight: 700; }
+  .head-avatar {
+    border-radius: 50%;
+    background: var(--panel2);
+    color: var(--ink);
+    box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--accent);
+    margin: 5px;
+    font-weight: 700;
+  }
+  .head-name { font-weight: 700; font-size: 20px; letter-spacing: .14em; text-transform: uppercase; }
+  .head-sub { font-family: var(--f-mono); font-size: 11px; }
+  .mark { width: 56px; height: 18px; background: var(--band); border-radius: 9px; }
+
+  .card { border: none; border-radius: 14px; background: var(--panel); padding: 16px 18px; }
+  .card-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    padding-bottom: 10px;
+    margin-bottom: 8px;
+    border-bottom: 2px solid var(--line);
+  }
+  .card-title::before { content: ''; flex: none; align-self: center; width: 20px; height: 12px; border-radius: 3px; background: var(--band); }
+  .row { border-bottom-color: var(--line); }
+  .tag { color: var(--teal); font-weight: 600; }
+  .i-btn { border-radius: 999px; border-color: var(--line); padding: 3px 8px; }
+  .form input, .form select { border-radius: 999px; border: 2px solid var(--line); padding: 7px 14px; }
+  .form button { border-radius: 999px; border: none; background: var(--accent); color: var(--on-accent); padding: 7px 16px; font-family: var(--f-disp); letter-spacing: .08em; }
+  .form button:hover { background: var(--gold); color: var(--on-accent); }
+
+  .dossier { background: var(--bg); }
+  .d-head { background: var(--bg); border-bottom: none; position: relative; padding-bottom: 22px; }
+  .d-head::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 10px; background: var(--band); }
+  .d-close { border-radius: 50%; border-color: var(--line); }
+  .tabs:not(.tabs--sub) { background: var(--bg); border-bottom: none; padding: 12px 14px 4px; gap: 6px; }
+  .tab {
+    border-radius: 999px;
+    padding: 7px 14px;
+    font-family: var(--f-disp);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    border: 2px solid var(--line);
+  }
+  .tab.tab-active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .tab.tab-active .count { color: var(--on-accent); }
+  .tabs--sub { gap: 6px; }
+  .tabs--sub .tab { border-width: 2px; }
+  .tabs--sub .tab.tab-active { background: var(--teal); border-color: var(--teal); }
+  .progress { height: 12px; border: none; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .progress-fill { background: var(--band-x); background-size: 200px 100%; }
+  .alert { border-radius: 12px; border-color: var(--gold); color: var(--gold); }
+  .flag { border-radius: 999px; border: 2px solid var(--line); }
+  .flag[data-enabled="true"] { background: var(--teal); border-color: var(--teal); color: var(--on-accent); }
+  .field input { border-radius: 999px; border: 2px solid var(--line); padding: 6px 12px; }
+  .reminder-time, .stm-author { color: var(--teal); }
+  .danger-btn { border-radius: 999px; font-family: var(--f-disp); letter-spacing: .1em; text-transform: uppercase; font-size: 12px; }
+  @media (max-width: 760px) {
+    .tabs:not(.tabs--sub) { gap: 6px; padding: 10px 10px 2px; }
+    .tabs:not(.tabs--sub) .tab { font-size: 10.5px; letter-spacing: .08em; padding: 7px 4px; }
+  }
+</style>
+</head>
+<body>
+
+<section class="dossier" data-vpc-screen="dossier" data-tab-scope>
+
+  <header class="d-head">
+    <div class="head-avatar" data-vpc="persona-avatar">?</div>
+    <div class="head-id">
+      <div class="head-name" data-vpc="persona-name">…</div>
+      <div class="head-sub">
+        <span class="head-model" data-vpc="persona-model">…</span><span class="sep" aria-hidden="true"> / </span><span data-vpc="persona-status">…</span>
+      </div>
+    </div>
+    <span class="mark" aria-hidden="true"></span>
+    <button type="button" class="d-close" data-vpc="close-dossier" data-vpc-label-title="close-dossier">✕</button>
+  </header>
+
+  <nav class="tabs">
+    <button type="button" class="tab tab-active" data-tab="memory"><span data-vpc-label="tab-memory">Память</span> <span class="count" data-vpc-count="facts">0</span></button>
+    <button type="button" class="tab" data-tab="tasks"><span data-vpc-label="tab-tasks">Дела</span> <span class="count" data-vpc-count="todos">0</span></button>
+    <button type="button" class="tab" data-tab="initiative"><span data-vpc-label="tab-initiative">Инициатива</span></button>
+    <button type="button" class="tab" data-tab="learning"><span data-vpc-label="tab-learning">Обучение</span> <span class="count" data-vpc-count="courses">0</span></button>
+    <button type="button" class="tab" data-tab="files"><span data-vpc-label="tab-files">Файлы</span> <span class="count" data-vpc-count="files">0</span></button>
+    <button type="button" class="tab" data-tab="settings"><span data-vpc-label="tab-settings">Настройки</span></button>
+  </nav>
+
+  <div class="d-body">
+
+    <div class="page page-active" data-tab-panel="memory" data-tab-scope>
+      <nav class="tabs tabs--sub">
+        <button type="button" class="tab tab-active" data-tab="stm"><span data-vpc-label="tab-stm">Буфер</span> <span class="count" data-vpc-count="stm">0</span></button>
+        <button type="button" class="tab" data-tab="ltm"><span data-vpc-label="tab-ltm">Факты</span> <span class="count" data-vpc-count="facts">0</span></button>
+        <button type="button" class="tab" data-tab="diary"><span data-vpc-label="tab-diary">Дневник</span> <span class="count" data-vpc-count="diary">0</span></button>
+      </nav>
+
+      <div class="subpage page-active" data-tab-panel="stm">
+        <div class="card">
+          <div class="card-title" data-vpc-label="stm">Буфер (STM)</div>
+          <div class="list" data-vpc="stm-list" data-vpc-limit="10"></div>
+          <template data-vpc="stm-item">
+            <div class="row stm">
+              <span class="stm-author" data-vpc-field="author"></span>
+              <span class="grow" data-vpc-field="text"></span>
+              <span class="meta" data-vpc-field="time"></span>
+              <button type="button" class="i-btn" data-vpc-item-action="delete-stm">✕</button>
+            </div>
+          </template>
+          <button type="button" class="expand" data-vpc-expand="stm-list" hidden>
+            <span class="when-collapsed" data-vpc-label="show-all">показать весь буфер</span>
+            <span class="when-expanded" data-vpc-label="collapse">свернуть</span>
+          </button>
+          <div class="form" data-vpc-form>
+            <input data-vpc-input="count" type="number" min="1" placeholder="N" class="narrow" />
+            <button type="button" data-vpc-action="trim-stm" data-vpc-label="trim-stm">удалить последние</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="subpage" data-tab-panel="ltm">
+        <div class="card">
+          <div class="card-title" data-vpc-label="facts">Память (LTM)</div>
+          <div class="list" data-vpc="fact-list"></div>
+          <template data-vpc="fact-item">
+            <div class="fact">
+              <div class="row">
+                <span class="tag" data-vpc-field="category"></span>
+                <span class="grow"></span>
+                <button type="button" class="i-btn" data-vpc-item-action="edit-fact">✎</button>
+                <button type="button" class="i-btn" data-vpc-item-action="delete-fact">✕</button>
+              </div>
+              <div class="fact-text" data-vpc-field="fact"></div>
+            </div>
+          </template>
+          <div class="form" data-vpc-form data-vpc-for="fact">
+            <input data-vpc-input="category" type="text" placeholder="категория" data-vpc-label-placeholder="fact-category" class="narrow" />
+            <input data-vpc-input="fact" type="text" placeholder="факт" data-vpc-label-placeholder="fact-text" />
+            <button type="button" data-vpc-action="add-fact">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="subpage" data-tab-panel="diary">
+        <div class="card">
+          <div class="card-title" data-vpc-label="diary">Дневник</div>
+          <div class="list" data-vpc="diary-list"></div>
+          <template data-vpc="diary-item">
+            <div class="diary">
+              <div class="meta diary-date" data-vpc-field="date"></div>
+              <div data-vpc-field="text"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <div class="page" data-tab-panel="tasks">
+      <div class="card">
+        <div class="card-title" data-vpc-label="todos">Дела</div>
+        <div class="list" data-vpc="todo-list"></div>
+        <template data-vpc="todo-item">
+          <div class="row todo">
+            <button type="button" class="i-btn todo-check" data-vpc-item-action="toggle-todo">✓</button>
+            <span class="grow todo-text" data-vpc-field="text"></span>
+            <button type="button" class="i-btn" data-vpc-item-action="edit-todo">✎</button>
+            <button type="button" class="i-btn" data-vpc-item-action="delete-todo">✕</button>
+          </div>
+        </template>
+        <div class="form" data-vpc-form data-vpc-for="todo">
+          <input data-vpc-input="text" type="text" placeholder="новое дело" data-vpc-label-placeholder="new-todo" />
+          <button type="button" data-vpc-action="add-todo">+</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-vpc-label="reminders">Напоминания</div>
+        <div class="list" data-vpc="reminder-list"></div>
+        <template data-vpc="reminder-item">
+          <div class="row reminder">
+            <button type="button" class="i-btn" data-vpc-item-action="toggle-reminder">◉</button>
+            <span class="reminder-time" data-vpc-field="time"></span>
+            <span class="grow" data-vpc-field="text"></span>
+            <span class="meta" data-vpc-field="repeat"></span>
+            <span hidden data-vpc-field="date"></span>
+            <span hidden data-vpc-field="clock"></span>
+            <button type="button" class="i-btn" data-vpc-item-action="edit-reminder">✎</button>
+            <button type="button" class="i-btn" data-vpc-item-action="delete-reminder">✕</button>
+          </div>
+        </template>
+        <div class="form form--wrap" data-vpc-form data-vpc-for="reminder">
+          <input data-vpc-input="date" type="text" placeholder="завтра" data-vpc-label-title="reminder-date" class="narrow" />
+          <input data-vpc-input="clock" type="text" placeholder="18:00" data-vpc-label-title="reminder-time" class="narrow" />
+          <input data-vpc-input="text" type="text" placeholder="текст напоминания" data-vpc-label-placeholder="reminder-text" />
+          <select data-vpc-input="repeat">
+            <option>разовое</option>
+            <option>каждый день</option>
+            <option>по будням</option>
+            <option>по выходным</option>
+            <option>пн, ср, пт</option>
+          </select>
+          <button type="button" data-vpc-action="add-reminder">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="page" data-tab-panel="initiative">
+      <div class="card">
+        <div class="card-title" data-vpc-label="ini-params">Параметры</div>
+        <div class="fields">
+          <label class="field"><span class="field-label"><span data-vpc-label="ini-silence">порог молчания</span>, <span data-vpc-label="unit-min">мин</span></span>
+            <input data-vpc-setting="iniSilence" type="number" min="15" max="720" /></label>
+          <label class="field"><span class="field-label"><span data-vpc-label="ini-probability">вероятность</span>, %</span>
+            <input data-vpc-setting="iniProbability" type="number" min="0" max="100" /></label>
+          <label class="field"><span class="field-label" data-vpc-label="ini-max-per-day">максимум в день</span>
+            <input data-vpc-setting="iniMaxPerDay" type="number" min="1" max="50" /></label>
+          <label class="field"><span class="field-label" data-vpc-label="ini-interval">интервал проверки, мин</span>
+            <input data-vpc-setting="iniInterval" type="number" min="5" max="1440" /></label>
+          <label class="check"><input data-vpc-setting="iniAdaptive" type="checkbox" /> <span data-vpc-label="ini-adaptive">адаптивный порог</span></label>
+          <label class="check"><input data-vpc-setting="iniBayes" type="checkbox" /> <span data-vpc-label="ini-bayes">байесовский фидбек</span></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-vpc-label="ini-state">Текущее состояние</div>
+        <div class="stats">
+          <span data-vpc-label="ini-ignore-streak">серия игнорирования</span>: <b data-vpc="ini-ignore-streak">…</b> ·
+          <span data-vpc-label="ini-today">инициатив сегодня</span>: <b data-vpc="ini-today">…</b>
+        </div>
+        <div class="stats"><span data-vpc-label="ini-mood">настроение</span>: <b data-vpc="ini-mood">…</b></div>
+        <div class="meta"><span data-vpc-label="ini-stages">шкала</span>: <span data-vpc="ini-stages">…</span></div>
+        <div class="meta bar-label" data-vpc-label="user-silence">молчание пользователя</div>
+        <div class="progress"><div class="progress-fill" data-vpc="ini-silence-bar"></div></div>
+        <div class="meta" data-vpc="ini-silence-text">…</div>
+      </div>
+
+      <div class="card card--wide">
+        <div class="card-title" data-vpc-label="ini-history">История инициатив</div>
+        <div class="list" data-vpc="initiative-list"></div>
+        <template data-vpc="initiative-item">
+          <div class="ini">
+            <span class="tag" data-vpc-field="type-label"></span>
+            <span class="ini-text" data-vpc-field="text"></span>
+            <div class="meta"><span data-vpc-field="time"></span> · <span data-vpc-field="outcome"></span></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="page" data-tab-panel="learning">
+      <div class="card card--wide">
+        <div class="card-title" data-vpc-label="active-course">Активный курс</div>
+        <div class="list" data-vpc="course-list"></div>
+        <template data-vpc="course-item">
+          <div class="course">
+            <div class="row">
+              <span class="grow course-subject" data-vpc-field="subject"></span>
+              <span class="tag course-status" data-vpc-field="status"></span>
+            </div>
+            <div class="stats">
+              <span data-vpc-label="course-lessons">уроков</span>: <b data-vpc-field="lessons"></b> ·
+              <span data-vpc-label="course-topics">тем</span>: <b data-vpc-field="topics"></b> ·
+              <span data-vpc-label="course-words">слов</span>: <b data-vpc-field="words"></b> ·
+              <span data-vpc-label="course-quiz">вопросов теста</span>: <b data-vpc-field="quiz"></b>
+            </div>
+            <div class="progress"><div class="progress-fill" data-vpc-field="progress" data-vpc-bar></div></div>
+            <div class="alert" data-vpc-optional><span data-vpc-field="quiz-line"></span></div>
+            <div class="meta" data-vpc-optional><span data-vpc-label="course-topics-list">темы</span>: <span data-vpc-field="topics-list"></span></div>
+            <div class="meta" data-vpc-optional><span data-vpc-label="course-vocab">словарь</span>: <span data-vpc-field="vocab-list"></span></div>
+            <div class="meta"><span data-vpc-field="frequency"></span> · <span data-vpc-label="course-next">следующий</span>: <span data-vpc-field="next"></span></div>
+          </div>
+        </template>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-vpc-label="teach-me">Научи меня</div>
+        <div class="form form--wrap" data-vpc-form>
+          <input data-vpc-input="subject" type="text" placeholder="тема курса" data-vpc-label-placeholder="course-subject" />
+          <select data-vpc-input="frequency">
+            <option>раз в день</option>
+            <option selected>каждые 2 дня</option>
+            <option>раз в неделю</option>
+            <option>по выходным</option>
+          </select>
+          <button type="button" data-vpc-action="add-course" data-vpc-label="course-start">начать</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span data-vpc-label="course-history">История курсов</span> <span class="count" data-vpc-count="courseHistory">0</span></div>
+        <div class="list" data-vpc="course-history-list"></div>
+        <template data-vpc="course-history-item">
+          <div class="row">
+            <span class="grow" data-vpc-field="subject"></span>
+            <span class="tag" data-vpc-field="status"></span>
+            <span class="meta"><span data-vpc-field="lessons"></span> <span data-vpc-label="course-lessons">уроков</span></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="page" data-tab-panel="files">
+      <div class="card card--wide">
+        <div class="card-title" data-vpc-label="files">Файлы</div>
+        <div class="list" data-vpc="file-list"></div>
+        <template data-vpc="file-item">
+          <div class="row file">
+            <div class="grow">
+              <span class="file-name" data-vpc-field="name"></span>
+              <div class="meta"><span data-vpc-field="kind"></span> · <span data-vpc-field="size"></span> · <span data-vpc-field="date"></span></div>
+              <div class="meta" data-vpc-field="description"></div>
+            </div>
+            <button type="button" class="i-btn" data-vpc-item-action="download-file">↓</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="page" data-tab-panel="settings">
+      <div class="card">
+        <div class="card-title" data-vpc-label="generation">Генерация</div>
+        <div class="fields">
+          <label class="field"><span class="field-label">temperature</span>
+            <input data-vpc-setting="temperature" type="number" step="0.05" min="0" max="1" /></label>
+          <label class="field"><span class="field-label">maxTokens</span>
+            <input data-vpc-setting="maxTokens" type="number" step="64" min="64" /></label>
+          <label class="field"><span class="field-label">top_p</span>
+            <input data-vpc-setting="topP" type="number" step="0.01" min="0" max="1" /></label>
+          <label class="field"><span class="field-label" data-vpc-label="stm-size">размер STM</span>
+            <input data-vpc-setting="stmSize" type="number" step="10" min="10" /></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-vpc-label="providers">LLM-провайдеры</div>
+        <div class="list" data-vpc="provider-list"></div>
+        <template data-vpc="provider-item">
+          <div class="row provider">
+            <button type="button" class="i-btn backup-btn" data-vpc-item-action="toggle-backup">◉</button>
+            <span class="provider-name" data-vpc-field="name"></span>
+            <span class="tag" data-vpc-field="local"></span>
+            <span class="meta" data-vpc-field="key-label"></span>
+            <span class="grow"></span>
+            <button type="button" class="i-btn main-btn" data-vpc-item-action="make-main" data-vpc-label="make-main">основной</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-vpc-label="provider-models">Модели провайдеров</div>
+        <div class="list" data-vpc="pmodel-list"></div>
+        <template data-vpc="pmodel-item">
+          <div class="row pmodel">
+            <span class="provider-name" data-vpc-field="name"></span>
+            <span class="tag" data-vpc-field="local"></span>
+            <input data-vpc-field="model" data-vpc-input="model" data-vpc-onchange="set-model" type="text" spellcheck="false" />
+          </div>
+        </template>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-vpc-label="features">Фичи</div>
+        <div class="flags" data-vpc="feature-flag-list"></div>
+        <template data-vpc="feature-flag-item">
+          <button type="button" class="flag" data-vpc-item-action="toggle-feature"><span data-vpc-field="label"></span></button>
+        </template>
+      </div>
+
+      <div class="card card--danger">
+        <div class="card-title" data-vpc-label="danger-zone">Опасная зона</div>
+        <button type="button" class="danger-btn" data-vpc="clear-chat" data-vpc-label="clear-chat">Очистить диалог</button>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<script>
+  /* Вкладки досье: data-tab / data-tab-panel в пределах своей
+     data-tab-scope (под-вкладки памяти не задевают верхние). */
+  document.addEventListener('click', function (e) {
+    var tab = e.target.closest ? e.target.closest('[data-tab]') : null;
+    if (!tab) return;
+    var scope = tab.closest('[data-tab-scope]') || document;
+    var name = tab.getAttribute('data-tab');
+    scope.querySelectorAll('[data-tab]').forEach(function (b) {
+      if (b.closest('[data-tab-scope]') === scope) { b.classList.toggle('tab-active', b === tab); }
+    });
+    scope.querySelectorAll('[data-tab-panel]').forEach(function (p) {
+      var own = p.parentElement ? p.parentElement.closest('[data-tab-scope]') : null;
+      if ((own || document) === scope) { p.classList.toggle('page-active', p.getAttribute('data-tab-panel') === name); }
+    });
+  });
+</script>
+
+<!-- ==== VPC-BRIDGE:START ====
+     Служебный блок: при загрузке скина приложение ПЕРЕЗАПИШЕТ его
+     своей эталонной версией. Не редактировать, не удалять маркеры. -->
+<script>/* заглушка: приложение подставит сюда рабочий код моста */</script>
+<!-- ==== VPC-BRIDGE:END ==== -->
+
+</body>
+</html>

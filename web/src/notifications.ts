@@ -5,6 +5,10 @@
 // выключаются в настройках (localStorage, ключи vpc-notify*).
 
 import { getPersonaAvatar } from './avatarStore';
+import { headIcon } from './portrait/headAtlas';
+import { currentHeadLook } from './skinHeadLook';
+import { personaAvatarPreset } from './room/personaAvatarPreset';
+import { HEAD_DRAW_VERSION } from './room/avatarHead';
 
 const BASE_TITLE = document.title;
 const FRESH_WINDOW_SEC = 180; // старше — не уведомляем (хвосты inbox после перезагрузки страницы)
@@ -14,7 +18,7 @@ export const OPEN_CHAT_EVENT = 'vpc:open-chat';
 // Тап по виджету комнаты на телефоне → раздел «Комната» этой персоны
 export const OPEN_ROOM_EVENT = 'vpc:open-room';
 
-const APP_ICON = '/favicon.png'; // PNG: часть браузеров не показывает SVG-иконки в уведомлениях
+const APP_ICON = '/favicon.png?v=118'; // PNG: часть браузеров не показывает SVG-иконки в уведомлениях
 
 // ===== Настройки (localStorage) =====
 
@@ -97,19 +101,20 @@ export function notifyBotMessage(personaId: string, personaName: string, text: s
     return;
   }
   console.info('[vpc-notify] уведомление:', personaName, '—', text.slice(0, 80));
-  showSystemNotification(personaId, personaName, text);
+  void showSystemNotification(personaId, personaName, text);
   playNotifySound();
 }
 
-function showSystemNotification(personaId: string, personaName: string, text: string) {
+async function showSystemNotification(personaId: string, personaName: string, text: string) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const icon =
+    notifyIconMode() === 'persona'
+      ? (getPersonaAvatar(personaId) ?? (await buildPersonaIcon(personaId).catch(() => APP_ICON)))
+      : APP_ICON;
   const notification = new Notification(personaName, {
     body: text.slice(0, 200),
     tag: `vpc-${personaId}`, // новое сообщение персоны заменяет её предыдущее уведомление
-    icon:
-      notifyIconMode() === 'persona'
-        ? (getPersonaAvatar(personaId) ?? buildPersonaIcon(personaId, personaName))
-        : APP_ICON,
+    icon,
   });
   notification.onclick = () => {
     window.focus();
@@ -118,34 +123,22 @@ function showSystemNotification(personaId: string, personaName: string, text: st
   };
 }
 
-// Буквенный аватар персоны (как в списке чатов): круг с цветом по хэшу id и
-// первой буквой имени. Canvas → PNG data-URL — формат, который принимает
-// icon уведомления без файлов на диске.
-const ICON_PALETTE = ['#5b8cff', '#9a6bff', '#3fbf9f', '#e0804f', '#d05f8f', '#4fa8d8'];
+// Персона без своей картинки — голова её фигуры из «Комнаты», как в списке
+// чатов (PersonaAvatar), PNG data-URL — формат, который принимает icon
+// уведомления без файлов на диске. Кэш — по облику.
+const ICON_SIZE = 128;
 const iconCache = new Map<string, string>();
 
-function buildPersonaIcon(personaId: string, personaName: string): string {
-  const cached = iconCache.get(personaId);
+async function buildPersonaIcon(personaId: string): Promise<string> {
+  const preset = personaAvatarPreset(personaId);
+  const look = currentHeadLook();
+  const key = `${personaId}:${preset.head}:${preset.eyes}:${preset.accessory}:${preset.shade}:${preset.body ?? 0}:${look?.key ?? 'base'}:${HEAD_DRAW_VERSION}`;
+  const cached = iconCache.get(key);
   if (cached) return cached;
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return APP_ICON;
-  let hash = 0;
-  for (const ch of personaId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  ctx.fillStyle = ICON_PALETTE[hash % ICON_PALETTE.length];
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ffffff';
-  ctx.font = '700 64px Inter, Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText((personaName.trim()[0] ?? '?').toUpperCase(), size / 2, size / 2 + 4);
-  const url = canvas.toDataURL('image/png');
-  iconCache.set(personaId, url);
+  const theme = getComputedStyle(document.documentElement);
+  const color = (name: string, fallback: string) => theme.getPropertyValue(name).trim() || fallback;
+  const url = await headIcon(preset, ICON_SIZE, color('--bg-panel-2', '#dcdcdc'), color('--accent', '#404040'), look);
+  iconCache.set(key, url);
   return url;
 }
 

@@ -1,0 +1,13 @@
+Built-in image_gen. Edit target: 103-rear-shell-wall-square-logo.png. Output: 104-no-rear-wall-clean-corner-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: local removal of rear shell wall from the existing square black-and-white ghost logo.
+Input image 1: sole edit target, 103-rear-shell-wall-square-logo.png.
+Primary request: REMOVE the newly added BACK WALL / REAR BROKEN RIM of the lower eggshell.
+Erase the two thin jagged rear-rim contours visible beside the ghost torso:
+- LEFT: the zigzag line running from the upper-left shell corner toward and behind the left torso side.
+- RIGHT: the short zigzag line running from behind the right torso side toward the raised right shell corner.
+Replace these rear-wall lines entirely with clean white background. Remove all traces or dangling stubs from those added contours. Preserve the opaque white ghost body and its original black side outlines where the erased lines met it.
+KEEP the cleaned upper-left front shell corner with its white interior and neat outlined chipped tip. Do not restore the old heavy filled-black cap. Keep the existing FRONT jagged rim, lower shell silhouette and crack pattern, current shell stroke weights, white separator above the front rim, and all other existing shell details unchanged.
+Everything else is locked: circular head with thin contour, solid-black short narrow oval eyes, two left leaves and veins, clean clearance from the head, sharp faceted interwoven collar and its white gaps, torso height and sides, jagged ghost hem, overall scale and position, full square canvas, margins and white background.
+Output one complete square black-and-white logo. No rear wall, inner rear-rim lines, detached upper shell, added details, text, colors, gradients, shadows, texture, frame or cropping. Change only the removal of the two rear-wall contours; preserve the refined front left corner.

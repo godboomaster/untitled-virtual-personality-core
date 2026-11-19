@@ -1,0 +1,35 @@
+Built-in image_gen. All variants independently edit the selected 83-narrow-short-oval-eyes-ghost.png. Preserve the eye shapes; change only their internal graphic treatment.
+
+1 — Маленький блик
+Output: 85-short-oval-eyes-highlight-ghost.png
+
+Use case: precise-object-edit
+Asset type: graphic treatment variant of existing logo eyes.
+Input image 1: sole edit target, 83-narrow-short-oval-eyes-ghost.png. This is the user's chosen eye shape.
+Primary request: vary ONLY the internal graphic treatment of the eyes. Keep each eye as the exact existing solid-black short vertical oval/capsule, but add one small crisp WHITE circular highlight in the upper-left interior of each eye. The highlight should be subtle, about 9 px in diameter at the reference scale, with a clear black margin around it. Use the same highlight position relative to each eye. One highlight per eye, no extra sparkles or outlines.
+Critical invariants: DO NOT change the eye geometry. Preserve the exact original outer contour, width, height, roundness, upright orientation, centers and spacing of both eyes. Both eyes stay identical in treatment. Only recolor selected pixels WITHIN the existing black eye shapes. Preserve every detail outside the two eyes, including the original head outline and face size, angular collar with exactly two leaves on the left and its tiny white separation gaps, body outline and jagged hem, white separation above the lower eggshell, both eggshell pieces and all cracks, stroke weights, composition, scale, white background, full framing and canvas aspect ratio.
+Output: a single complete logo. Strict pure black and white, flat vector-like finish. No mouth, eyebrows, nose, eyelashes, pupils, extra decorative elements, new objects, shadows, gradients, colors, texture, text or labels. Do not crop, rescale, recenter or redraw the rest of the logo.
+
+-----
+
+2 — Тонкий белый прорез
+Output: 86-short-oval-eyes-white-slit-ghost.png
+
+Use case: precise-object-edit
+Asset type: graphic treatment variant of existing logo eyes.
+Input image 1: sole edit target, 83-narrow-short-oval-eyes-ghost.png. This is the user's chosen eye shape.
+Primary request: vary ONLY the internal graphic treatment of the eyes. Keep each eye's exact existing black short vertical oval/capsule silhouette, but carve one slender WHITE diagonal incision entirely inside each black eye. The incision is an elegant narrow straight lozenge about 48 px long and 6 px wide at reference scale, leaning about 18 degrees from vertical, rising toward the right. Its tips are sharp, visually echoing the crisp white separation cuts of the leaf collar. Keep a continuous black margin around the entire incision so the OUTER eye silhouette remains fully unchanged. Match the cut inside both eyes exactly. Flat black and white, no gradients.
+Critical invariants: DO NOT change the eye geometry. Preserve the exact original outer contour, width, height, roundness, upright orientation, centers and spacing of both eyes. Both eyes stay identical in treatment. Only recolor selected pixels WITHIN the existing black eye shapes. Preserve every detail outside the two eyes, including the original head outline and face size, angular collar with exactly two leaves on the left and its tiny white separation gaps, body outline and jagged hem, white separation above the lower eggshell, both eggshell pieces and all cracks, stroke weights, composition, scale, white background, full framing and canvas aspect ratio.
+Output: a single complete logo. Strict pure black and white, flat vector-like finish. No mouth, eyebrows, nose, eyelashes, pupils, extra decorative elements, new objects, shadows, gradients, colors, texture, text or labels. Do not crop, rescale, recenter or redraw the rest of the logo.
+
+-----
+
+3 — Контурные
+Output: 87-short-oval-eyes-outline-ghost.png
+
+Use case: precise-object-edit
+Asset type: graphic treatment variant of existing logo eyes.
+Input image 1: sole edit target, 83-narrow-short-oval-eyes-ghost.png. This is the user's chosen eye shape.
+Primary request: vary ONLY the internal graphic treatment of the eyes. Keep the exact existing OUTER silhouette of each short vertical oval/capsule eye, but replace each solid-black fill with a WHITE interior bounded by a crisp uniform BLACK outline approximately 9 px thick at reference scale. The white inset follows the outer capsule at a constant inward offset with smoothly rounded ends. The outer boundary must not move or grow. These are hollow short oval eyes with no pupils, no highlights and no extra surrounding contour.
+Critical invariants: DO NOT change the eye geometry. Preserve the exact original outer contour, width, height, roundness, upright orientation, centers and spacing of both eyes. Both eyes stay identical in treatment. Only recolor selected pixels WITHIN the existing black eye shapes. Preserve every detail outside the two eyes, including the original head outline and face size, angular collar with exactly two leaves on the left and its tiny white separation gaps, body outline and jagged hem, white separation above the lower eggshell, both eggshell pieces and all cracks, stroke weights, composition, scale, white background, full framing and canvas aspect ratio.
+Output: a single complete logo. Strict pure black and white, flat vector-like finish. No mouth, eyebrows, nose, eyelashes, pupils, extra decorative elements, new objects, shadows, gradients, colors, texture, text or labels. Do not crop, rescale, recenter or redraw the rest of the logo.

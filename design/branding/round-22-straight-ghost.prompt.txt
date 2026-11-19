@@ -1,0 +1,13 @@
+Built-in image_gen. Clean edit target: 41-ribbon-ghost-white-background.png. Annotated user guide: references/straight-ghost-markup-01.png. Straight sloping body edges, sharp angular ghost/shell junction and no internal cloth folds. White background retained.
+
+Use case: precise-object-edit.
+Input image 1: CLEAN EDIT TARGET, the round-headed white ghost with black neck band emerging from the cracked ivory egg on a white background.
+Input image 2: USER'S ANNOTATED GUIDE. The pink lines indicate the desired new outlines and the pink crosses indicate folds to REMOVE. Pink is markup only and MUST NOT appear in the finished image.
+
+Make exactly these three local changes:
+1. STRAIGHTEN BOTH SIDES OF THE GHOST'S CLOTH BODY. From just below each end of the black neck ribbon down to the lower shell, draw a single clean straight outward-slanting dark edge on each side, making a simple widening trapezoid-like silhouette. Remove the curved flaring/swooping sides. Match the pink side guides approximately. The head stays perfectly circular and the neck band stays as it is.
+2. Make the GHOST/SHELL JUNCTION a clean SHARP ANGULAR ZIGZAG made of straight diagonal segments with pointed corners, matching the bottom pink guide. Remove all rounded scallops and waves from this meeting edge. It should be a crisp broken-shell boundary: a short rising diagonal, then a descending diagonal to a sharp valley, then a rising diagonal to the right corner. Use the same dark outline thickness as the rest of the emblem. The ghost's white body ends flush against this angular upper edge of the lower eggshell. No rounded hem at this junction.
+3. REMOVE BOTH INTERNAL FOLD LINES from the ghost's body completely. Its interior must be plain flat white, without seams, wrinkles, creases, texture, shading or any other marks.
+
+Preserve everything else from image 1: the circular white head, two dark vertical capsule eyes, their shape and placement, black neck ribbon, overall scale and position, both ivory egg pieces, their dark outlines, existing shell fractures and beige facets, and the uniform white background. Shell cracks remain; only the cloth's fold lines disappear. Allow changes to the immediate top rim of the lower shell only as needed to create the sharp requested junction.
+No pink marks, text, annotations, new objects or redesign of the face. Clean flat graphic emblem.

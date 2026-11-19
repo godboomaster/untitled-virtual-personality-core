@@ -32,8 +32,10 @@ export interface SpeechEngine {
   recognitionSupportedNow: () => boolean | null;
   recognitionAvailable: () => Promise<boolean>;
   listen: (lang: string, cb: ListenCallbacks) => ListenSession;
-  // Озвучить реплику целиком; промис — когда договорено, прервано или сорвалось
-  speak: (text: string, lang: string) => Promise<SpeakStatus>;
+  // Озвучить реплику целиком; промис — когда договорено, прервано или сорвалось.
+  // onWord — зазвучало слово с этого знака текста (браузер; телефон не сообщает):
+  // по нему живой портрет ведёт рот по гласным
+  speak: (text: string, lang: string, onWord?: (charIndex: number) => void) => Promise<SpeakStatus>;
   stopSpeaking: () => void;
 }
 
@@ -67,6 +69,7 @@ interface UtteranceLike {
   voice: unknown;
   onend: (() => void) | null;
   onerror: (() => void) | null;
+  onboundary?: ((e: { name?: string; charIndex?: number }) => void) | null;
 }
 interface SynthesisLike {
   cancel: () => void;
@@ -131,7 +134,7 @@ export function createBrowserEngine(win: WindowLike): SpeechEngine {
       return { stop: () => rec.stop() };
     },
 
-    speak(text, lang) {
+    speak(text, lang, onWord) {
       const synth = synthesis();
       const Utterance = win.SpeechSynthesisUtterance as (new (text: string) => UtteranceLike) | undefined;
       if (!synth || !Utterance) return Promise.resolve('unavailable');
@@ -146,6 +149,11 @@ export function createBrowserEngine(win: WindowLike): SpeechEngine {
         utter.onend = () => resolve('done');
         // cancel() прошлой реплики тоже приходит сюда — для неё это «прервано»
         utter.onerror = () => resolve('interrupted');
+        if (onWord) {
+          utter.onboundary = (e) => {
+            if ((!e.name || e.name === 'word') && typeof e.charIndex === 'number') onWord(e.charIndex);
+          };
+        }
         synth.speak(utter);
       });
     },

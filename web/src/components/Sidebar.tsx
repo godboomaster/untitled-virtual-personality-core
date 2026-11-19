@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import type { Section } from '../App';
 import { useI18n } from '../i18n';
 import { useApiOnline, useCoreHealth } from '../apiData';
+import { useOfflineMode } from '../offline/state';
 import Icon from './icons';
 import type { IconName } from './icons';
 
@@ -20,9 +21,15 @@ const navItems: { id: Section; icon: IconName }[] = [
   { id: 'home', icon: 'home' },
   { id: 'chat', icon: 'chat' },
   { id: 'room', icon: 'room' },
+  // Живой портрет и его анимации на рабочем столе
+  { id: 'avatar', icon: 'avatar' },
   { id: 'personas', icon: 'personas' },
   { id: 'skins', icon: 'skins' },
   { id: 'services', icon: 'services' },
+  { id: 'player', icon: 'disc' },
+  { id: 'connection', icon: 'connection' },
+  // Телефон без связи с ядром: кто отвечает за персон (ключи, веб-чаты, Gemma)
+  { id: 'providers', icon: 'providers' },
   { id: 'settings', icon: 'settings' },
 ];
 
@@ -33,7 +40,9 @@ export default function Sidebar({ current, onSelect, open = false, onClose }: Si
   // Связь с ядром: есть, пока опрос /api/health не сказал обратное
   const coreHealth = useCoreHealth();
   const coreOk = apiOnline && coreHealth !== 'down';
-  const activeIndex = navItems.findIndex((item) => item.id === current);
+  const offline = useOfflineMode();
+  const items = navItems.filter((item) => item.id !== 'providers' || offline);
+  const activeIndex = items.findIndex((item) => item.id === current);
 
   useEffect(() => {
     if (!open || !onClose) return;
@@ -49,7 +58,7 @@ export default function Sidebar({ current, onSelect, open = false, onClose }: Si
     {open && <div className="sidebar-backdrop" onClick={onClose} aria-hidden="true" />}
     <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}${open ? ' sidebar--open' : ''}`}>
       <div className="sidebar-logo">
-        <span className="sidebar-logo-icon">◉</span>
+        <img className="sidebar-brand-mark" src="/brand-mark.svg?v=118" alt="" aria-hidden="true" width="48" height="48" />
         <div className="sidebar-logo-text">
           <div className="sidebar-logo-title">Virtual Persona</div>
           <div className="sidebar-logo-sub">Core · web</div>
@@ -57,11 +66,12 @@ export default function Sidebar({ current, onSelect, open = false, onClose }: Si
       </div>
       <nav className="sidebar-nav" style={{ '--active-index': activeIndex } as CSSProperties}>
         <span className="nav-indicator" aria-hidden="true" />
-        {navItems.map((item) => (
+        {items.map((item) => (
           <button
             key={item.id}
             className={`nav-item ${current === item.id ? 'nav-item--active' : ''}`}
             data-label={t(`nav.${item.id}`)}
+            title={collapsed ? t(`nav.${item.id}`) : undefined}
             onClick={() => onSelect(item.id)}
           >
             <span className="nav-item-icon">
@@ -73,10 +83,10 @@ export default function Sidebar({ current, onSelect, open = false, onClose }: Si
       </nav>
       <div className="sidebar-footer">
         <div className={`sidebar-status-row ${coreOk ? 'sidebar-status-row--ok' : 'sidebar-status-row--down'}`}>
-          <span className="status-led" /> <span className="sidebar-footer-text">{coreOk ? 'SYSTEM ONLINE' : 'SYSTEM OFFLINE'}</span>
+          <span className="status-led" /> <span className="sidebar-footer-text">{coreOk ? t('sidebar.systemOnline') : t('sidebar.systemOffline')}</span>
         </div>
         <div className="sidebar-status-row">
-          <span className="sidebar-footer-text">VPC CORE · BUILD 0.1.0</span>
+          <span className="sidebar-footer-text">{t('sidebar.build')}</span>
         </div>
         {/* Моковые данные — только без ядра (прототипный режим) */}
         {!apiOnline && (

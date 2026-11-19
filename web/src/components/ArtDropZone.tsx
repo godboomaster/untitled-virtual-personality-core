@@ -16,7 +16,7 @@ export default function ArtDropZone({
   thumb?: string; // dataUrl превью, если ассет загружен
   onPick: (f: File) => void;
   onEdit?: () => void;
-  onClear: () => void;
+  onClear?: () => void; // нет — загруженное не удаляется отсюда (только заменить)
 }) {
   const { t } = useI18n();
   const [over, setOver] = useState(false);
@@ -59,16 +59,18 @@ export default function ArtDropZone({
       <div className={`art-drop-status ${thumb ? 'art-drop-status--ok' : ''}`}>
         {thumb ? t('art.loaded') : t('art.notLoaded')}
       </div>
-      {thumb && (
+      {thumb && (onEdit || onClear) && (
         <div className="art-drop-actions" onClick={(e) => e.stopPropagation()}>
           {onEdit && (
             <button type="button" className="btn btn--ghost" onClick={onEdit}>
               {t('art.calibrate')}
             </button>
           )}
-          <button type="button" className="btn btn--danger" onClick={onClear}>
-            {t('common.delete')}
-          </button>
+          {onClear && (
+            <button type="button" className="btn btn--danger" onClick={onClear}>
+              {t('common.delete')}
+            </button>
+          )}
         </div>
       )}
     </div>

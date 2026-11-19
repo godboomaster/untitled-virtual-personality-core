@@ -16,6 +16,8 @@ import uuid
 from collections import deque
 from typing import Awaitable, Callable, Optional
 
+from app.api.delivery import client_allowed
+
 logger = logging.getLogger(__name__)
 
 # Очередь входящих: (persona, chat_id) → сообщения с порядковым номером seq.
@@ -66,6 +68,15 @@ _STOP_POLL_SEC = 1.0
 # ночь, погода). Виджет «Инициатива» на телефоне показывает только их —
 # напоминаний, уроков и уведомлений сервисов там нет
 KIND_INITIATIVE = "initiative"
+# Отдельная метка сохраняет напоминания в своих списках и позволяет
+# портрету показывать их через индикатор до наведения.
+KIND_REMINDER = "reminder"
+# Строки хода агента задач в режиме управления («Нажал …», «Листаю
+# страницу»): в очередь входящих не попадают (WebInboxSender). Веб
+# показывает их в карточке задачи (task в ответе inbox), в историю их пишет
+# сам уведомитель хода; в очереди любой клиент, не знающий этой метки
+# (вкладка со старым кодом, APK прежней версии), показал бы их уведомлением
+KIND_PROGRESS = "progress"
 
 
 def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message",
@@ -87,10 +98,12 @@ def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message",
             loop.call_soon_threadsafe(event.set)
         except RuntimeError:
             pass  # loop уже закрыт — ядро останавливается
-    # Открытый веб узнаёт о сообщении сразу, а не на тике опроса. Импорт
-    # здесь: chat_events сам импортирует этот модуль
-    from app.api import chat_events
+    # Открытый веб узнаёт о сообщении сразу, а не на тике опроса; портрет на
+    # рабочем столе — из ленты реплик. Импорт здесь: оба модуля сами
+    # импортируют этот
+    from app.api import chat_events, said
     chat_events.bump(persona)
+    said.note(persona, chat_id, text, kind)
 
 
 def _forget_stale_clients(now: float) -> None:
@@ -113,6 +126,8 @@ def _forget_stale_clients(now: float) -> None:
 def _pop_locked(key: tuple[str, str], client_id: str, cursors: dict) -> list[dict]:
     # Под _inbox_lock: новые для клиента сообщения очереди key (с его
     # курсора cursors[key]); курсор и отметка доставки двигаются
+    if not client_allowed(key[0], client_id):
+        return []  # The addon app owns delivery; do not advance its cursors.
     start = cursors.get(key)
     if start is None:
         start = _all_seen.get((client_id, key[1]))
@@ -175,6 +190,8 @@ def inbox_take(chat_id: str, client_id: str = "", since: Optional[int] = None) -
         cursors = _cursors.setdefault(client_id, {})
         got = []
         for key in [k for k in _inbox if k[1] == chat_id]:
+            if not client_allowed(key[0], client_id):
+                continue
             if since is None:
                 got += [(key[0], m) for m in _pop_locked(key, client_id, cursors)]
                 continue
@@ -281,6 +298,7 @@ class WebInboxSender:
     supports_documents = False
     supports_replies = False
     supports_refs = True  # send_message(ref=) — метка срабатывания напоминания
+    supports_kinds = True  # send_message(kind=) — метка одного сообщения (KIND_PROGRESS)
 
     def __init__(self, persona: str, kind: str = "message"):
         # kind — метка сообщений этого отправителя (KIND_INITIATIVE у
@@ -289,8 +307,11 @@ class WebInboxSender:
         self._kind = kind
 
     async def send_message(self, chat_id: str, text: str, *,
-                           topic_id=None, parse_mode=None, ref=None) -> bool:
-        inbox_push(self._persona, chat_id, text, kind=self._kind, ref=ref)
+                           topic_id=None, parse_mode=None, ref=None,
+                           kind: Optional[str] = None) -> bool:
+        if kind == KIND_PROGRESS:
+            return True  # доставлять некуда — см. KIND_PROGRESS
+        inbox_push(self._persona, chat_id, text, kind=kind or self._kind, ref=ref)
         return True
 
     async def send_document(self, chat_id: str, file_path: str, filename: str, *,

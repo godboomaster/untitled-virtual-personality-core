@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 46-narrow-body-ghost.png. Narrow the black neck ribbon horizontally, retaining height and smooth lower transitions.
+
+Precise local edit to the supplied ghost-and-cracked-egg logo.
+Make the BLACK NECK RIBBON approximately 25% NARROWER HORIZONTALLY, centered under the head. Move its left and right sides inward equally. Keep the ribbon's VERTICAL HEIGHT unchanged: this is a slimmer neck, not a shorter/thinner-height stripe.
+Keep the head and eyes the same size and in the same position. Preserve the solid black connection from the head to the ribbon. Retain small smooth outward offsets beginning directly at the ribbon's bottom, with no white inserts or gaps. Adjust only the immediately adjoining top-of-body transitions enough to meet the narrower ribbon cleanly.
+Preserve the accepted slender body, its overall height and lower width, straight side edges and plain white interior without folds. Preserve the sharp body/shell junction, both eggshell pieces, all cracks, facets, outlines, positions, colors, framing and white background. No text or other changes.

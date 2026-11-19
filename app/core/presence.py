@@ -83,6 +83,13 @@ class WebPresence:
             return any(self._fresh(stamp) for (c, _cid), stamp
                        in self._marks.items() if c == ctx)
 
+    def active_personas(self, chat_id) -> list[str]:
+        """id веб-персон (контекст api_<id>), у которых этот чат открыт сейчас."""
+        cid = str(chat_id)
+        with self._lock:
+            return sorted(c[len("api_"):] for (c, k), stamp in self._marks.items()
+                          if k == cid and c.startswith("api_") and self._fresh(stamp))
+
     def _fresh(self, stamp) -> bool:
         return bool(stamp) and (time.monotonic() - stamp) < self._ttl
 
@@ -93,3 +100,9 @@ class WebPresence:
 
 
 web_presence = WebPresence()
+
+# Те же отметки, но только от веба на этом компьютере — не с телефона по
+# Wi-Fi и не по VPC Link (server._local_web). Слушатель имени в панели зовёт
+# портрет на рабочий стол, только если чат персоны здесь не открыт
+# (app/voice/wake_listener.py, ответ на /api/voice/wake/report)
+local_web_presence = WebPresence()

@@ -334,6 +334,7 @@ export function extractSystem(kit: OfflineKit): string {
 }
 
 let syncing: Promise<void> | null = null;
+const SYNC_CHUNK = 50;
 
 /** Ноутбук вернулся: поставленные без него напоминания — ему, будильник — заново. */
 export function syncLocalReminders(): Promise<void> {
@@ -345,14 +346,19 @@ export function syncLocalReminders(): Promise<void> {
       // Персоны с телефона на ядре ещё нет (404) — её напоминания уйдут после переноса
       if (isLocalPersona(persona)) continue;
       try {
-        const res = await api.offlineReminders(
-          persona,
-          list.map((r) => ({ id: r.id, task: r.task, at: r.at })),
-        );
-        if (!res.enabled) continue; // у персоны напоминания выключены — будильник телефона остаётся
-        const done = new Set([...Object.keys(res.created), ...res.past]);
-        saveLocal(localReminders().filter((r) => !done.has(r.id)));
-        await refreshKit(persona); // в ките — уже напоминания ядра
+        let enabled = true;
+        // Частями — как лимит ядра (schemas: до 50 за запрос), иначе 422 навсегда
+        for (let i = 0; i < list.length && enabled; i += SYNC_CHUNK) {
+          const res = await api.offlineReminders(
+            persona,
+            list.slice(i, i + SYNC_CHUNK).map((r) => ({ id: r.id, task: r.task, at: r.at })),
+          );
+          enabled = res.enabled; // у персоны напоминания выключены — будильник телефона остаётся
+          if (!enabled) break;
+          const done = new Set([...Object.keys(res.created), ...res.past]);
+          saveLocal(localReminders().filter((r) => !done.has(r.id)));
+        }
+        if (enabled) await refreshKit(persona); // в ките — уже напоминания ядра
       } catch {
         /* не ушло — при следующей связи */
       }

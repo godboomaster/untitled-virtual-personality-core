@@ -15,6 +15,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.json.JSONObject;
+
 /**
  * Плагин Capacitor «BackgroundInbox»: веб включает и выключает фоновую
  * службу уведомлений (BackgroundInboxService) и узнаёт, по какому
@@ -138,6 +140,31 @@ public class BackgroundInboxPlugin extends Plugin {
         RoomWidget.renderAll(getContext());
         PortraitWidget.renderAll(getContext());
         call.resolve();
+    }
+
+    /**
+     * Листы головы фигуры персоны без своего портрета (печатает веб,
+     * web/src/portrait/widgetHeads.tsx) — виджету «Живой портрет».
+     */
+    @PluginMethod
+    public void setHeadPortrait(PluginCall call) {
+        String persona = call.getString("persona");
+        JSObject sheets = call.getObject("sheets");
+        if (persona == null || persona.isEmpty() || sheets == null) {
+            call.reject("нужны persona и sheets");
+            return;
+        }
+        try {
+            JSONObject portrait = new JSONObject()
+                    .put("rows", call.getInt("rows", 5))
+                    .put("cols", call.getInt("cols", 5))
+                    .put("sheets", sheets);
+            PortraitWidgetFrames.saveHead(getContext(), persona, portrait);
+            PortraitWidget.renderAll(getContext());
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("листы головы не сохранены: " + e.getMessage());
+        }
     }
 
     @PluginMethod

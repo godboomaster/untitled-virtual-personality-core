@@ -1,0 +1,13 @@
+Built-in image_gen. Edit target: 107-nier-inspired-ghost-logo.png. Output: 110-original-monochrome-engraved-ghost-logo.png.
+
+Use case: precise-object-edit
+Asset type: original monochrome engraved ghost logo, removal of direct franchise iconography.
+Input image 1: sole edit target, 107-nier-inspired-ghost-logo.png.
+Primary request: keep the atmosphere and visual finish of this selected design, but REMOVE ALL recognizable NieR / YoRHa-style insignia, crests and game emblems. The user likes the monochrome aged engraving style but wants their own independent logo.
+Perform these precise edits:
+1. LOWER SHELL: completely erase the large curved heraldic/compass-like emblem and its vertical spear, diamond tips, arc lines and ticks in the lower-right interior of the eggshell. Restore that area to the same plain light bone/parchment interior with matching subtle patina. Leave only the shell's original cracks and contours there. Do not replace it with another emblem or symbol.
+2. COLLAR: remove the small centered spear-and-arched-fan insignia inside BOTH angular collar openings. Preserve the user's original faceted interwoven infinity-like collar shape, crossing, black bands and clean light negative-space openings. Keep the panels simple and readable. No badges, crests, swords, runes, crowns or medallions inside them.
+3. TWO LEFT LEAVES: remove the heraldic flower/cross/fleur-de-lis motifs and recognizable ornamental emblems inside the leaves. Replace those interiors with simple finely ENGRAVED BOTANICAL VEINS: one central vein with a few restrained branching veins following each leaf shape. The leaf treatment can retain very delicate nonfigurative etched edge detail and the aged ink finish, but no heraldic or game-derived symbol.
+PRESERVE the selected style: near-black ink, pale bone figure, muted stone/parchment-gray background, subtle aged-paper surface and light controlled ink wear along some outline edges. Keep the same restrained melancholic mood and fine engraving quality. Do not turn this back into the plain clean black-on-white earlier draft, and do not add olive, red or gold color.
+Preserve all main geometry exactly: true circular head, two filled short oval eyes and their spacing, head size and position, two leaves, the user's angular woven collar, torso and jagged hem, white/ivory separations, open left shell corner with no bridge, lower shell perimeter and original three crack groups, overall scale, square full framing and margins. No rear shell wall or upper detached shell.
+Output one complete original square logo. No franchise marks, replacement logos, new standalone symbols, invented script, letters, numerals, text, new objects or border.

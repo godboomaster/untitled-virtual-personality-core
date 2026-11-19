@@ -81,6 +81,7 @@ class FakeBot:
         self.conversation_style = SimpleNamespace(frequency="rare")
         self.router = FakeRouter()
         self.calls = []
+        self.bulk = []  # bulk у add_message: перенос с телефона — крупными пачками
         self.turns = []
         stm = [
             {"role": "user", "content": "привет", "timestamp": 10.0},
@@ -101,8 +102,10 @@ class FakeBot:
                 bot.calls.append(("stm", chat_id))
                 return list(bot.stm)
 
-        def add_message(role, content, user_id="default", chat_id=None, user_name=None, timestamp=None):
+        def add_message(role, content, user_id="default", chat_id=None, user_name=None, timestamp=None,
+                        bulk=False):
             bot.calls.append(("add", role, content, user_id, chat_id, user_name, bool(bot.turns), timestamp))
+            bot.bulk.append(bulk)
 
         self.memory = SimpleNamespace(ltm=Ltm(), stm=Stm(), add_message=add_message)
 
@@ -159,15 +162,19 @@ def test_kit():
           parts["character"].startswith("Ты Коннор") and parts["rules"] == offline_api.OFFLINE_RULES
           and "Do not end your reply with a question" in parts["style"] and parts["language"] in system)
     check("факты — с учётом приватности этого чата", ("facts", "web_user", "web_user") in bot.calls)
+    from app.core import lore
     from app.core.persona import (ENV_RULE, SELF_MEMORY_RULE, STM_RELEVANT_HEAD, STM_RELEVANT_RULE,
                                   WEB_SOURCE_PRIORITY)
     check("кит версии 3", kit["version"] == 3)
     check("напоминания чата — из ReminderManager (ключ чата)",
           kit["reminders"][0]["ref"] == "r1@2000000000" and ("upcoming", "web_user") in bot.calls
           and kit["reminders_enabled"] is True)
-    check("правила выдачи, окружения, личной памяти и найденных реплик — те же, что в промпте ядра",
+    check("правила выдачи, окружения, личной памяти, найденных реплик и лора — те же, что в промпте ядра",
           kit["rules"] == {"web": WEB_SOURCE_PRIORITY, "env": ENV_RULE, "self_memory": SELF_MEMORY_RULE,
-                           "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE})
+                           "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE,
+                           "lore_head": lore.HEAD, "lore_weak": lore.WEAK_HEAD, "lore": lore.RULE,
+                           "lore_gap": lore.GAP_RULE})
+    check("метка лора — пусто, пока лора нет", kit["lore_stamp"] == "")
     check("строка досье — как в ответе ядра (чат и собеседник)",
           kit["dossier"].startswith("Known about the user") and ("dossier", "web_user", "web_user") in bot.calls)
     bot.persona._get_special_user_note = lambda uid: "\n\nWHO IS WRITING TO YOU NOW: special" if uid == "web_user" else None
@@ -261,6 +268,7 @@ def test_import():
     check("запись — внутри хода пользователя", all(c[6] for c in adds))
     check("в историю этого чата", all(c[3] == "web_user" and c[4] == "web_user" for c in adds))
     check("время — с телефона", [c[7] for c in adds] == [19.0, 20.0])
+    check("перенос — крупными пачками (bulk)", bot.bulk == [True, True])
 
     bot.calls.clear()
     res = offline_api.import_messages(bot, "web_user", "web_user",
@@ -538,15 +546,39 @@ def test_routes():
             r = c.post("/api/personas/connor/offline/import", json=payload)
             check(f"{name} — 422", r.status_code == 422)
         server_mod._api_token = "s3cr3t"
-        r = c.get("/api/personas/connor/offline/providers")
+        lan = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
+        r = lan.get("/api/personas/connor/offline/providers")
         check("с API_TOKEN без токена — 401 (ключи не отдаются)", r.status_code == 401)
-        r = c.get("/api/personas/connor/offline/memory")
+        r = lan.get("/api/personas/connor/offline/memory")
         check("…и память — 401", r.status_code == 401)
     finally:
         server_mod._get_bot, server_mod._api_token = orig_get, orig_token
 
 
+def test_base_kit():
+    """Телефон без компьютера: базовый кит и встроенные персоны вшиты в
+    приложение (scripts/gen_offline_base_kit.py) — копия совпадает с ядром."""
+    print("\n── Базовый кит приложения ──")
+    from app.api import offline_api
+    from scripts import gen_offline_base_kit as gen
+    base = offline_api.build_base_kit()
+    check("правила — без «вернусь на компьютер», о приложении на телефоне",
+          "phone app" in base["rules_text"] and "back on the computer" not in base["rules_text"])
+    check("заметки напоминаний — все, повторяющиеся — без компьютера",
+          set(offline_api.REMINDER_NOTES) <= set(base["notes"]) and "phone app" in base["notes"]["recurring"]
+          and "{{" not in base["notes"]["extract"])
+    check("правила к выдаче/окружению/памяти — те же, что в ките ядра",
+          base["rules"]["web"] and base["rules"]["env"] and base["rules"]["recall"])
+    check("гейт поиска и погодные коды на месте",
+          base["search_gate"]["smalltalk"] and base["weather_codes"].get("0"))
+    check("baseKit.ts совпадает с ядром (иначе: python3 -m scripts.gen_offline_base_kit)",
+          gen.OUT.read_text(encoding="utf-8") == gen.render())
+    check("bundledPersonas.ts совпадает с app/personas",
+          gen.OUT_PERSONAS.read_text(encoding="utf-8") == gen.render_personas())
+
+
 def main():
+    test_base_kit()
     test_kit()
     test_providers()
     test_import()

@@ -6,10 +6,11 @@
 в episode в стиле персоны — с ПОЛНЫМ system_prompt, как для обычных
 эпизодов self_memory.
 
-Приветствие-дневник при возврате после паузы: offline_log за период
-пропуска сжимается локальной LLM в тезисы, которые уходят в контекст
-основной LLM — она вплетает их в первый ответ пользователю (полный
-system_prompt).
+Приветствие-дневник при возврате после паузы: последние записи offline_log
+за период пропуска уходят тезисами в контекст основной LLM — она вплетает
+их в первый ответ пользователю (полный system_prompt). Сжатие тезисов
+локальной LLM на этом пути (ответ ждёт её до 40 с) — только пунктом
+«Экономии нейронки» return_summary_llm (app/core/llm_economy).
 
 Сценарист (раз в 1-2 недели): основная LLM смотрит на активные storylines
 и решает, продвигать ли к повороту/развязке. Промпт включает полный
@@ -24,7 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-from app.core import timeutil
+from app.core import llm_economy, timeutil
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
@@ -163,7 +164,9 @@ class OfflineSummarizer:
         return episode
 
     def _compress_entries(self, entries: List[dict],
-                          user_language: Optional[str] = None) -> List[str]:
+                          user_language: Optional[str] = None,
+                          use_model: bool = True) -> List[str]:
+        # use_model=False — без вызова модели: последние записи как есть
         lines = []
         for e in entries:
             p = e.get("payload") or {}
@@ -190,9 +193,10 @@ class OfflineSummarizer:
         if not lines:
             return []
 
-        # Локальная LLM сжимает; при недоступности — берём последние как есть.
-        # Тезисы — на языке пользователя (дневник ведётся на нём)
-        if self.local.is_available(task="offline_summary"):
+        # Локальная LLM сжимает; при недоступности (или use_model=False) —
+        # берём последние как есть. Тезисы — на языке пользователя (дневник
+        # ведётся на нём)
+        if use_model and self.local.is_available(task="offline_summary"):
             try:
                 response = self.local.get_response(
                     messages=[
@@ -261,11 +265,15 @@ class OfflineSummarizer:
         """Контекст «что было, пока тебя не было» для вплетения в ответ.
         Финальный текст — основная LLM в обычном пайплайне ответа.
         user_language — язык пользователя: тезисы сжимаем на нём, чтобы
-        блок не тянул ответ на язык внутренних событий."""
+        блок не тянул ответ на язык внутренних событий. Путь ответа: сжатие
+        моделью — только пунктом return_summary_llm, по умолчанию последние
+        записи как есть (ответ не ждёт фоновую модель)."""
         if not entries or absence_hours < 12:
             # Короткая пауза — дневник не нужен, факты дойдут через state
             return None
-        theses = self._compress_entries(entries, user_language)
+        theses = self._compress_entries(
+            entries, user_language,
+            use_model=llm_economy.enabled("return_summary_llm"))
         if not theses:
             return None
         theses_text = "\n".join(f"- {t}" for t in theses)

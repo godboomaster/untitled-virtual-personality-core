@@ -1,0 +1,6 @@
+Built-in image_gen. Edit target: 48-thinner-ribbon-ghost.png. Slightly increase ribbon height while retaining horizontal width and all other design details.
+
+Precise local refinement of the supplied ghost-and-cracked-egg logo.
+Make the black ribbon under the circular head just SLIGHTLY THICKER VERTICALLY than it is now: increase its current vertical height by roughly 20–25%, a modest adjustment. Keep its current narrow HORIZONTAL WIDTH unchanged.
+Keep the head and eyes fixed. Move the white body's top edge down only a few pixels to meet the slightly lower ribbon base, retaining the smooth small outward transitions directly from the solid black ribbon. No white shoulder inserts or gaps.
+Preserve the straight slender body sides, plain white fold-free body, sharp shell junction, both eggshell pieces, cracks, facets, line weights, all colors, positions, composition and white background. Do not revert to the earlier tall thick collar. No other changes.

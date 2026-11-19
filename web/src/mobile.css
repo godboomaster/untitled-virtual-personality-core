@@ -118,18 +118,21 @@
     gap: 10px;
   }
 
-  /* Статус ядра — только индикатор (подпись длинная); нет связи — подпись
-     нужна (на телефоне это частый случай: ноутбук уснул, сменилась сеть),
-     место под неё — за счёт переключателя темы */
+  /* Статус ядра — только индикатор (подпись длинная); нет связи и поиск ядра
+     — подпись нужна (на телефоне это частый случай: ноутбук уснул, сменилась
+     сеть, приложение открылось раньше ответа ядра), как и «на связи» на
+     несколько секунд после подключения; место — за счёт переключателя темы */
   .topbar-status > span:not(.status-led) {
     display: none;
   }
 
-  .topbar-status--down > span:not(.status-led):not(.badge) {
+  .topbar-status--down > span:not(.status-led):not(.badge),
+  .topbar-status--searching > span:not(.status-led),
+  .topbar-status--label > span:not(.status-led) {
     display: inline;
   }
 
-  .topbar-right:has(.topbar-status--down) .theme-toggle {
+  .topbar-right:has(.topbar-status--down, .topbar-status--searching, .topbar-status--label) .theme-toggle {
     display: none;
   }
 
@@ -428,6 +431,31 @@
 
   .dossier-tabs--more-left.dossier-tabs--more-right {
     mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+  }
+
+  /* Длинные страницы настроек — вкладками, как досье (components/PageTabs.tsx):
+     строка от края до края, прилипает к верху, пока раздел листают. Фон —
+     на обёртке: у самой строки края гаснут маской, фон гас бы вместе с ними */
+  .page-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    margin: 0 -16px 14px;
+    background: var(--bg);
+  }
+
+  .section:has(> .page-tabs-host) > .section-header {
+    border-bottom: none;
+    padding-bottom: 0;
+    margin-bottom: 10px;
+  }
+
+  /* «Главная»: блоки внутри вкладки — с тем же шагом, что на странице
+     ([hidden] всё равно прячет: display: none !important) */
+  .home .page-tab-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
   }
 
   .dossier-body {

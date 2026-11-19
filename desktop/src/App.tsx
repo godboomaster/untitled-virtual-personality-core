@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { api, isUp, type LogEntry, type Phase, type PortraitInfo, type Snapshot, type VoiceView } from './api';
+import {
+  api,
+  isUp,
+  type LogEntry,
+  type NearStatus,
+  type Phase,
+  type PortraitInfo,
+  type Snapshot,
+  type VoiceView,
+  type WakeLang,
+} from './api';
 import { duration, t, type TextKey } from './i18n';
 import SettingsView from './SettingsView';
+import RobotPanel from '../../../vpc-robot/desktop/RobotPanel';
+import { voiceError, voiceText, voiceTone } from './voiceStatus';
 
 const POLL_MS = 2000;
 const LOG_MAX = 300;
@@ -111,9 +123,9 @@ function Header({ snap, onSettings }: { snap: Snapshot | null; onSettings: () =>
       <div className="head-title">
         <Dot tone={tone} />
         <div>
-          <div className="title">Virtual Persona</div>
+          <div className="title">{snap?.robot ? t('robotAppTitle') : 'Virtual Persona'}</div>
           <div className="subtitle">
-            {status}
+            {snap?.robot ? t('robotCoreStatus', { status }) : status}
             {uptime}
           </div>
         </div>
@@ -276,31 +288,6 @@ function BrowserBlock({ snap }: { snap: Snapshot }) {
   );
 }
 
-function voiceTone(v: VoiceView): Tone {
-  const st = v.status;
-  if (!v.enabled) return 'off';
-  if (v.phase === 'failed' || st?.issue === 'mic_access' || st?.issue === 'modules') return 'bad';
-  if (v.phase === 'running' && st?.running && st.stage === 'listening' && !st.held && st.names.length > 0) return 'ok';
-  return 'warn';
-}
-
-function voiceText(v: VoiceView): string {
-  const st = v.status;
-  if (!v.enabled) return v.phase === 'stopping' ? t('voiceStopping') : t('voiceOff');
-  if (v.phase === 'failed') return t('voiceFailed');
-  if (v.phase === 'stopping') return t('voiceStopping');
-  if (!st || v.phase === 'starting') return t('voiceStarting');
-  if (st.stage === 'model') return t('voiceModel');
-  if (st.stage === 'names') return t('voiceNames');
-  if (st.issue === 'mic_access') return t('voiceNoAccess');
-  if (st.stage === 'mic') return t('voiceMicRetry');
-  if (st.held) return t('voiceHeld');
-  if (st.state === 'busy') return t('voiceBusy', { persona: st.persona ?? '' });
-  if (st.state === 'await') return t('voiceAwait', { persona: st.persona ?? '' });
-  if (st.names.length === 0) return t('voiceNoNames');
-  return t('voiceListening');
-}
-
 /* Под строкой состояния: на какие имена отзывается и что услышал последним */
 function voiceDetails(v: VoiceView): string | null {
   const st = v.status;
@@ -308,21 +295,13 @@ function voiceDetails(v: VoiceView): string | null {
   if (st.stage === 'names') return t('voiceNamesHint');
   if (st.names.length === 0) return st.stage === 'listening' ? t('voiceNoNamesHint') : null;
   const parts = [t('voiceNames2', { names: st.names.join(', ') })];
+  if (st.langs && st.langs.length > 1) parts.push(t('voiceLangNow', { lang: langName(st.lang ?? '') }));
   if (st.lastHeard) parts.push(t('voiceLastHeard', { text: st.lastHeard }));
   return parts.join(' · ');
 }
 
-/* Ошибка слушателя: доступ к микрофону и модули — своими словами панели,
-   остальное — как есть (выход процесса, сбой ответа бота) */
-function voiceError(v: VoiceView): string | null {
-  if (!v.enabled) return null;
-  const st = v.status;
-  if (st?.issue === 'mic_access') return t('voiceMicAccess');
-  if (st?.issue === 'modules') {
-    const cmd = st.error.split(': ').slice(1).join(': ') || st.error;
-    return t('voiceModules', { cmd });
-  }
-  return v.error ?? (st?.error || null);
+function langName(lang: string): string {
+  return lang === 'en' ? t('voiceLangEnName') : lang === 'ru' ? t('voiceLangRuName') : lang;
 }
 
 function VoiceBlock({ snap, onAction }: { snap: Snapshot; onAction: (f: () => Promise<void>) => void }) {
@@ -340,13 +319,93 @@ function VoiceBlock({ snap, onAction }: { snap: Snapshot; onAction: (f: () => Pr
       <Row label={t('voiceMic')} tone={voiceTone(v)} value={voiceText(v)} />
       {details && <div className="hint">{details}</div>}
       {error && <div className="error">{error}</div>}
+      {v.enabled && v.status?.langError && (
+        <div className="error">{t('voiceLangError', { error: v.status.langError })}</div>
+      )}
       <div className="btn-row">
         <button className={v.enabled ? 'btn' : 'btn btn-primary'} disabled={busy} onClick={toggle}>
           {v.enabled ? t('voiceTurnOff') : t('voiceOn')}
         </button>
       </div>
       {!v.enabled && <div className="hint">{t('voiceHint')}</div>}
+      {/* Языки распознавания: модели слушатель грузит при запуске — смена его перезапускает */}
+      <label className="field voice-lang">
+        <span>{t('voiceLang')}</span>
+        <select
+          value={v.lang}
+          disabled={busy}
+          onChange={(e) => {
+            const lang = e.target.value as WakeLang;
+            onAction(async () => void (await api.setWakeLang(lang)));
+          }}
+        >
+          <option value="ru,en">{t('voiceLangBoth')}</option>
+          <option value="ru">{t('voiceLangRu')}</option>
+          <option value="en">{t('voiceLangEn')}</option>
+        </select>
+      </label>
+      {v.lang !== 'ru' && v.enabled && v.status?.stage === 'model' && <div className="hint">{t('voiceLangModel')}</div>}
+      {v.enabled && v.phase === 'running' && v.status?.running && v.status.near && (
+        <NearBlock near={v.status.near} onAction={onAction} />
+      )}
     </section>
+  );
+}
+
+/* Фильтр фона: речь тише вашего голоса больше чем на margin дБ слушатель не
+   слышит (толпа, соседи). Громкость голоса — по фразе с именем или кнопкой
+   «Запомнить мой голос»: CALIB_SEC вашей речи, пока идёт — опрос чаще */
+function NearBlock({ near, onAction }: { near: NearStatus; onAction: (f: () => Promise<void>) => void }) {
+  const known = near.level != null;
+  const act = useRef(onAction);
+  act.current = onAction;
+  useEffect(() => {
+    if (!near.calibrating) return;
+    const timer = window.setInterval(() => act.current(async () => {}), 700);
+    return () => window.clearInterval(timer);
+  }, [near.calibrating]);
+  let value: string;
+  let tone: Tone;
+  if (!near.on) {
+    [value, tone] = [t('nearOff'), 'off'];
+  } else if (near.calibrating) {
+    [value, tone] = [t('nearRecording', { sec: Math.ceil(near.calibLeft) }), 'warn'];
+  } else if (known) {
+    [value, tone] = [t('nearOn', { db: Math.round(near.margin) }), 'ok'];
+  } else {
+    [value, tone] = [t('nearUnknown'), 'warn'];
+  }
+  const hint = !near.on
+    ? null
+    : near.calibrating
+      ? t('nearReadThis')
+      : near.source === 'panel'
+        ? t('nearFromPanel')
+        : known
+          ? t('nearFromName')
+          : t('nearUnknownHint');
+  return (
+    <div className="near">
+      <Row label={t('nearLabel')} tone={tone} value={value} title={known ? t('nearLevel', { db: near.level ?? 0 }) : undefined} />
+      {hint && <div className="hint">{hint}</div>}
+      {near.calibResult === 'no_speech' && !near.calibrating && <div className="error">{t('nearNoSpeech')}</div>}
+      {near.on && (
+        <div className="btn-row near-row">
+          <button
+            className={known ? 'btn' : 'btn btn-primary'}
+            disabled={near.calibrating}
+            onClick={() => onAction(async () => void (await api.wakeCalibrate()))}
+          >
+            {near.calibrating ? t('nearRecordingBtn') : t('nearCalibrate')}
+          </button>
+          {known && !near.calibrating && (
+            <button className="link" onClick={() => onAction(async () => void (await api.wakeForgetVoice()))}>
+              {t('nearForget')}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -402,6 +461,23 @@ function PortraitBlock({ snap, onAction }: { snap: Snapshot; onAction: (f: () =>
             {shown ? t('portraitRemove') : t('portraitShow')}
           </button>
         </div>
+      )}
+      {(snap.portrait.keys === 'on' || snap.portrait.keys === 'mouse') && (
+        <Row
+          label={t('portraitKeys')}
+          tone={snap.portrait.keys === 'on' ? 'ok' : 'warn'}
+          value={snap.portrait.keys === 'on' ? t('portraitKeysOn') : t('portraitKeysMouse')}
+        />
+      )}
+      {snap.portrait.keys === 'mouse' && (
+        <>
+          <div className="hint">{t('portraitKeysAccess')}</div>
+          <div className="btn-row">
+            <button className="btn" onClick={() => onAction(() => api.keysSettings())}>
+              {t('portraitKeysOpen')}
+            </button>
+          </div>
+        </>
       )}
       <div className="hint">{fromDisk ? t('portraitHintDisk') : t('portraitHintUp')}</div>
     </section>
@@ -483,12 +559,13 @@ export default function App() {
   return (
     <div className="panel">
       <Header snap={snap} onSettings={() => setView('settings')} />
-      <Controls snap={snap} onAction={onAction} />
+      {!snap?.robot && <Controls snap={snap} onAction={onAction} />}
       {snap && (
         <div className="scroll">
+          {snap.robot && <RobotPanel view={snap.robot} refresh={refresh} />}
           <Services snap={snap} />
-          <VoiceBlock snap={snap} onAction={onAction} />
-          <PortraitBlock snap={snap} onAction={onAction} />
+          {!snap.robot && <VoiceBlock snap={snap} onAction={onAction} />}
+          {!snap.robot && <PortraitBlock snap={snap} onAction={onAction} />}
           <QuarantineBlock snap={snap} />
           <BrowserBlock snap={snap} />
           <LogBlock snap={snap} logs={logs} />

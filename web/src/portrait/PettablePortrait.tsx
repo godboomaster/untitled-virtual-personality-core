@@ -2,16 +2,19 @@ import { useRef } from 'react';
 import LivePortrait from './LivePortrait';
 import { hitOnBody, useHitMask } from './hitMask';
 import { pokePet } from './portraitStore';
+import { useLiveEmotion } from './portraitEmotion';
 import type { PortraitData } from './portraitTypes';
 import PatHearts from './PatHearts';
 import { usePat } from './usePat';
+import type { SpeechCue } from './visemes';
 
 /* Живой портрет, который можно погладить, — голосовой режим и PiP-окно веба
    (на рабочем столе своё окно, desktop/src/portrait/). Касание или клик по
    фигуре (маска по альфе листа, мимо головы — ничего) — погладить; провести
    по голове пальцем или мышью с нажатой кнопкой — гладить, сердечко на
    каждые STROKE_PX пути. Ядру — pokePet: персона узнает, если включены
-   «тычки». */
+   «тычки». Эмоции лица, которые персона выбрала к ответу, — из ленты
+   реплик (portraitEmotion). */
 
 const TAP_PX = 8; // сдвиг меньше — ещё касание, а не проведение
 const STROKE_PX = 60;
@@ -29,6 +32,10 @@ export default function PettablePortrait({
   speaking,
   listening,
   thinking,
+  attentive,
+  nod,
+  reading,
+  speech,
   label,
 }: {
   personaId: string;
@@ -36,6 +43,13 @@ export default function PettablePortrait({
   speaking?: boolean;
   listening?: boolean;
   thinking?: boolean;
+  /** Занята разговором — за курсором не следит (см. LivePortrait) */
+  attentive?: boolean;
+  nod?: number;
+  /** Читает облачко с вашим сообщением (середина облачка, см. LivePortrait) */
+  reading?: { x: number; y: number } | null;
+  /** Что говорит — рот по гласным (см. LivePortrait) */
+  speech?: SpeechCue | null;
   label: string;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
@@ -44,6 +58,7 @@ export default function PettablePortrait({
   const press = useRef<Press | null>(null);
   const over = useRef(false);
   const { petted, hearts, pat } = usePat(() => pokePet(personaId));
+  const emotion = useLiveEmotion(personaId, data, !!speaking);
 
   const onFigure = (x: number, y: number) =>
     hitOnBody(mask.current, cell.current, wrap.current?.querySelector('.live-portrait-body'), x, y);
@@ -102,7 +117,12 @@ export default function PettablePortrait({
         speaking={speaking}
         listening={listening}
         thinking={thinking}
+        attentive={attentive}
+        nod={nod}
+        reading={reading}
         petted={petted}
+        emotion={emotion}
+        speech={speech}
         label={label}
         onCell={(r, c) => {
           cell.current = { r, c };

@@ -32,6 +32,11 @@ final class WakeMatch {
     static final int MAX_LEAD = 2;
     // Имя распознаватель может склеить или разбить: окно до стольких слов
     static final int MAX_WINDOW = 3;
+    // Текст латиницей — от английской модели (ядро; на телефоне — только
+    // русская). В английском «r» после гласной часто не звучит («Conna» вместо
+    // «Connor»): конечное «р» имени можно не услышать за столько (только
+    // латиницей — по-русски «мира» не «mirror»)
+    static final double NON_RHOTIC = 0.5;
 
     // Порядок важен: сначала длинные сочетания («sch» раньше «sh» и «s»)
     private static final String[][] LATIN = {
@@ -126,6 +131,17 @@ final class WakeMatch {
         return out.toString();
     }
 
+    /** Слово латиницей: есть латинские буквы и нет кириллицы. */
+    static boolean latinWord(String text) {
+        boolean latin = false;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = Character.toLowerCase(text.charAt(i));
+            if ((ch >= 'а' && ch <= 'я') || ch == 'ё') return false;
+            if (ch >= 'a' && ch <= 'z') latin = true;
+        }
+        return latin;
+    }
+
     private static boolean vowel(char ch) {
         return ch == 'а' || ch == 'и' || ch == 'у';
     }
@@ -214,10 +230,14 @@ final class WakeMatch {
                 for (int t = start; t < end; t++) joined.append(text, tokens.get(t)[0], tokens.get(t)[1]);
                 String key = phoneticKey(joined.toString());
                 if (key.isEmpty()) continue;
+                boolean latin = latinWord(joined.toString());
                 for (Phrase ph : phrases) {
                     // Окно заметно длиннее имени — это уже не имя
                     if (key.length() > ph.key.length() + 3) continue;
                     double d = keyDistance(key, ph.key);
+                    if (latin && ph.key.length() > 3 && ph.key.endsWith("р")) {
+                        d = Math.min(d, keyDistance(key, ph.key.substring(0, ph.key.length() - 1)) + NON_RHOTIC);
+                    }
                     if (d > tolerance(ph.key)) continue;
                     // Лучшее — ближе по звуку, затем раньше в реплике, затем длиннее
                     if (best == null || better(d, start, ph.key.length(), bestD, bestStart, best.key.length())) {

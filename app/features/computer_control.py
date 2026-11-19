@@ -4631,10 +4631,13 @@ def intent_prompt(text: str, lang: Optional[str] = None) -> str:
         "a specific site\n"
         '{"action":"task","goal":"the whole goal"} — a GOAL that needs a chain '
         "of several actions across a site/sites, not one command (order food, "
-        "buy/book something, find and download a file somewhere, fill in and "
-        "send a form); goal — the user's request in their own wording\n"
+        "buy/book something, find a product — \"find me X\" where X is goods "
+        "(food, clothes, a gadget): the agent finds it in a shop and opens "
+        "it —, find and download a file somewhere, fill in and send a form); "
+        "goal — the user's request in their own wording\n"
         '{"action":"none"} — this is NOT a computer/browser control command '
-        "(ordinary conversation, a question, a request to write something)\n"
+        "(ordinary conversation, a question or a request for information — "
+        "facts, a recipe, an explanation —, a request to write something)\n"
         f"Phrase: \"{text}\"\n"
         + user_language_line(lang or detect_language(text)))
 
@@ -5395,7 +5398,11 @@ class ComputerControlManager:
             "you have NO such markers: never write \"Clicked\"/\"Typed\" on your own "
             "and do not describe the result of such actions — that is a lie, without a system "
             "action nothing happens. Scrolling the page (\"scroll the page\") "
-            "and stopping it (\"stop\") are also system commands, not your markers."
+            "and stopping it (\"stop\") are also system commands, not your markers. "
+            "Finding or buying something on a site (a product, an item) is done by "
+            "the system's agent from the user's own request (\"find me X\", \"buy "
+            "X\"), not by your markers: OPEN_URL opens only the site's main page — "
+            "do not offer to open a shop so as to find something there."
         )
         # Контекст открытой страницы: чтобы модель понимала «мы на сайте X»,
         # а не отвечала в отрыве от браузерного контекста

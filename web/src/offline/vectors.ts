@@ -37,3 +37,17 @@ export function cosine(a: Vec, b: Vec): number {
   }
   return na && nb ? dot / Math.sqrt(na * nb) : 0;
 }
+
+/** Вектор, посчитанный на телефоне, — в том же виде, что с ноутбука
+ * (offline_api.pack_vector: int8 по наибольшей по модулю координате, base64). */
+export function packVec(v: ArrayLike<number>): string {
+  let top = 0;
+  for (let i = 0; i < v.length; i++) top = Math.max(top, Math.abs(v[i]));
+  if (!Number.isFinite(top) || top === 0) return '';
+  let bin = '';
+  for (let i = 0; i < v.length; i++) {
+    const q = Math.max(-127, Math.min(127, Math.round((v[i] / top) * 127)));
+    bin += String.fromCharCode(q & 0xff);
+  }
+  return btoa(bin);
+}

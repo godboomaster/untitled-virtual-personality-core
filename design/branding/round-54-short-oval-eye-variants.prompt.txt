@@ -1,0 +1,21 @@
+Built-in image_gen. Both variants independently edit the accepted 78-short-oval-eyes-ghost.png.
+
+1 — Чуть уже
+Output: 83-narrow-short-oval-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: close eye-design variant of the user's accepted black-and-white ghost logo.
+Input image 1: sole edit target, 78-short-oval-eyes-ghost.png. The user likes these short oval eyes; stay very close to this design.
+Primary request: change ONLY the dimensions of the two black eyes. Keep the same compact upright oval/capsule eye design, but reduce each eye's width by approximately 18% while preserving its current height. At the reference scale the original eyes are approximately 59 px wide and 129 px high, so aim for about 48 px wide and 129 px high. Keep the same softly rounded ends, solid-black fill, original eye centers and center-to-center spacing. This is a subtle slimmer variation of the accepted short eyes, not a return to the long eyes.
+Constraints: keep both eyes identical, upright, level, unrotated and balanced. Preserve everything outside these two eye marks exactly: the entire head outline, face size, angular two-leaf collar at left with its white clearance cuts, body, jagged hem, white separator, both eggshell pieces and cracks, stroke weights, proportions, composition and white background. Output one complete logo at the exact same canvas aspect ratio and framing. No extra features, no mouth, eyebrows, highlights, pupils, text, numbers, shadows, colors or other additions. Do not crop, resize, recenter, simplify or redesign the emblem.
+
+-----
+
+2 — Чуть округлее
+Output: 84-rounder-short-oval-eyes-ghost.png
+
+Use case: precise-object-edit
+Asset type: close eye-design variant of the user's accepted black-and-white ghost logo.
+Input image 1: sole edit target, 78-short-oval-eyes-ghost.png. The user likes these short oval eyes; stay very close to this design.
+Primary request: change ONLY the dimensions of the two black eyes. Keep the same compact upright oval eye design, but make each eye slightly plumper and shorter: approximately 12% wider and 14% shorter. At the reference scale the original eyes are approximately 59 px wide and 129 px high, so aim for about 66 px wide and 111 px high. Use smooth softly curved sides and rounded ends, with solid-black fill. Keep the original eye centers and center-to-center spacing. The eyes must remain clearly vertical ovals, not round dots. This is a subtle softer variation of the accepted short oval eyes.
+Constraints: keep both eyes identical, upright, level, unrotated and balanced. Preserve everything outside these two eye marks exactly: the entire head outline, face size, angular two-leaf collar at left with its white clearance cuts, body, jagged hem, white separator, both eggshell pieces and cracks, stroke weights, proportions, composition and white background. Output one complete logo at the exact same canvas aspect ratio and framing. No extra features, no mouth, eyebrows, highlights, pupils, text, numbers, shadows, colors or other additions. Do not crop, resize, recenter, simplify or redesign the emblem.

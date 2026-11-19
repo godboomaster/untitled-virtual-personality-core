@@ -6,7 +6,7 @@ import type { HomeOverview } from '../api';
 import { useApiOnline, useCoreHealth } from '../apiData';
 import { localLast } from '../offline/lastMessage';
 import { useInbox } from '../inboxStore';
-import { usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from '../components/PersonaAvatar';
 import { playFlip } from '../flip';
 import type { FlipRects } from '../flip';
 
@@ -28,7 +28,6 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
   const { lang, t } = useI18n();
   const { personas, chatByPersona } = useMockData();
   const apiOnline = useApiOnline();
-  const avatars = usePersonaAvatars();
   const { messages, unread, generating, lastTs, serverLastTs, controlMode, pending } = useInbox();
   const [home, setHome] = useState<HomeOverview | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -163,7 +162,7 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
             >
               <div className="chat-card-head">
                 <div className="avatar avatar--large">
-                  {avatars[p.id] ? <img src={avatars[p.id]} alt={p.name} /> : p.name.charAt(0)}
+                  <PersonaAvatar persona={p} followWithin=".chat-overview-grid" />
                 </div>
                 <div className="chat-card-id">
                   <div className="chat-card-name">

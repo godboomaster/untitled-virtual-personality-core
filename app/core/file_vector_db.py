@@ -20,6 +20,12 @@ MAX_DOCS_DEFAULT = 3
 # Сколько пользователей помнить в _loaded_docs (последний загруженный файл):
 # без предела словарь рос бы на каждого пользователя за всё время процесса
 MAX_LOADED_DOCS_USERS = 500
+# Модель векторов читает 128 токенов — около 400 знаков русского текста, дальше
+# кусок для неё не существует. При куске в 1000 знаков почти половина текста
+# в поиск не попадала. Шаг не длиннее видимой части: непрочитанных мест нет
+CHUNK_CHARS = 350
+CHUNK_OVERLAP = 70
+ADD_BATCH = 64
 
 
 def _locked(method):
@@ -139,17 +145,19 @@ class FileVectorDB:
 
         # Добавляем чанки для поиска
         chunks = self._split_content(content)
-        for i, chunk in enumerate(chunks):
+        stamp = int(time.time() * 1000)
+        for start in range(0, len(chunks), ADD_BATCH):
+            batch = chunks[start:start + ADD_BATCH]
             self.collection.add(
-                ids=[f"{user_id}_{filename}_{i}"],
-                documents=[chunk],
+                ids=[f"{user_id}_{filename}_{start + i}" for i in range(len(batch))],
+                documents=batch,
                 metadatas=[{
                     "user_id": user_id,
                     "filename": filename,
-                    "chunk": i,
+                    "chunk": start + i,
                     "total_chunks": len(chunks),
-                    "timestamp": int(time.time() * 1000)
-                }]
+                    "timestamp": stamp,
+                } for i in range(len(batch))]
             )
 
         self._loaded_docs[user_id] = filename
@@ -301,13 +309,13 @@ class FileVectorDB:
             self._loaded_docs.clear()
             logger.info("  [FileDB] Сброшены все файлы")
 
-    def _split_content(self, content: str, chunk_size: int = 1000) -> list[str]:
+    def _split_content(self, content: str, chunk_size: int = CHUNK_CHARS) -> list[str]:
         # Разбить контент на чанки с перекрытием.
         if len(content) <= chunk_size:
             return [content]
 
         chunks = []
-        overlap = chunk_size // 4
+        overlap = CHUNK_OVERLAP
         for i in range(0, len(content), chunk_size - overlap):
             chunks.append(content[i:i + chunk_size])
         return chunks

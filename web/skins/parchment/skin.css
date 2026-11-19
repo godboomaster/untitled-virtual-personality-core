@@ -732,8 +732,7 @@ html[data-skin='parchment'] .input:disabled:not(.select-trigger) {
 }
 
 /* Многострочное поле — разлинованный лист (линейки — жёсткие полосы) */
-html[data-skin='parchment'] textarea.input:not(.pcreate-yaml),
-html[data-skin='parchment'] textarea.art-style-textarea {
+html[data-skin='parchment'] textarea.input:not(.pcreate-yaml) {
   line-height: 24px;
   padding-top: 6px;
   background-color: var(--pa-leaf);
@@ -1885,8 +1884,7 @@ html[data-skin='parchment'] .home-tele-note {
 }
 
 /* Карточки присутствия — листки */
-html[data-skin='parchment'] .home-presence,
-html[data-skin='parchment'] .home-dossier {
+html[data-skin='parchment'] .home-presence {
   background: var(--pa-leaf);
   border: 1px solid var(--pa-line);
   border-radius: 0;
@@ -1894,16 +1892,14 @@ html[data-skin='parchment'] .home-dossier {
   clip-path: none;
 }
 
-html[data-skin='parchment'] .home-presence:hover,
-html[data-skin='parchment'] .home-dossier:hover {
+html[data-skin='parchment'] .home-presence:hover {
   background: var(--pa-leaf);
   border-color: var(--pa-ink);
   box-shadow: none;
   transform: none;
 }
 
-html[data-skin='parchment'] .home-presence-name,
-html[data-skin='parchment'] .home-dossier h3 {
+html[data-skin='parchment'] .home-presence-name {
   font-family: var(--font-disp);
   font-size: 21px;
   font-weight: 600;
@@ -1913,9 +1909,7 @@ html[data-skin='parchment'] .home-dossier h3 {
 }
 
 html[data-skin='parchment'] .home-presence-status,
-html[data-skin='parchment'] .home-presence-reply,
-html[data-skin='parchment'] .home-dossier-index,
-html[data-skin='parchment'] .home-dossier-foot {
+html[data-skin='parchment'] .home-presence-reply {
   font-family: var(--font);
   font-style: italic;
   font-size: 12px;
@@ -1924,8 +1918,7 @@ html[data-skin='parchment'] .home-dossier-foot {
   color: var(--text-muted);
 }
 
-html[data-skin='parchment'] .home-presence-reply,
-html[data-skin='parchment'] .home-dossier-foot {
+html[data-skin='parchment'] .home-presence-reply {
   border-top: 1px solid var(--pa-line);
 }
 
@@ -2000,11 +1993,6 @@ html[data-skin='parchment'] .home-term-cursor {
   animation: pa-breathe 4s ease-in-out infinite;
 }
 
-html[data-skin='parchment'] .home-term-line .bright {
-  color: var(--pa-ink);
-  font-weight: 600;
-}
-
 html[data-skin='parchment'] .home-foot-stencil,
 html[data-skin='parchment'] .home-foot-right {
   font-family: var(--font);
@@ -2012,10 +2000,6 @@ html[data-skin='parchment'] .home-foot-right {
   font-size: 12px;
   letter-spacing: 0;
   text-transform: none;
-}
-
-html[data-skin='parchment'] .barcode i {
-  background: var(--pa-ink-2);
 }
 
 /* Заметки пользователя */
@@ -2589,8 +2573,7 @@ html[data-skin='parchment'] .art-drop-title {
 }
 
 html[data-skin='parchment'] .art-drop-spec,
-html[data-skin='parchment'] .art-drop-status,
-html[data-skin='parchment'] .art-style-desc {
+html[data-skin='parchment'] .art-drop-status {
   font-family: var(--font);
   font-style: italic;
   font-size: 12px;

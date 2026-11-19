@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import PettablePortrait from '../portrait/PettablePortrait';
-import { hasPortrait, setPortraitActivity, usePortrait } from '../portrait/portraitStore';
+import { PersonaHead } from './PersonaAvatar';
+import { hasPortrait, setPortraitActivity } from '../portrait/portraitStore';
+import { useLiveAvatar } from '../portrait/useLiveAvatar';
+import SwitchSprite from '../portrait/SwitchSprite';
 import { closePip, isPipOf, openPip, pipSupported, usePip } from '../pipStore';
 import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
@@ -15,7 +18,11 @@ import type { ListenSession } from '../voice/speechIO';
    speechSynthesis) либо текстом — персона в обоих случаях отвечает
    голосом. Полноэкранный режим скрывает весь остальной интерфейс
    фиксированным оверлеем. В приложении Android вместо Web Speech API —
-   распознавание и озвучка телефона (движок из voice/speechIO). */
+   распознавание и озвучка телефона (движок из voice/speechIO).
+
+   Пауза до ответа: услышала реплику — портрет кивает и думает, ответ
+   звучит, когда допечатан. Под портретом — последняя реплика разговора:
+   ваша или ответ. */
 
 // Ошибки распознавания в приложении, о которых стоит сказать; «не расслышал»
 // и тишина — просто конец прослушивания. В браузере подсказок нет, как было
@@ -54,7 +61,12 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
   const [fullscreen, setFullscreen] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
-  const portrait = usePortrait(persona.id);
+  // Что звучит и с какого знака слово, которое звучит сейчас (браузерный
+  // синтез сообщает) — портрет ведёт рот по гласным
+  const [speech, setSpeech] = useState<{ text: string; at?: number } | null>(null);
+  // Живой портрет — аватар режима, что включён в чате; сменился режим —
+  // анимация перехода (если есть), потом новая голова
+  const { data: portrait, switching, switchDone } = useLiveAvatar(persona.id);
   const pip = usePip();
   const portraitOut = isPipOf(pip, 'portrait', persona.id);
   // Живая расшифровка (промежуточные результаты распознавания)
@@ -84,7 +96,11 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
   const speak = (text: string) => {
     const seq = ++speakSeq.current;
     setSpeaking(true);
-    void engine.speak(text, speechLangTag(lang)).then((status) => {
+    setSpeech({ text });
+    const onWord = (at: number) => {
+      if (seq === speakSeq.current) setSpeech({ text, at });
+    };
+    void engine.speak(text, speechLangTag(lang), onWord).then((status) => {
       // «Недоступно» бывает и от медленного холодного старта движка — когда
       // реплика всё же прозвучала, подсказку снимаем
       if (status === 'unavailable' && engine.kind === 'native') setTtsMissing(true);
@@ -128,6 +144,13 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
     // speak зависит только от lang — повторять эффект на его смену не нужно
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typing, botKey, persona.id]);
+
+  // Персона взялась за ответ (своя реплика или с другого устройства) —
+  // кивок: услышала
+  const [nod, setNod] = useState(0);
+  useEffect(() => {
+    if (typing) setNod((n) => n + 1);
+  }, [typing]);
 
   // Микрофон: старт/стоп распознавания речи
   const toggleMic = () => {
@@ -181,20 +204,37 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
     };
   }, [persona.id, engine]);
 
-  // Вынесенный портрет (PiP-окно) говорит, слушает и думает вместе с режимом
+  // Вынесенный портрет (PiP-окно) говорит, слушает, кивает и думает вместе с режимом
   const thinking = typing && !speaking;
   useEffect(() => {
-    setPortraitActivity(persona.id, { speaking, listening, thinking });
-  }, [persona.id, speaking, listening, thinking]);
+    setPortraitActivity(persona.id, {
+      speaking,
+      listening,
+      thinking,
+      nod,
+      ...(speaking && speech ? { speech: speech.text, speechAt: speech.at } : {}),
+    });
+  }, [persona.id, speaking, listening, thinking, nod, speech]);
   useEffect(() => () => setPortraitActivity(persona.id, null), [persona.id]);
 
-  // Последняя реплика персоны — «субтитр» под аватаркой
-  const lastBotLine = [...messages].reverse().find((m) => m.role === 'bot');
+  // Последняя реплика разговора — «субтитр» под аватаркой: ваша (пока
+  // персона думает) или ответ
+  const lastLine = [...messages].reverse().find((m) => m.text.trim());
+  // Ответ ещё печатается — у аватарки он идёт по словам: недописанное
+  // последнее слово не показываем (в самом чате — как было)
+  const lineText = (() => {
+    if (!lastLine) return '';
+    if (!typing || lastLine.role !== 'bot') return lastLine.text;
+    const cut = lastLine.text.search(/\S+$/);
+    return cut >= 0 ? lastLine.text.slice(0, cut).trimEnd() : lastLine.text;
+  })();
   const statusLine = listening
     ? t('chat.listening')
     : speaking
       ? t('chat.speaking', { name: persona.name })
-      : t(`status.${persona.status}`);
+      : thinking
+        ? t('chat.thinking', { name: persona.name })
+        : t(`status.${persona.status}`);
 
   // Фулскрин рендерится порталом в <body> (у анимаций-предков есть transform,
   // из-за него position: fixed скроллится вместе со страницей) + блокируем скролл
@@ -245,30 +285,49 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
       </div>
 
       <div className="voice-chat-stage">
-        {/* Живой портрет (арт-мастерская) — смотрит, моргает, говорит, его можно
-            погладить; нет — аватарка */}
-        {hasPortrait(portrait) ? (
-          <div className={`voice-portrait ${listening ? 'voice-portrait--listening' : ''}`}>
+        {/* Живой портрет (раздел «Аватар») — смотрит, моргает, говорит, его можно
+            погладить; нет — аватарка, а нет и её — живая голова фигуры из «Комнаты» */}
+        {hasPortrait(portrait) || switching ? (
+          <div
+            className={`voice-portrait ${listening ? 'voice-portrait--listening' : ''} ${switching ? 'avatar-switching' : ''} ${hasPortrait(portrait) ? '' : 'voice-portrait--bare'}`}
+          >
+            {switching && <SwitchSprite key={switching.key} anim={switching.anim} onEnd={switchDone} />}
+            {hasPortrait(portrait) && (
             <PettablePortrait
               personaId={persona.id}
               data={portrait}
               speaking={speaking}
               listening={listening}
               thinking={thinking}
+              nod={nod}
+              speech={speaking ? speech : null}
               label={persona.name}
             />
+            )}
           </div>
         ) : (
           <div
             className={`voice-avatar ${listening ? 'voice-avatar--listening' : ''} ${speaking ? 'voice-avatar--speaking' : ''}`}
           >
-            <img className="voice-avatar-img" src={avatar || '/avatar-placeholder.png'} alt={persona.name} />
+            {avatar ? (
+              <img className="voice-avatar-img" src={avatar} alt={persona.name} />
+            ) : (
+              <span className="voice-avatar-head">
+                <PersonaHead
+                  personaId={persona.id}
+                  label={persona.name}
+                  speaking={speaking}
+                  listening={listening}
+                  thinking={thinking}
+                />
+              </span>
+            )}
           </div>
         )}
 
-        {/* Живая расшифровка во время прослушивания, иначе последняя реплика персоны */}
-        <div className="voice-chat-line">
-          {listening ? interim || t('chat.listening') : (lastBotLine?.text ?? '')}
+        {/* Живая расшифровка во время прослушивания, иначе последняя реплика */}
+        <div className={`voice-chat-line ${!listening && lastLine?.role === 'user' ? 'voice-chat-line--user' : ''}`}>
+          {listening ? interim || t('chat.listening') : lineText}
         </div>
       </div>
 

@@ -109,9 +109,17 @@ PROVIDER_CONFIGS = {
     },
     "mimo": {
         "api_keys": _collect_api_keys("MIMO"),
+        # Адрес по умолчанию — Token Plan (подписка); ключ с platform.xiaomimimo.com
+        # (оплата по запросам) он не принимает («Invalid API Key») — для него
+        # MIMO_BASE_URL=https://api.xiaomimimo.com/v1
         "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-sgp.xiaomimimo.com/v1"),
         "model": os.getenv("MIMO_MODEL", ""),
         "vision": os.getenv("MIMO_VISION", "auto"),
+        # MiMo по умолчанию сначала «думает», и рассуждение съедает max_tokens:
+        # короткий служебный запрос возвращался пустым. Без него ответ сразу,
+        # быстрее и дешевле; MIMO_THINKING=1 — думать
+        "extra_body": (None if os.getenv("MIMO_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
+                       else {"thinking": {"type": "disabled"}}),
     },
     "hf": {
         "api_keys": _collect_api_keys("HF"),

@@ -59,7 +59,7 @@ export default function FormModal({
         <div className="corner br" />
         <div className="pcreate-head">
           <span className="pcreate-title">{title}</span>
-          {badge && <span className="badge">{badge}</span>}
+          {badge && <span className="badge hud-code">{badge}</span>}
           <button type="button" className="pxe-close" onClick={onClose} aria-label={t('common.close')}>✕</button>
         </div>
         <div className="pcreate-body">{children}</div>

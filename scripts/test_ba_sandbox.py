@@ -947,6 +947,139 @@ el.value=f;});</script>"""
         check("D8: длинная страница — итог внизу не обрезан",
               "ИТОГО-ВНИЗУ" in t_page
               and "ИТОГО-ВНИЗУ" not in page.evaluate(ba._READ_PAGE_JS))
+        # 29.10 (Додо): шторка корзины без роли, классы — хеш
+        # styled-components; чтение отдавало ленту меню под ней
+        menu = "<main><h1>Меню</h1>" + "<p>Пицца строка</p>" * 50 + "</main>"
+        page.set_content(
+            menu + "<div class='sc-1x2 eBIzCn' style='position:fixed;right:0;"
+            "top:0;width:420px;height:100%;background:#fff;z-index:5'><button>"
+            "закрыть</button><div><div>Пока тут пусто. Добавьте пиццу. Или "
+            "две!</div></div></div>")
+        check("29.10: шторка без роли и говорящих классов (сбоку) — читается "
+              "она", page.evaluate(ba._READ_TASK_JS).startswith("закрыть")
+              and "Пока тут пусто" in page.evaluate(ba._READ_TASK_JS))
+        page.set_content(
+            menu + "<div class='sc-9q' style='position:fixed;inset:0;"
+            "background:rgba(0,0,0,.4)'><div style='margin:120px auto;"
+            "width:500px;background:#fff'>Выберите адрес доставки. Улица, "
+            "дом</div></div>")
+        got = page.evaluate(ba._READ_TASK_JS)
+        check("29.10: окно в fixed-обёртке на весь экран (обёртка не "
+              "содержит main) — читается окно",
+              got.startswith("Выберите адрес") and "Пицца строка" not in got)
+        page.set_content(
+            "<header style='position:fixed;top:0;width:100%;height:60px'>"
+            "Додо Корзина</header>" + menu)
+        got = page.evaluate(ba._READ_TASK_JS)
+        check("29.10: закреплённая шапка (<30% экрана) — не слой, читается "
+              "main", got.startswith("Меню") and "Додо Корзина" not in got)
+        page.set_content(
+            "<div id=app style='position:fixed;inset:0;overflow:auto'>"
+            "<header>Шапка сайта</header>" + menu + "</div>")
+        got = page.evaluate(ba._READ_TASK_JS)
+        check("29.10: корень приложения fixed на весь экран с main внутри — "
+              "не слой, читается main",
+              got.startswith("Меню") and "Шапка сайта" not in got)
+        # 30.10: состояние поля — заполнено/неверно, без значения (номер,
+        # который сайт не принял, модель вписывала по кругу: поле без этих
+        # признаков считала пустым)
+        page.set_content(
+            "<div role=dialog><label for=p>Номер телефона</label>"
+            "<input id=p type=tel value='+7 ('><label for=q>Имя</label>"
+            "<input id=q><button disabled>Продолжить</button></div>")
+        items = parsed()
+        ph, nm = by_text(items, "Номер телефона"), by_text(items, "Имя")
+        check("30.10: маска «+7 (» и пустое поле — не заполнены, не неверны",
+              not ph["fv"] and not nm["fv"] and not ph["iv"]
+              and not nm["iv"])
+        page.set_content(
+            "<div role=dialog><label for=p>Номер телефона</label>"
+            "<input id=p type=tel value='+7 (111) 111-11-11' "
+            "aria-invalid=true aria-describedby=e><span id=e>Неверный номер "
+            "телефона</span><label for=m>Почта</label><input id=m type=email "
+            "value='vasya'><button disabled>Продолжить</button></div>")
+        items = parsed()
+        ph, em = by_text(items, "Номер телефона"), by_text(items, "Почта")
+        check("30.10: номер с aria-invalid — заполнен, неверен, текст ошибки "
+              "сайта", ph["fv"] and ph["iv"]
+              and ph["er"] == "Неверный номер телефона")
+        check("30.10: :invalid у заполненной почты — неверна, ошибка браузера "
+              "без самого значения",
+              em["fv"] and em["iv"] and em["er"] and "vasya" not in em["er"])
+        check("30.10: значения полей в снимок не попадают",
+              "111" not in json.dumps(items, ensure_ascii=False)
+              and "vasya" not in json.dumps(items, ensure_ascii=False))
+        # 30.10 (ozon, «Вид шоколада»): пункты фильтра с галочками в снимок
+        # не попадали — бюджет съедали сотни ссылок карточек, а label с
+        # checkbox собирались последними; модель жала заголовок по кругу
+        kinds = ["Белый", "Молочный", "Темный", "Горький", "Розовый"]
+        grid = ("<main style='margin-left:220px'>" + "".join(
+            f"<a href='/p/{i}' style='display:inline-block;width:56px;"
+            f"height:18px;font-size:9px'>Товар {i}</a>" for i in range(160))
+            + "</main>")
+
+        def aside(rows):
+            return ("<aside style='position:absolute;left:0;top:0;"
+                    "width:200px'><div class=hdr style='cursor:pointer' "
+                    "onclick='0'>Вид шоколада</div>" + rows + "</aside>")
+        page.set_content(aside("".join(
+            f"<label><input type=checkbox style='opacity:0;position:"
+            f"absolute'><span>{k}</span></label><br>" for k in kinds)) + grid)
+        items = parsed()
+        dark = [x for x in items if x["text"] == "Темный"]
+        check("30.10: фильтр с label+checkbox рядом с 160 ссылками — пункты "
+              "в снимке, с состоянием «не выбран»",
+              len(dark) == 1 and dark[0]["on"] == 0
+              and all(any(x["text"] == k for x in items) for k in kinds))
+        page.set_content(aside("".join(
+            f"<div class=opt><input type=checkbox style='display:none'>"
+            f"<i class=box></i><span>{k}</span></div>" for k in kinds))
+            + grid)
+        items = parsed()
+        dark = [x for x in items if x["text"] == "Темный"]
+        check("30.10: свой чекбокс сайта (input спрятан, без label) — строка "
+              "пункта в снимке", len(dark) == 1)
+        r = click(dark[0], "Темный") if dark else "нет пункта"
+        check("30.10: клик по такой строке включает её галочку",
+              r == "clicked" and page.evaluate(
+                  "document.querySelectorAll('.opt input')[2].checked")
+              and not page.evaluate(
+                  "document.querySelectorAll('.opt input')[1].checked"))
+        page.set_content(aside("".join(
+            f"<div role=checkbox aria-checked=false tabindex=0 onclick=\""
+            f"this.setAttribute('aria-checked','true')\">{k}</div>"
+            for k in kinds)) + grid)
+        items = parsed()
+        dark = [x for x in items if x["text"] == "Темный"]
+        check("30.10: role=checkbox — в снимке", len(dark) == 1)
+        # find «Тёмный»: весь блок фильтра — pointer-обёртка короче 60
+        # символов; раньше целью find становился он, а не пункт
+        page.set_content(
+            "<div class=filter style='cursor:pointer'><div>Вид шоколада</div>"
+            + "".join(f"<label><input type=checkbox style='opacity:0;"
+                      f"position:absolute'><span>{k}</span></label>"
+                      for k in kinds) + "</div>")
+        got = json.loads(page.evaluate(ba._js_fill(
+            ba._GOAL_SNAPSHOT_JS, GOAL="Тёмный",
+            BASE=ba._mark_base(ba.GOAL_SNAPSHOT_MAX))) or "{}")
+        texts = [x.get("text") for x in got.get("items") or ()]
+        check("30.10: find «Тёмный» — пункт «Темный» (ё=е) и соседние "
+              "пункты, а не блок «Вид шоколада …»",
+              texts[:1] == ["Темный"] and "Горький" in texts
+              and not any(str(t).startswith("Вид шоколада Белый")
+                          for t in texts))
+        # Красная команда: клик без эффекта по кнопке карточки не трогает
+        # чужую галочку («В избранное») той же карточки
+        page.set_content(
+            "<div class=card>Шоколад горький с апельсином, 100 г — 120 ₽ "
+            "<button>В корзину</button><label><input type=checkbox id=fav>"
+            "В избранное</label></div>")
+        items = parsed()
+        r = click(by_text(items, "В корзину"), "В корзину")
+        check("30.10: «В корзину» без эффекта — галочка «В избранное» "
+              "карточки не тронута",
+              r != "clicked" and not page.evaluate(
+                  "document.getElementById('fav').checked"))
         # M7: страница корзины — весь состав с итогом, не последняя строка
         page.set_content(
             "<main class='cart-page'><h1>Корзина</h1><div class='cart-item'>"

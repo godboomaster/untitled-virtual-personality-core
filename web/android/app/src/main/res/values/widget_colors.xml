@@ -7,4 +7,9 @@
     <color name="widget_text">#121212</color>
     <color name="widget_text_dim">#565656</color>
     <color name="widget_text_muted">#8A8A8A</color>
+    <!-- Облачко с сообщением пользователя у «Живого портрета» — акцент веба (accent в web/src/index.css) -->
+    <color name="widget_user_bg">#404040</color>
+    <color name="widget_user_text">#F0F0F0</color>
+    <!-- Микрофон окна «Написать», пока слушает (тот же красный, что у сердечка) -->
+    <color name="input_mic_on">#E5484D</color>
 </resources>

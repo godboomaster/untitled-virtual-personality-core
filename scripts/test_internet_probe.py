@@ -196,14 +196,20 @@ def main():
             exc = self.exc
 
             class _C:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    pass
+
                 class chat:
                     class completions:
                         @staticmethod
-                        def create(**kw):
+                        async def create(**kw):
                             raise exc
             return _C()
 
-    saved_openai = rt.OpenAI
+    saved_openai = rt.AsyncOpenAI
     router = rt.ModelRouter.__new__(rt.ModelRouter)
     router._last_key_index = {}
     router.model_overrides = {}
@@ -212,17 +218,17 @@ def main():
     saved_suspect = rt.note_internet_suspect
     rt.note_internet_suspect = lambda: calls.append(1)
     try:
-        rt.OpenAI = _Boom(APIConnectionError(request=req))
+        rt.AsyncOpenAI = _Boom(APIConnectionError(request=req))
         router._call_with_keys_locked("p", cfg, [], 0.5, 10, 1.0, 5)
         n_net = len(calls)
-        rt.OpenAI = _Boom(ValueError("401"))
+        rt.AsyncOpenAI = _Boom(ValueError("401"))
         router._call_with_keys_locked("p", cfg, [], 0.5, 10, 1.0, 5)
         n_api = len(calls) - n_net
     except Exception as e:
         print(f"    роутер упал: {e!r}")
         n_net, n_api = -1, -1
     finally:
-        rt.OpenAI = saved_openai
+        rt.AsyncOpenAI = saved_openai
         rt.note_internet_suspect = saved_suspect
     check("роутер: сетевая ошибка облака → suspect; ошибка API — нет",
           n_net == 1 and n_api == 0)

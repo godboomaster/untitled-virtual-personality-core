@@ -4337,6 +4337,10 @@ def main():
           and "NOT executed immediately" in block and "DO HAVE access" in block)
     check("инструкция при confirm=False: маркер всё равно ждёт «да»",
           "NOT executed immediately" in make(cfg={**CFG, "confirm": False}).instruction_block())
+    check("instruction_block: найти/купить на сайте — агент, не маркер; "
+          "OPEN_URL — только главная",
+          "OPEN_URL opens only the site's main page" in block
+          and "do not offer to open a shop so as to find something" in block)
     check("инструкция: строка языка пользователя в конце (en / ru / неизвестен)",
           make().instruction_block("en").endswith(
               "write all free-text output in English.")
@@ -6879,6 +6883,14 @@ console.log(%s);
     check("intent prompt: перечисляет действия и none",
           '{"action":"none"}' in intent_prompt("тест")
           and '"action":"click"' in intent_prompt("тест"))
+    # 29.10: «найди мне горький шоколад с апельсином» модель разбора сочла
+    # не командой — ответила персона, на «да» открылась главная wildberries
+    _ip = intent_prompt("найди мне горький шоколад с апельсином")
+    check("intent prompt: «найди мне <товар>» — task (агент найдёт в "
+          "магазине и откроет), вопрос/рецепт/факты — none",
+          'find a product — "find me X" where X is goods' in _ip
+          and "the agent finds it in a shop and opens it" in _ip
+          and "facts, a recipe, an explanation" in _ip)
     check("intent prompt: язык пользователя — по фразе или явный",
           intent_prompt("нажми войти").endswith("output in Russian.")
           and intent_prompt("click sign in").endswith("output in English.")

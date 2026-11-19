@@ -130,6 +130,11 @@ export function patchRoomLayout(persona: string, patch: RoomLayoutPatch) {
   emit();
 }
 
+// Уже загруженная раскладка — без запроса (для кода вне React)
+export function peekRoomLayout(persona: string): RoomLayout | null {
+  return layouts.get(persona) ?? null;
+}
+
 // Раскладка персоны; null — ещё не загружена или бэкенд без /room/layout
 export function useRoomLayout(persona: string, enabled: boolean): RoomLayout | null {
   useEffect(() => {

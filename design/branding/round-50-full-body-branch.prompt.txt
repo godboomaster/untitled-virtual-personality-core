@@ -1,0 +1,14 @@
+Built-in image_gen. Edit target: 73-single-angular-branch-ghost.png. Botanical reference: references/winding-branch-style-01.png. One continuous branch spans the ghost's white body from jagged hem to neck, with a few angular leaves; the face and shell remain unchanged.
+
+Precise botanical redesign of the supplied ghost-and-cracked-egg logo.
+Input image 1: EDIT TARGET, current monochrome ghost with a small neck twig.
+Input image 2: user's botanical STYLE REFERENCE, especially the CENTRAL LONG ANGULAR BRANCH running vertically over the egg.
+
+USER CORRECTION: the branch should run across the GHOST'S ENTIRE BODY, not just around its neck.
+Replace the current neck-only twig arrangement with ONE CONTINUOUS BRANCH growing from near the ghost's LOWER JAGGED HEM upward over the WHITE CLOTH TORSO all the way to its NECK. It must visibly span essentially the FULL HEIGHT of the cloth body. The face and eyes remain clear and unchanged.
+Make the stem follow a gently irregular VERTICAL/DIAGONAL path with three or four unequal angular woody bends, similar to the central stem in reference 2. Start near the lower center/left of the white body and rise through its central area toward the neck, not merely along the outside outline. Slightly taper the stem as it rises, with one or two short pointed side shoots.
+Put THREE modest sharp faceted almond/rhombus-shaped leaves on alternating sides of the stem at different heights, echoing the reference. Use restrained black silhouettes with a simple white midrib where needed. Keep the branch clearly botanical rather than a tie, seam, lightning bolt or generic curving pattern. It may gently bend around the torso as it rises, but use one sparse main stem, no dense foliage, wreath, doubled vines, knots or huge loops.
+At the neck, let the stem finish in a short natural bend/continuation integrated with the existing collar region. Remove the big standalone horizontal leaf-and-twig accessory if it no longer connects naturally. Do not leave a completely separate collar branch: this should read as ONE plant extending through the whole body.
+
+ALL botanical marks remain INSIDE OR ON THE GHOST'S WHITE BODY, no new plants on the eggshell or around the composition. Preserve the exact face outline, eyes, body outer contour, neck connection, outline weights, jagged ghost hem, thin white separator, BOTH cracked shell pieces and their crack lines, scale, positions and white background.
+Strictly BLACK AND WHITE, no green/brown, shading, textures, body folds, text or additional elements.

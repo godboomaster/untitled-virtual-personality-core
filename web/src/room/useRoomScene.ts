@@ -13,7 +13,7 @@
    Документ-владелец (ownerDocument) управляет минутными часами, сигналами
    присутствия и паузой поллинга; PiP передаёт свой документ и keepAlive. */
 
-import { createElement, Fragment, useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { createElement, Fragment, useCallback, useEffect, useMemo } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import type { Persona, RoomActivity, RoomAvatarPreset } from '../mockData';
 import { useI18n, useMockData } from '../i18n';
@@ -27,6 +27,7 @@ import { useFocusSession } from './focusStore';
 import type { FocusApi } from './focusStore';
 import { useMinuteNow } from './roomHooks';
 import { useRoomLayout } from './roomLayoutStore';
+import { useSessionAvatar } from './sessionAvatar';
 import {
   defaultAvatarFor,
   displayPose,
@@ -44,24 +45,6 @@ import { useRoomItems } from './useRoomItems';
 import type { RoomItemsApi } from './useRoomItems';
 import { useRoomView } from './useRoomView';
 import type { RoomViewMode } from './useRoomView';
-
-// ── Аватар, собранный в этой сессии (офлайн — поверх мока) ──
-// Общий для раздела и PiP-окна: правка в конструкторе сразу видна в обоих
-
-const sessionAvatars = new Map<string, RoomAvatarPreset>();
-const avatarListeners = new Set<() => void>();
-
-export function setSessionAvatar(persona: string, preset: RoomAvatarPreset) {
-  sessionAvatars.set(persona, preset);
-  avatarListeners.forEach((l) => l());
-}
-
-function subscribeAvatars(cb: () => void) {
-  avatarListeners.add(cb);
-  return () => {
-    avatarListeners.delete(cb);
-  };
-}
 
 // ── Статус в заголовке вкладки (владелец: 'room' | 'pip') ──
 
@@ -211,6 +194,13 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   const energyPct = state ? Math.max(0, Math.min(100, Math.round(state.energy))) : null;
   const energy = energyPct != null ? `${energyPct}%` : '—';
   const mood = state?.mood.tag || '—';
+  // Знак и сила настроения — фигуре: в покое мелькают эмоции под настроение
+  const moodV = state?.mood?.valence;
+  const moodA = state?.mood?.arousal;
+  const moodVA = useMemo(
+    () => (typeof moodV === 'number' && typeof moodA === 'number' ? { valence: moodV, arousal: moodA } : null),
+    [moodV, moodA],
+  );
 
   // Лента «пока тебя не было»: недавние события офлайн-жизни (world/state)
   // независимо от consumed — после дневника/инициативы факты остаются
@@ -273,7 +263,7 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   }, [live, personaKey]);
 
   // Аватар: правка сессии → раскладка бэкенда → мок → дефолт
-  const sessionAvatar = useSyncExternalStore(subscribeAvatars, () => sessionAvatars.get(persona.id));
+  const sessionAvatar = useSessionAvatar(persona.id);
   const avatar = useMemo(
     () => sessionAvatar ?? layout?.avatar ?? cfg.avatar ?? defaultAvatarFor(persona.id),
     [sessionAvatar, layout?.avatar, cfg.avatar, persona.id],
@@ -323,8 +313,9 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
       nextPlan,
       onPoke,
       offline: dozing,
+      mood: moodVA,
     }),
-    [persona.id, persona.name, cfg, activity.spot, pose, statusLine, avatar, art, items, itemsReady, skinEnv.timeOfDay, weather, note, nextPlan, onPoke, dozing],
+    [persona.id, persona.name, cfg, activity.spot, pose, statusLine, avatar, art, items, itemsReady, skinEnv.timeOfDay, weather, note, nextPlan, onPoke, dozing, moodVA],
   );
 
   return {

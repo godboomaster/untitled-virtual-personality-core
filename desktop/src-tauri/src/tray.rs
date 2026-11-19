@@ -1,9 +1,11 @@
-//! Значок в трее: цвет — состояние бота, меню — основные действия,
+//! Белый логотип с чёрными деталями; на macOS — 24 pt. Состояние — в подсказке
+//! и панели. Меню — основные действия,
 //! «Слушать имя» (голосовая активация микрофоном панели, voice.rs) и
 //! «Портрет на рабочем столе» (portrait.rs).
 
 use crate::panel;
 use crate::portrait;
+use crate::robot::{Action, PowerState, Service, View as RobotView};
 use crate::state::AppState;
 use crate::supervisor::{Phase, Summary};
 use crate::texts::{t, Lang};
@@ -15,7 +17,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Manager, Wry};
 
 pub const TRAY_ID: &str = "main";
-const SIZE: u32 = 44;
+const SIZE: u32 = 48;
+const LOGO_RGBA: &[u8; (SIZE * SIZE * 4) as usize] = include_bytes!("../icons/tray-logo-24@2x.rgba");
+#[cfg(target_os = "macos")]
+const LOGICAL_SIZE: f64 = 24.0;
 
 pub struct Tray {
     icon: TrayIcon<Wry>,
@@ -25,6 +30,15 @@ pub struct Tray {
     /// Последнее от монитора бота и от слушателя — подсказка значка из обоих
     last: Mutex<(Option<Summary>, Option<VoiceSummary>)>,
     lang: Lang,
+    robot: Option<RobotItems>,
+}
+
+struct RobotItems {
+    status: MenuItem<Wry>,
+    enable: MenuItem<Wry>,
+    project: MenuItem<Wry>,
+    stop: MenuItem<Wry>,
+    poweroff: MenuItem<Wry>,
 }
 
 fn is_up(phase: Phase) -> bool {
@@ -40,24 +54,55 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
     let wake = CheckMenuItem::with_id(app, "wake", t(lang, "wake"), true, false, None::<&str>)?;
     let face = CheckMenuItem::with_id(app, "portrait", t(lang, "portrait"), true, false, None::<&str>)?;
     app.state::<AppState>().portrait.set_tray_item(face.clone());
+    // Портрет к курсору (нет на столе — показать); то же — горячая клавиша
+    let summon = item("portrait_summon", "portrait_summon")?;
     let quit = item("quit", "quit")?;
-    let menu = Menu::with_items(
-        app,
-        &[
+    let robot = if app.state::<AppState>().robot.is_some() {
+        Some(RobotItems {
+            status: MenuItem::with_id(app, "robot_status", t(lang, "robot_unknown"), false, None::<&str>)?,
+            enable: item("robot_enable", "robot_enable")?,
+            project: item("robot_project", "robot_project")?,
+            stop: item("robot_stop", "robot_stop")?,
+            poweroff: item("robot_poweroff", "robot_poweroff")?,
+        })
+    } else {
+        None
+    };
+    let menu = if let Some(robot) = &robot {
+        Menu::with_items(app, &[
+            &robot.status,
+            &PredefinedMenuItem::separator(app)?,
+            &robot.enable,
+            &robot.project,
+            &robot.stop,
+            &robot.poweroff,
+            &PredefinedMenuItem::separator(app)?,
             &open,
             &web,
             &PredefinedMenuItem::separator(app)?,
-            &toggle,
-            &restart,
-            &PredefinedMenuItem::separator(app)?,
-            &wake,
-            &face,
-            &PredefinedMenuItem::separator(app)?,
             &quit,
-        ],
-    )?;
+        ])?
+    } else {
+        Menu::with_items(
+            app,
+            &[
+                &open,
+                &web,
+                &PredefinedMenuItem::separator(app)?,
+                &toggle,
+                &restart,
+                &PredefinedMenuItem::separator(app)?,
+                &wake,
+                &face,
+                &summon,
+                &PredefinedMenuItem::separator(app)?,
+                &quit,
+            ],
+        )?
+    };
     let icon = TrayIconBuilder::with_id(TRAY_ID)
-        .icon(status_icon(Phase::Stopped, false))
+        .icon(logo_icon())
+        // Шаблон macOS перекрасил бы также глаза и заливку в один цвет.
         .icon_as_template(false)
         .tooltip("Virtual Persona")
         .menu(&menu)
@@ -79,6 +124,21 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
                 let _ = st.voice.set_enabled(!st.sup.wake_enabled());
             }
             "portrait" => portrait::toggle(app),
+            "portrait_summon" => portrait::summon(app),
+            "robot_enable" | "robot_project" | "robot_stop" | "robot_poweroff" => {
+                let st = app.state::<AppState>();
+                if let Some(robot) = &st.robot {
+                    let action = match ev.id().as_ref() {
+                        "robot_enable" => Action::Enable,
+                        "robot_project" => Action::Project,
+                        "robot_stop" => Action::Stop,
+                        _ => Action::Poweroff,
+                    };
+                    let _ = robot.run(action, st.sup.clone());
+                    // Прогресс и ошибки видны в панели, даже при запуске из меню.
+                    panel::show(app, None);
+                }
+            }
             "quit" => crate::commands::quit_app(app.clone()),
             _ => {}
         })
@@ -94,12 +154,18 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
             }
         })
         .build(app)?;
-    Ok(Tray { icon, toggle, restart, wake, last: Mutex::new((None, None)), lang })
+    configure_size(&icon, robot.is_some())?;
+    if robot.is_some() {
+        let _ = icon.set_title(Some("Pi"));
+        let _ = icon.set_tooltip(Some("Virtual Persona · Robot"));
+    }
+    Ok(Tray { icon, toggle, restart, wake, last: Mutex::new((None, None)), lang, robot })
 }
 
 impl Tray {
     pub fn refresh(&self, s: Summary) {
-        let _ = self.icon.set_icon(Some(status_icon(s.phase, s.responding)));
+        // RGBA-логотип сохраняет белую заливку и чёрные детали при смене
+        // состояния. Не пересоздаём изображение и не сбрасываем его размер.
         let _ = self.toggle.set_text(t(self.lang, if is_up(s.phase) { "stop" } else { "start" }));
         let _ = self.toggle.set_enabled(!s.busy);
         let _ = self.restart.set_enabled(!s.busy);
@@ -114,6 +180,9 @@ impl Tray {
     }
 
     fn update_tooltip(&self) {
+        if self.robot.is_some() {
+            return;
+        }
         let (s, v) = *self.last.lock().unwrap_or_else(|e| e.into_inner());
         let key = match s {
             Some(s) => match s.phase {
@@ -133,32 +202,110 @@ impl Tray {
         }
         let _ = self.icon.set_tooltip(Some(tip));
     }
+
+    pub fn refresh_robot(&self, view: RobotView) {
+        let Some(items) = &self.robot else { return };
+        let key = if view.busy {
+            "robot_busy"
+        } else if view.error.is_some() {
+            "robot_error"
+        } else if view.power_state == PowerState::Off {
+            "robot_power_off"
+        } else if view.power_state == PowerState::ShuttingDown {
+            "robot_power_shutting"
+        } else if view.shutdown_requested {
+            "robot_shutdown_requested"
+        } else if view.connected == Some(true) && view.ssh_error.is_some() {
+            "robot_connected_no_ssh"
+        } else if view.ssh_error.is_some() {
+            "robot_error"
+        } else if view.connected == Some(true) && view.service == Service::Active {
+            "robot_connected"
+        } else {
+            match view.service {
+                Service::Active => "robot_active",
+                Service::Inactive => "robot_inactive",
+                Service::Failed => "robot_failed",
+                Service::Unreachable => "robot_unreachable",
+                Service::Unknown => "robot_unknown",
+            }
+        };
+        let status = t(self.lang, key);
+        let _ = items.status.set_text(&status);
+        let enabled = !view.busy && !view.power_state.blocks_actions();
+        let _ = items.enable.set_enabled(enabled);
+        let _ = items.project.set_enabled(enabled);
+        let _ = items.stop.set_enabled(enabled);
+        let _ = items.poweroff.set_enabled(enabled);
+        let title = match view.power_state {
+            PowerState::Off => t(self.lang, "robot_title_off"),
+            PowerState::ShuttingDown => "Pi…".into(),
+            PowerState::Unknown => "Pi ?".into(),
+            PowerState::On => "Pi".into(),
+        };
+        let _ = self.icon.set_title(Some(title));
+        #[cfg(target_os = "macos")]
+        {
+            let off = view.power_state == PowerState::Off;
+            let _ = self.icon.with_inner_tray_icon(move |inner| {
+                let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+                let Some(item) = inner.ns_status_item() else { return };
+                let _ = mtm;
+                item.setLength(LOGICAL_SIZE + if off { 72.0 } else { 32.0 });
+            });
+        }
+        let detail = view.error.as_deref().or(view.ssh_error.as_deref()).unwrap_or(&status);
+        let _ = self.icon.set_tooltip(Some(format!("Virtual Persona · Robot — {detail}")));
+    }
 }
 
-/// Кольцо с точкой цвета состояния; остановлен — пустое серое кольцо.
-/// Рисуется кодом: цветной значок не зависит от темы строки меню
-fn status_icon(phase: Phase, responding: bool) -> Image<'static> {
-    let (rgb, filled) = match phase {
-        Phase::Running | Phase::External if responding => ([52, 199, 89], true),
-        Phase::Running | Phase::External | Phase::Starting | Phase::Stopping => ([255, 159, 10], true),
-        Phase::Crashed => ([255, 69, 58], true),
-        Phase::Stopped => ([142, 142, 147], false),
-    };
-    let n = SIZE as usize;
-    let c = (SIZE as f32 - 1.0) / 2.0;
-    let outer = SIZE as f32 * 0.45;
-    let inner = outer - SIZE as f32 * 0.11;
-    let dot = SIZE as f32 * 0.19;
-    let mut px = vec![0u8; n * n * 4];
-    for y in 0..n {
-        for x in 0..n {
-            let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt();
-            let ring = (outer + 0.5 - d).clamp(0.0, 1.0) * (d - inner + 0.5).clamp(0.0, 1.0);
-            let core = if filled { (dot + 0.5 - d).clamp(0.0, 1.0) } else { 0.0 };
-            let a = ring.max(core);
-            let i = (y * n + x) * 4;
-            px[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8]);
-        }
+/// Версия №118: белые призрак и скорлупа, чёрные глаза, обводка и трещины.
+/// Сохраняем исходные цвета и прозрачность PNG; 48 px для Retina 24 pt.
+fn logo_icon() -> Image<'static> {
+    Image::new_owned(LOGO_RGBA.to_vec(), SIZE, SIZE)
+}
+
+fn configure_size(icon: &TrayIcon<Wry>, robot_mode: bool) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    return icon.with_inner_tray_icon(move |inner| {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        let Some(item) = inner.ns_status_item() else { return };
+        let Some(button) = item.button(mtm) else { return };
+        let Some(image) = button.image() else { return };
+        image.setSize(objc2_foundation::NSSize::new(LOGICAL_SIZE, LOGICAL_SIZE));
+        button.setImage(Some(&image));
+        // В режиме робота оставляем место для подписи Pi возле логотипа.
+        item.setLength(LOGICAL_SIZE + if robot_mode { 32.0 } else { 8.0 });
+    });
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (icon, robot_mode);
+        Ok(())
     }
-    Image::new_owned(px, SIZE, SIZE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logo_has_retina_resolution_and_transparent_background() {
+        let icon = logo_icon();
+        assert_eq!((icon.width(), icon.height()), (48, 48));
+        assert_eq!(icon.rgba()[3], 0, "outside background must be transparent");
+        assert!(icon.rgba().chunks_exact(4).any(|p| p[3] == 255), "ink must remain visible");
+        assert!(icon.rgba().chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255), "retain antialiasing");
+    }
+
+    #[test]
+    fn logo_preserves_white_fill_and_black_eyes() {
+        let icon = logo_icon();
+        let pixel = |x: usize, y: usize| &icon.rgba()[(y * SIZE as usize + x) * 4..][..4];
+        for (x, y) in [(24, 12), (24, 40)] {
+            let p = pixel(x, y);
+            assert!(p[..3].iter().all(|c| *c > 240) && p[3] > 240, "face and shell must stay white");
+        }
+        let eye = pixel(21, 12);
+        assert!(eye[..3].iter().all(|c| *c < 32) && eye[3] > 240, "eyes must stay opaque black");
+    }
 }

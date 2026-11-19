@@ -41,6 +41,10 @@
         <receiver
             android:name=".ReminderReceiver"
             android:exported="false" />
+        <!-- Уведомление смахнули — пересчитать сводку общей стопки (только свои PendingIntent) -->
+        <receiver
+            android:name=".NotifyStack"
+            android:exported="false" />
         <!-- Перезагрузка/обновление — будильники заново; события только системные -->
         <receiver
             android:name=".ReminderBootReceiver"
@@ -60,6 +64,13 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps a connection to a self-hosted server owned by the user on the local network and shows messages it sends (reminders, persona messages) while the app is closed; no push service is used" />
         </service>
+
+        <!-- «Сервисы» без компьютера (PhoneServices): ленты, GitHub, почта —
+             проверка раз в 15–30 минут; запускает только система -->
+        <service
+            android:name=".PhoneServicesJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <!-- Виджет «Инициатива»: сообщения, которые персоны пишут сами.
              Обновляет его фоновая служба (BackgroundInboxService), список —
@@ -119,6 +130,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Окно «Написать» виджета «Живой портрет»: поле поверх рабочего
+             стола. Открывает только виджет (своим PendingIntent), в «Недавних»
+             его нет -->
+        <activity
+            android:name=".PortraitInputActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/PortraitInputTheme"
+            android:windowSoftInputMode="stateAlwaysVisible|adjustResize" />
+
         <!-- Голосовая активация по имени: микрофон, пока экран выключен.
              Запускает только приложение (Android 14+ не даёт из фона) -->
         <service
@@ -143,6 +165,49 @@
         <service
             android:name=".PhoneGemmaService"
             android:exported="true" />
+        <!-- Управление экраном телефона (PhoneControlService): служба спец.
+             возможностей. Включает её только человек в настройках телефона;
+             пока включена — устройство ядра, команды screen.* (PhoneControlLink).
+             BIND_ACCESSIBILITY_SERVICE — привязаться к ней может только система -->
+        <service
+            android:name=".PhoneControlService"
+            android:exported="true"
+            android:label="@string/phone_control_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_control_service" />
+        </service>
+        <!-- Аватар поверх приложений (AvatarOverlayService): голова персоны в
+             маленьком окне над любым приложением; право «Поверх других
+             приложений» даёт человек сам. Служба переднего плана — только
+             чтобы окно не убили в фоне -->
+        <service
+            android:name=".AvatarOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows the user's chosen persona avatar in a small floating window over other apps (user-enabled overlay companion); no data is collected" />
+        </service>
+        <!-- «Куда вы нажимаете» (AvatarGazeService): служба спец. возможностей
+             только для взгляда аватара — середина нажатого элемента на экране.
+             BIND_ACCESSIBILITY_SERVICE — привязаться может только система -->
+        <service
+            android:name=".AvatarGazeService"
+            android:exported="true"
+            android:label="@string/avatar_gaze_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/avatar_gaze_service" />
+        </service>
         <!-- Gemma на телефоне (LiteRT-LM) на видеоядре; нет библиотек — на процессоре -->
         <uses-native-library android:name="libvndksupport.so" android:required="false" />
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
@@ -196,6 +261,11 @@
         </intent>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <!-- Управление экраном (PhoneScreen): узнать рабочий стол среди окон -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
         </intent>
         <!-- Команды телефону: «Часы» (будильник, таймер, список) и «открой X» —
              приложения с иконкой на рабочем столе (не все пакеты) -->

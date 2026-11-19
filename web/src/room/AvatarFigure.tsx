@@ -1,13 +1,19 @@
-import { memo } from 'react';
+import { memo, useContext, useRef } from 'react';
 import type { RoomAvatarPreset } from '../mockData';
 import { useI18n } from '../i18n';
-import { accessoryOptions, avatarShades, eyeOptions } from './avatarOptions';
+import { HeadLookContext } from '../portrait/headLook';
+import { avatarTone } from './avatarOptions';
+import { AvatarEyes, EXPR, idlePool } from './avatarEyes';
+import { useIdleExpression } from '../portrait/motion';
+import { AvatarHeadShape, headLift } from './avatarHead';
+import { AvatarBodyLegs, AvatarBodyUpper, CLOTH_GRAY, bodyKindOf, bodyTopOf } from './avatarBody';
+import type { BodyColors, BodyPose } from './avatarBody';
 import type { AvatarSeat } from './avatarOptions';
 import { hashStr } from './roomModel';
 import type { RoomClientPose, RoomPose } from './roomTypes';
 
-/* SVG-фигура аватара: голова выбранной формы + глаза-глифы + аксессуар +
-   простое тело в позе. Моргание и дыхание — только CSS (index.css,
+/* SVG-фигура аватара: голова выбранной формы + глаза + аксессуар + тело
+   (вид и одежда — room/avatarBody) в позе. Моргание и дыхание — только CSS (index.css,
    .room-av-*): период и сдвиг моргания у каждого экземпляра свои (из хэша
    seed), поэтому две фигуры не моргают синхронно. Таймеров нет.
 
@@ -20,7 +26,11 @@ import type { RoomClientPose, RoomPose } from './roomTypes';
    зрителю. seat — на чём сидит: desk — на стуле за столом (стол рисует
    сцена, лист лежит на столешнице), chair — на сиденье без стола (кровать,
    фон пользователя), floor — по-турецки на полу, null — стоит.
-   dozing — дремлет (нет связи с ядром): глаза закрыты, над головой «z z». */
+   dozing — дремлет (нет связи с ядром): глаза закрыты, над головой «z z».
+
+   Скин со своей рисовкой (web/skins/<id>/avatar.tsx) рисует голову
+   (headOnly) и красит тело (figurePaint: заливка и подложка без размытия);
+   позы, сиденья, книга и лист — общие, отсюда. */
 
 export interface AvatarFigureProps {
   config: RoomAvatarPreset;
@@ -31,24 +41,28 @@ export interface AvatarFigureProps {
   seed?: string; // разводит фазы моргания (обычно id персоны)
   title?: string;
   dozing?: boolean;
+  /** Настроение (живое состояние): какие эмоции мелькают в покое */
+  mood?: { valence: number; arousal: number } | null;
 }
 
 // Светлая «бумага» для книги и листа — видна в обеих темах
 const PAPER = '#f1efe8';
 const INK = '#9a9a9a';
 
-function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAttention = null, seat: rawSeat, height = 132, seed = '', title, dozing = false }: AvatarFigureProps) {
+function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAttention = null, seat: rawSeat, height = 132, seed = '', title, dozing = false, mood = null }: AvatarFigureProps) {
   const { t } = useI18n();
+  // Эмоции глазами (room/avatarEyes): в покое изредка мелькают под настроение;
+  // дремлет (нет связи с ядром) — сонные; спит в кровати — закрыты
+  const svgRef = useRef<SVGSVGElement>(null);
+  const idle = useIdleExpression(svgRef, !dozing && rawPose !== 'sleep' && rawPose !== 'away', idlePool(mood));
+  // Рисовка скина (хук — до любого раннего выхода)
+  const look = useContext(HeadLookContext);
   // Старый вызов: pose='with_you'/'glance' без тела — стоя
   const legacyCue = rawPose === 'with_you' || rawPose === 'glance' ? rawPose : null;
   const pose: RoomPose = legacyCue ? 'stand' : (rawPose as RoomPose);
   const attention = rawAttention ?? legacyCue;
   if (pose === 'away') return null;
-  const shade = avatarShades[config.shade] ?? avatarShades[1];
-  // На светлых оттенках глаза тёмные, на тёмных — светлые
-  const eyeColor = config.shade >= 2 ? '#1c1c1c' : '#eae8e1';
-  const stroke = config.shade >= 2 ? '#5a5a5a' : '#8f8f8f';
-  const accessory = accessoryOptions[config.accessory] ?? 'none';
+  const { shade, eyeColor, stroke } = avatarTone(config);
   const k = height / 100;
   const h = hashStr(seed || 'avatar');
   const blink = {
@@ -75,48 +89,60 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
     : pose === 'write' ? 'translate(2 3)'
     : pose === 'look' ? 'translate(4 -3)'
     : undefined;
-  // Наклон головы вокруг шеи
+  // Наклон головы вокруг «шеи» — середины зазора над туловищем (y=55)
   const headTilt =
-    attention === 'glance' ? 'rotate(5 32 54)'
-    : attention === 'with_you' ? 'rotate(-3 32 54)'
-    : dozing ? 'rotate(7 32 54)'
-    : pose === 'look' ? 'rotate(8 32 54)'
-    : pose === 'write' || pose === 'read' ? 'rotate(-4 32 54)'
+    attention === 'glance' ? 'rotate(5 32 52)'
+    : attention === 'with_you' ? 'rotate(-3 32 52)'
+    : dozing ? 'rotate(7 32 52)'
+    : pose === 'look' ? 'rotate(8 32 52)'
+    : pose === 'write' || pose === 'read' ? 'rotate(-4 32 52)'
     : undefined;
+  // Тело и одежда; голова целиком (форма, аксессуар, лицо) — над туловищем
+  // с зазором (у чиби туловище ниже — и голова ниже)
+  const bodyKind = bodyKindOf(config);
+  const lift = headLift(config.head, bodyTopOf(bodyKind));
 
-  const headShape = (
-    <>
-      {accessory === 'antenna' && (
-        <>
-          <line x1="32" y1="14" x2="32" y2="6" stroke={stroke} strokeWidth="2" />
-          <circle cx="32" cy="4.5" r="2.5" fill="var(--accent)" />
-        </>
-      )}
-      {accessory === 'ears' && (
-        <>
-          <rect x="13" y="9" width="7" height="7" fill={shade} stroke={stroke} strokeWidth="1.5" />
-          <rect x="44" y="9" width="7" height="7" fill={shade} stroke={stroke} strokeWidth="1.5" />
-        </>
-      )}
-      {accessory === 'halo' && (
-        <ellipse cx="32" cy="7" rx="11" ry="3" fill="none" stroke="var(--accent)" strokeWidth="1.5" />
-      )}
-      {config.head === 'circle' && <circle cx="32" cy="34" r="20" fill={shade} stroke={stroke} strokeWidth="1.5" />}
-      {config.head === 'square' && <rect x="12" y="14" width="40" height="40" fill={shade} stroke={stroke} strokeWidth="1.5" />}
-      {config.head === 'hex' && (
-        <polygon points="53,34 42.5,52.2 21.5,52.2 11,34 21.5,15.8 42.5,15.8" fill={shade} stroke={stroke} strokeWidth="1.5" />
-      )}
-      {config.head === 'diamond' && (
-        <polygon points="32,12 52,34 32,56 12,34" fill={shade} stroke={stroke} strokeWidth="1.5" />
-      )}
-    </>
-  );
+  // Рисовка скина: голова от скина, тело его краской; без скина — стандартные
+  const paint = look?.paint?.(config, look.scheme);
+  const bodyFill = paint?.fill ?? shade;
+  const bodyStroke = paint ? (paint.stroke ?? 'none') : stroke;
+  // Цвета тела: корпус — оттенок или краска скина (с подложкой), ткань — серая или скина
+  const bodyColors: BodyColors = {
+    shell: bodyFill,
+    line: bodyStroke,
+    eye: eyeColor,
+    accent: 'var(--accent)',
+    cloth: { ...CLOTH_GRAY, ...paint?.cloth },
+    back: paint?.back,
+    shift: paint?.shift,
+  };
+  const SkinHead = look?.draw;
+  const skinHead = (closed: boolean, extra: { faceTransform?: string; blinkEyes?: boolean; smile?: boolean } = {}) =>
+    SkinHead && look ? (
+      <SkinHead
+        preset={config}
+        scheme={look.scheme}
+        closed={closed}
+        mouth={0}
+        smile={extra.smile}
+        headOnly
+        layers={{
+          head: {},
+          accessory: {},
+          face: extra.faceTransform ? { transform: extra.faceTransform } : {},
+          eyes: extra.blinkEyes ? { className: 'room-av-eyes', style: blink } : undefined,
+        }}
+      />
+    ) : null;
+
+  const headShape = <AvatarHeadShape config={config} />;
 
   if (sleeping) {
     // Лёжа в кровати: голова на подушке (левый край), тело под одеялом,
     // одеяло свисает на лицевую сторону матраса; y=40 — верх матраса
     return (
       <svg
+        ref={svgRef}
         width={104 * k}
         height={52 * k}
         viewBox="0 0 104 52"
@@ -125,12 +151,14 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
         className="room-av room-av--sleep"
       >
         <g transform="translate(15 27) rotate(-22) scale(0.6) translate(-32 -34)">
-          {headShape}
-          {/* Закрытые глаза */}
-          <g fill="none" stroke={eyeColor} strokeWidth="2" strokeLinecap="round">
-            <path d="M22,37 Q25.5,40.5 29,37" />
-            <path d="M35,37 Q38.5,40.5 42,37" />
-          </g>
+          {SkinHead ? (
+            skinHead(true)
+          ) : (
+            <>
+              {headShape}
+              <AvatarEyes kind={config.eyes} closed color={eyeColor} shell={shade} />
+            </>
+          )}
         </g>
         <g className="room-av-breath" style={breath}>
           <path
@@ -153,54 +181,57 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
     );
   }
 
-  const head = (
-    <g transform={headTilt} className={attention === 'glance' ? 'room-av-head room-av-head--glance' : 'room-av-head'}>
-      {headShape}
-      {dozing ? (
-        <>
-          <g fill="none" stroke={eyeColor} strokeWidth="2" strokeLinecap="round">
-            <path d="M22,37 Q25.5,40.5 29,37" />
-            <path d="M35,37 Q38.5,40.5 42,37" />
-          </g>
-          <g fill="var(--text-muted)" fontFamily="'JetBrains Mono', monospace">
-            <text x="47" y="12" className="room-av-z" fontSize="9">z</text>
-            <text x="54" y="5" className="room-av-z room-av-z--2" fontSize="7">z</text>
-          </g>
-        </>
-      ) : (
-        <g transform={eyeShift}>
-          <g className="room-av-eyes" style={blink}>
-            <text x="32" y="40" textAnchor="middle" fontSize="9" fill={eyeColor} fontFamily="'JetBrains Mono', monospace">
-              {eyeOptions[config.eyes] ?? eyeOptions[0]}
-            </text>
-          </g>
-        </g>
-      )}
-      {attention === 'with_you' && (
-        <path d="M28,45 Q32,48 36,45" fill="none" stroke={eyeColor} strokeWidth="1.2" strokeLinecap="round" />
-      )}
+  // «z z» над головой, пока дремлет
+  const zzz = dozing && (
+    <g fill="var(--text-muted)" fontFamily="'JetBrains Mono', monospace">
+      <text x="47" y="12" className="room-av-z" fontSize="9">z</text>
+      <text x="54" y="5" className="room-av-z room-av-z--2" fontSize="7">z</text>
     </g>
   );
 
-  // Руки (поворот вокруг плеча; «+» у левой и «−» у правой — к центру):
-  // читает — обе к книге; за столом — предплечья на столешнице
-  const armLen = atDesk ? 13 : seat ? 15 : 19;
-  const armL =
-    pose === 'read' ? 'rotate(-28 17.5 57)'
-    : atDesk ? 'rotate(-16 17.5 57)'
-    : seat ? 'rotate(-10 17.5 57)'
-    : 'rotate(6 17.5 57)';
+  const head = (
+    <g transform={headTilt} className={attention === 'glance' ? 'room-av-head room-av-head--glance' : 'room-av-head'}>
+      <g transform={lift ? `translate(0 ${lift})` : undefined}>
+        {SkinHead ? (
+          skinHead(dozing, { faceTransform: eyeShift, blinkEyes: !dozing, smile: attention === 'with_you' })
+        ) : (
+          <>
+            {headShape}
+            {dozing ? (
+              <AvatarEyes kind={EXPR.sleepy} color={eyeColor} shell={shade} />
+            ) : (
+              <g transform={eyeShift}>
+                <g className="room-av-eyes" style={blink}>
+                  <AvatarEyes kind={idle ?? config.eyes} color={eyeColor} shell={shade} />
+                </g>
+              </g>
+            )}
+            {attention === 'with_you' && (
+              <path d="M28,45 Q32,48 36,45" fill="none" stroke={eyeColor} strokeWidth="1.2" strokeLinecap="round" />
+            )}
+          </>
+        )}
+        {zzz}
+      </g>
+    </g>
+  );
+
+  // Руки (поворот вокруг плеча, °; «+» у левой и «−» у правой — к центру):
+  // читает — обе к книге; за столом — предплечья на столешнице (короче)
+  const armL = pose === 'read' ? -28 : atDesk ? -16 : seat ? -10 : 6;
   const armR =
-    pose === 'read' ? 'rotate(28 46.5 57)'
-    : pose === 'write' ? (atDesk ? 'rotate(10 46.5 57)' : 'rotate(34 46.5 57)')
-    : atDesk ? 'rotate(16 46.5 57)'
-    : seat ? 'rotate(10 46.5 57)'
-    : attention === 'with_you' ? 'rotate(-14 46.5 57)'
-    : 'rotate(-6 46.5 57)';
+    pose === 'read' ? 28
+    : pose === 'write' ? (atDesk ? 10 : 34)
+    : atDesk ? 16
+    : seat ? 10
+    : attention === 'with_you' ? -14
+    : -6;
+  const bodyPose: BodyPose = { angles: [armL, armR], armFrac: atDesk ? 13 / 19 : seat ? 15 / 19 : 1, seat, dy };
 
   // Раскрытая книга на уровне груди: обложка акцентом, светлые страницы
+  // (у чиби грудь ниже)
   const book = pose === 'read' && (
-    <g>
+    <g transform={bodyKind === 'chibi' ? 'translate(0 7)' : undefined}>
       <rect x="17" y="63" width="30" height="17" fill="var(--accent)" />
       <rect x="18.5" y="64" width="13" height="14.5" fill={PAPER} stroke={INK} strokeWidth="0.6" />
       <rect x="32.5" y="64" width="13" height="14.5" fill={PAPER} stroke={INK} strokeWidth="0.6" />
@@ -217,35 +248,15 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
   const upper = (
     <g transform={dy ? `translate(0 ${dy})` : undefined}>
       <g className="room-av-breath" style={breath}>
-        <path d="M23,55 L41,55 L44,78 L20,78 Z" fill={shade} stroke={stroke} strokeWidth="1.5" />
-        <rect x="15" y="57" width="5" height={armLen} fill={shade} stroke={stroke} strokeWidth="1.2" transform={armL} />
-        <rect x="44" y="57" width="5" height={armLen} fill={shade} stroke={stroke} strokeWidth="1.2" transform={armR} />
+        <AvatarBodyUpper kind={bodyKind} pose={bodyPose} c={bodyColors} />
         {head}
         {book}
       </g>
     </g>
   );
 
-  const legs =
-    seat === 'floor' ? (
-      // По-турецки: сложенные ноги — широкий низкий блок
-      <>
-        <rect x="12" y="88" width="40" height="9" rx="3" fill={shade} stroke={stroke} strokeWidth="1.2" />
-        <line x1="32" y1="89" x2="32" y2="96" stroke={stroke} strokeWidth="1" />
-      </>
-    ) : seat ? (
-      // На стуле: бёдра к зрителю (короткий широкий блок) и голени
-      <>
-        <rect x="23" y="89" width="6" height="8" fill={shade} stroke={stroke} strokeWidth="1.2" />
-        <rect x="35" y="89" width="6" height="8" fill={shade} stroke={stroke} strokeWidth="1.2" />
-        <rect x="19" y="84" width="26" height="6" fill={shade} stroke={stroke} strokeWidth="1.2" />
-      </>
-    ) : (
-      <>
-        <rect x="23" y="78" width="7" height="19" fill={shade} stroke={stroke} strokeWidth="1.2" />
-        <rect x="34" y="78" width="7" height="19" fill={shade} stroke={stroke} strokeWidth="1.2" />
-      </>
-    );
+  // Ноги по сиденью (стоя, на стуле, на полу) — со штанинами и обувью одежды
+  const legs = <AvatarBodyLegs kind={bodyKind} pose={bodyPose} c={bodyColors} />;
 
   // Лист и ручка: за столом — на столешнице (её верх — y≈76.5 при точке
   // места стола), иначе — на коленях
@@ -266,6 +277,7 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
 
   return (
     <svg
+      ref={svgRef}
       width={64 * k}
       height={100 * k}
       viewBox="0 0 64 100"

@@ -14,6 +14,8 @@ pub struct AppState {
     pub voice: Voice,
     /// Портрет на рабочем столе: чей, где, какого размера (portrait.rs)
     pub portrait: Portrait,
+    /// Только при явном запуске панели с --robot.
+    pub robot: Option<crate::robot::Robot>,
     pub sys: Arc<Mutex<sysinfo::System>>,
     /// Когда панель спряталась (потеря фокуса) — см. panel::toggle
     pub hidden_at: Arc<Mutex<Option<Instant>>>,

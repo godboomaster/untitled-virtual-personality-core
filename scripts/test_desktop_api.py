@@ -109,14 +109,16 @@ def main():
                 check("сигнал от чужой страницы не ушёл", m_signal.call_count == 1)
 
                 server_mod._api_token = "secret-token"
+                # Из сети (с этой машины токен не нужен)
+                lan = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
                 for method, path in (("get", "/api/system/status"),
                                      ("post", "/api/system/shutdown"),
                                      ("post", "/api/browser/rescue"),
                                      ("post", "/api/browser/rescue/finish")):
-                    r = getattr(client, method)(path)
+                    r = getattr(lan, method)(path)
                     check(f"{method.upper()} {path}: без токена 401", r.status_code == 401)
-                r = client.get("/api/system/status",
-                               headers={"Authorization": "Bearer secret-token"})
+                r = lan.get("/api/system/status",
+                            headers={"Authorization": "Bearer secret-token"})
                 check("с токеном — 200", r.status_code == 200)
                 r = client.get("/api/health")
                 check("/api/health открыт и с токеном", r.status_code == 200)

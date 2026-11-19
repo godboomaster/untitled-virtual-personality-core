@@ -1,0 +1,11 @@
+Built-in image_gen. Edit target: 92-angular-woven-collar-square-logo.png. Output: 94-subtle-flowing-collar-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: very subtle local refinement of the existing square ghost logo.
+Input image 1: the edit target, 92-angular-woven-collar-square-logo.png.
+Primary request: refine ONLY the two small places where the lower-left and lower-right HEAD OUTLINE meet the upper edge of the leafy collar. Make those lines feel like a single natural drawing with two tiny erased interruptions.
+Keep the original delicate, tapered, angular collar exactly as close to the input as possible. At each of the two head-to-collar joins, adjust the end of the head curve and the nearby collar edge just enough that their trajectories and widths visually continue through the gap. Let the curve gently turn into the collar over a very short distance. Leave one fine, discreet white erased slit at each join, only about 4–5 px wide at the 1254 px image scale. The geometry before and after each slit should suggest the same uninterrupted contour beneath it. Keep the transition graceful and light.
+The white cuts should be subtle slanted interruptions in flowing lines. Avoid chunky square-ended blocks, heavy connector pieces, steps, stubs, mechanical joints, a thick neck brace or new elbow-shaped segments. Do NOT add cuts to the torso sides. Preserve the existing collar-to-body and leaf attachments from this input; do not break them into separate sections.
+Preserve the collar's original shallow V silhouette, its long slim white opening on the RIGHT and triangular white opening on the LEFT, and both outlined leaves and white central veins. Do not make the collar taller or heavier.
+Everything else is locked: same head shape beyond the tiny join areas, solid-black short narrow oval eyes, eye spacing, head position, body height and outline, jagged hem, white shell separator, lower cracked shell and cracks, stroke weights, overall logo placement, large scale, white background and square canvas.
+Output one complete crisp flat black-and-white square logo. No added symbols, rounded infinity, upper shell, text, colors, texture, shading, frame or new objects. This is a restrained cleanup of the original two head/collar joins, not a collar redesign.

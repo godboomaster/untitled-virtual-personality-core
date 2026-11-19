@@ -6,6 +6,7 @@ import type { ReminderEntry, TodoEntry } from '../api';
 import { useApiOnline } from '../apiData';
 import FormModal from '../components/FormModal';
 import InfoButton from '../components/InfoButton';
+import Icon from '../components/icons';
 import Select from '../components/Select';
 import { alertDialog } from '../dialogStore';
 import { parseReminderWhen } from '../reminderWhen';
@@ -404,8 +405,12 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
                     <span className="switch-slider" />
                   </label>
                   <InfoButton helpKey="tasks.reminderSwitch" />
-                  <button className="btn btn--icon" title={t('common.edit')} onClick={() => openReminderModal(r)}>✎</button>
-                  <button className="btn btn--icon" title={t('common.delete')} onClick={() => deleteReminder(r)}>✕</button>
+                  <button className="btn btn--icon btn--square" title={t('common.edit')} aria-label={t('common.edit')} onClick={() => openReminderModal(r)}>
+                    <Icon name="pencil" size={16} />
+                  </button>
+                  <button className="btn btn--icon btn--square" title={t('common.delete')} aria-label={t('common.delete')} onClick={() => deleteReminder(r)}>
+                    <Icon name="trash" size={16} />
+                  </button>
                 </div>
               </li>
             ))}
@@ -431,8 +436,12 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
                   <input type="checkbox" checked={todo.done} onChange={() => toggleTodo(todo)} />
                   <span className={todo.done ? 'todo-text todo-text--done' : 'todo-text'}>{todo.text}</span>
                 </label>
-                <button className="btn btn--icon" title={t('common.edit')} onClick={() => openTodoModal(todo)}>✎</button>
-                <button className="btn btn--icon" title={t('common.delete')} onClick={() => deleteTodo(todo)}>✕</button>
+                <button className="btn btn--icon btn--square" title={t('common.edit')} aria-label={t('common.edit')} onClick={() => openTodoModal(todo)}>
+                  <Icon name="pencil" size={16} />
+                </button>
+                <button className="btn btn--icon btn--square" title={t('common.delete')} aria-label={t('common.delete')} onClick={() => deleteTodo(todo)}>
+                  <Icon name="trash" size={16} />
+                </button>
               </li>
             ))}
           </ul>

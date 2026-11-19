@@ -771,6 +771,10 @@ def _apply_life_live(persona: str, bot, life_cfg) -> None:
         except Exception as e:
             logger.warning(f"[{persona}] Living persona не создана: {e}")
             return
+        # Метка реплик пользователя — как в BotInstance.__init__ (жизнь
+        # тикает только недавно активным чатам)
+        if hasattr(bot, "_last_user_message_time"):
+            bot.living.get_last_user_activity = bot._last_user_message_time
         # Связка с proactive — как в setup_proactive (сигнал инициативы
         # и источники чатов), чтобы жизнь умела писать первой
         if bot.proactive is not None:
@@ -1251,10 +1255,86 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
             _apply_computer_control_live(bot, new_f.get("computer_control"))
         _apply_llm_to_bot(persona, data.get("llm") or {})
 
+    previous = old_file if isinstance(old_file, dict) else {}
+    if any(previous.get(key) != data.get(key) for key in ("system_prompt", "voice_examples")):
+        _ensure_persona_flavor(persona, data)
+
     # Свежая заморозка рушит настроение — как при заморозке из формы
     if mute_ruins_mood:
         _ruin_persona_mood(persona)
     return {"ok": True, "restart_required": restart_required}
+
+
+# Ключ верхнего уровня YAML и его блок: сама строка «key:» и строки ниже с
+# отступом (или пустые между ними)
+def _top_key_span(lines: list[str], key: str) -> tuple[int, int] | None:
+    head = re.compile(rf"^{re.escape(key)}[ \t]*:")
+    start = next((i for i, ln in enumerate(lines) if head.match(ln)), None)
+    if start is None:
+        return None
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
+        end += 1
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1  # пустые строки перед следующим ключом — его, не наши
+    return start, end
+
+
+def _set_top_key_text(raw: str, data: dict, key: str, value: str | None) -> str:
+    """YAML с другим значением ключа верхнего уровня (None — без ключа): правка
+    одного блока, комментарии и вид остального файла остаются. Правка дала
+    не тот документ (необычная разметка) — весь файл заново, без комментариев."""
+    want = dict(data)
+    if value is None:
+        want.pop(key, None)
+    else:
+        want[key] = value
+    block = "" if value is None else _dump_persona_yaml({key: value})
+    lines = raw.splitlines(keepends=True)
+    span = _top_key_span(lines, key)
+    if span is not None:
+        start, end = span
+        # Убранный ключ между пустыми строками — одну из них тоже
+        if value is None and start > 0 and not lines[start - 1].strip() and end < len(lines) and not lines[end].strip():
+            end += 1
+        text = "".join(lines[:start]) + block + "".join(lines[end:])
+    elif value is None:
+        text = raw
+    else:
+        text = raw + ("" if not raw or raw.endswith("\n") else "\n") + block
+    try:
+        same = yaml.safe_load(text) == want
+    except yaml.YAMLError:
+        same = False
+    return text if same else _dump_persona_yaml(want)
+
+
+def set_persona_short_prompt(persona: str, text: str) -> dict | None:
+    """Своё краткое описание персоны для модели телефона — поле short_prompt
+    в YAML (app/features/short_prompt.py); пустое — убрать, составит модель.
+    Живой бот получает его сразу. None — персоны нет."""
+    path = _persona_yaml_path(persona)
+    if path is None or not path.is_file():
+        return None
+    value = (text or "").strip() or None
+    with yaml_write_lock:
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        if not isinstance(data, dict) or not data.get("system_prompt"):
+            return None
+        if (data.get("short_prompt") or None) != value:
+            atomic_write_text(_persona_write_path(persona), _set_top_key_text(raw, data, "short_prompt", value))
+    from app.api.runtime import registry
+    bot = registry._bots.get(persona)
+    persona_obj = getattr(bot, "persona", None)
+    if persona_obj is not None:
+        live = dict(getattr(persona_obj, "persona_data", None) or {})
+        if value is None:
+            live.pop("short_prompt", None)
+        else:
+            live["short_prompt"] = value
+        persona_obj.persona_data = live
+    return {"ok": True}
 
 
 # ── Создание / удаление / дублирование персон ──
@@ -1262,6 +1342,32 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
 # Допустимый id персоны = имя YAML-файла (фронт шлёт его же в API-вызовах,
 # поэтому файл обязан совпадать с полем id) — формат единый на весь модуль,
 # см. app/api/security.PERSONA_ID_RE.
+
+
+def _ensure_persona_flavor(persona_id: str, data: dict | None = None) -> None:
+    """Одно фоновое задание банка при создании и правке характера/режимов."""
+    try:
+        if data is None:
+            path = _persona_yaml_path(persona_id)
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) if path else {}
+        if not isinstance(data, dict) or not data.get("system_prompt"):
+            return
+        from app.api.runtime import registry
+        from app.core.presence import web_context
+        from app.core import persona_modes
+        from app.features import flavor_text
+        from app.features.computer_control import config_enabled
+        bot = registry._bots.get(persona_id)
+        if bot is not None:
+            flavor_text.ensure_flavor_bank(bot)
+        else:
+            flavor_text.ensure_flavor_bank(
+                context=web_context(persona_id), system_prompt=str(data["system_prompt"]),
+                modes=persona_modes.load_modes(persona_id, _read_dirs()),
+                voice_examples=data.get("voice_examples"), llm=data.get("llm") or {},
+                include_cc=config_enabled((data.get("features") or {}).get("computer_control", False)))
+    except Exception as e:
+        logger.debug(f"[api] flavor-банк для {persona_id} не запущен: {e}")
 
 
 def create_persona(raw: str, memory: str | None = None) -> dict:
@@ -1314,19 +1420,11 @@ def create_persona(raw: str, memory: str | None = None) -> dict:
     if leftovers and memory == "keep":
         logger.info(f"[api] Персона {persona_id} подхватила оставшуюся память")
     logger.info(f"[api] Создана персона {persona_id}")
-    # Банк flavor-реплик для CC-команд: фоновая генерация
-    # сразу при создании персоны, если у неё включён computer_control.
+    # Банк ошибок (все персоны) и CC-реплик (если CC включён): одно
+    # фоновое задание сразу при создании, без загрузки памяти/эмбеддингов.
     # Контекст — веб-бота (api_<id>, как его создаёт registry): он и читает
     # банк. Telegram-бот (контекст <id>) соберёт свой при старте сам
-    try:
-        from app.features.computer_control import config_enabled as _cc_on
-        if _cc_on((data.get("features") or {}).get("computer_control", False)):
-            from app.core.presence import web_context
-            from app.features import flavor_text
-            flavor_text.ensure_flavor_bank(
-                context=web_context(persona_id), system_prompt=str(data["system_prompt"]))
-    except Exception as _fe:
-        logger.debug(f"[api] flavor-банк для {persona_id} не запущен: {_fe}")
+    _ensure_persona_flavor(persona_id, data)
     return {"ok": True, "persona": persona_id, "archived": [str(d) for _, d in archived]}
 
 
@@ -1454,8 +1552,23 @@ def duplicate_persona(persona: str) -> dict | None:
         escaped = new_name.replace("\\", "\\\\").replace('"', '\\"')
         out = _set_top_field(out, "name", f'name: "{escaped}"')
         atomic_write_text(dest, out)
+    _copy_lore(persona, new_id)
     logger.info(f"[api] Персона {persona} продублирована в {new_id}")
     return {"ok": True, "persona": new_id}
+
+
+def _copy_lore(persona: str, new_id: str) -> None:
+    """Копия персоны — с её лором: это часть характера, а не память диалога.
+    Копия без него молча забыла бы всю свою историю."""
+    from app.core import lore
+    src = lore.lore_dir(persona)
+    if not src.is_dir():
+        return
+    import shutil
+    try:
+        shutil.copytree(src, lore.lore_dir(new_id))
+    except OSError:
+        logger.exception(f"[api] Копия персоны {new_id}: лор не скопирован")
 
 
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -1510,8 +1623,8 @@ _SHARED_DATA_NAMES = {"tg", "default", "skins", "skin_gen", "settings_probe", "p
                       "personas"}
 
 # Файлы в папке персоны, которые не память: выводятся заново из YAML (банк
-# flavor-фраз пересобирается по хэшу system_prompt). Папка только с ними —
-# не повод спрашивать «подхватить память?»
+# flavor-фраз пересобирается по хэшу system_prompt). Ручные правки банка
+# уже данные пользователя: их, как память, сохраняем/архивируем при смене id.
 _DERIVED_FILES = {"flavor_bank.json"}
 
 
@@ -1556,7 +1669,17 @@ def _holds_memory(path: Path) -> bool:
     if not path.is_dir():
         return path.exists()
     try:
-        return any(p.name not in _DERIVED_FILES for p in path.iterdir())
+        for p in path.iterdir():
+            if p.name not in _DERIVED_FILES:
+                return True
+            if p.name == "flavor_bank.json":
+                try:
+                    bank = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(bank, dict) and bank.get("manual"):
+                        return True
+                except (OSError, ValueError):
+                    return True
+        return False
     except OSError:
         return True
 

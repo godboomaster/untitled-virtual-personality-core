@@ -1,0 +1,7 @@
+Built-in image_gen. Edit target: 45-smooth-ribbon-offset-ghost.png. Narrow only the white cloth body by approximately 20–25%, retaining head, collar, shell and white background.
+
+Precise local edit of the supplied ghost-and-cracked-egg logo. Make ONLY the white cloth BODY NARROWER.
+
+Reduce the cloth body's width by about 20–25%, especially through its middle and lower portion, while retaining its original height and centerline. Keep a modest downward flare, but make its two STRAIGHT sloping sides closer together so the ghost has a slimmer silhouette. Keep the smooth small outward transitions beginning directly from the bottom of the solid black neck ribbon, without white shoulders or gaps. Keep the body plain white with NO folds or internal lines.
+Do not scale the entire character: preserve the circular HEAD size, position and shape, both eyes, and the neck ribbon's width and height. Preserve both eggshell pieces, their positions, sizes, facets, cracks and outlines, and the white background. Only move the body side outlines inward. Let the narrowed lower body meet/disappear behind the existing lower shell rim naturally; retain the sharp angular shell boundary rather than introducing a rounded hem or floating gap.
+Preserve overall framing, line weight, colors, face and all other details. No new elements or text.

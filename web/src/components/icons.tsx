@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
    24×24 сетка, скруглённые концы — единый стиль вместо юникод-глифов) */
 
 export type IconName =
-  | 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'services' | 'settings' | 'voice' | 'dossier'
+  | 'start' | 'home' | 'chat' | 'room' | 'avatar' | 'personas' | 'skins' | 'services' | 'connection' | 'providers' | 'settings' | 'voice' | 'dossier'
   | 'fullscreen' | 'fullscreenExit' | 'popout'
   // Предметы инвентаря
   | 'book' | 'gem' | 'cup' | 'cards' | 'photo' | 'pencil' | 'frame' | 'disc' | 'cable'
@@ -12,12 +12,26 @@ export type IconName =
   | 'trash' | 'pin'
   // Действия карточки персоны (reset — сброс к встроенной версии)
   | 'copy' | 'snowflake' | 'camera' | 'close' | 'reset'
+  // Краткое описание персоны (досье): карточка с лицом и строками
+  | 'card'
   // Навигация по местам в комнате
   | 'chevronLeft' | 'chevronRight' | 'chevronDown'
   // Меню разделов на узком экране
-  | 'menu';
+  | 'menu'
+  // Слой виден (редактор кадров)
+  | 'eye'
+  // «Стоп» — остановить ответ персоны
+  | 'stop' | 'pause' | 'volume';
 
 const paths: Record<IconName, ReactNode> = {
+  pause: <path d="M8 5v14M16 5v14" />,
+  volume: <><path d="m11 4-6 5H2v6h3l6 5z" /><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" /></>,
+  eye: (
+    <>
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
   // Старт: кнопка «play» в круге
   start: (
     <>
@@ -45,6 +59,14 @@ const paths: Record<IconName, ReactNode> = {
       <polyline points="9 22 9 12 15 12 15 22" />
     </>
   ),
+  // Аватар: портрет в рамке — голова и плечи
+  avatar: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="12" cy="10" r="3.2" />
+      <path d="M6.5 21a5.5 5.5 0 0 1 11 0" />
+    </>
+  ),
   // Персоны: силуэт
   personas: (
     <>
@@ -69,7 +91,25 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </>
   ),
+  // Подключение: волны сети над точкой
+  connection: (
+    <>
+      <path d="M2 8.8a15 15 0 0 1 20 0" />
+      <path d="M5.5 12.6a10 10 0 0 1 13 0" />
+      <path d="M9 16.3a5 5 0 0 1 6 0" />
+      <circle cx="12" cy="20" r="1.1" fill="currentColor" stroke="none" />
+    </>
+  ),
   // Настройки: шестерёнка (контур с зубьями, не «солнце» из лучей)
+  // Провайдеры (телефон без ядра): звенья цепочки сверху вниз
+  providers: (
+    <>
+      <rect x="4" y="3" width="16" height="5" rx="1.5" />
+      <rect x="4" y="16" width="16" height="5" rx="1.5" />
+      <line x1="12" y1="8" x2="12" y2="16" />
+      <circle cx="12" cy="12" r="1.5" />
+    </>
+  ),
   settings: (
     <>
       <circle cx="12" cy="12" r="3" />
@@ -116,6 +156,16 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <rect x="3" y="5" width="18" height="14" rx="1.5" />
       <rect x="12" y="11" width="6" height="5" />
+    </>
+  ),
+  // Краткое описание: карточка персоны — голова с плечами и две строки текста
+  card: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <circle cx="8.5" cy="10.5" r="2" />
+      <path d="M5.5 16c.6-1.5 1.6-2.3 3-2.3s2.4.8 3 2.3" />
+      <line x1="14" y1="10" x2="18" y2="10" />
+      <line x1="14" y1="14" x2="17" y2="14" />
     </>
   ),
   // ===== Предметы инвентаря =====
@@ -232,6 +282,7 @@ const paths: Record<IconName, ReactNode> = {
       <line x1="4" y1="17" x2="20" y2="17" />
     </>
   ),
+  stop: <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />,
 };
 
 interface IconProps {

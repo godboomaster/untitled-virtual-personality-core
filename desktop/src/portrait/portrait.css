@@ -10,12 +10,20 @@ body,
   height: 100%;
   overflow: hidden;
   background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
-/* Голова — по середине низа окна; над ней место под облачко (--bubble-h) */
+/* Над головой место под облачко (--bubble-h), сбоку — под поле для
+   сообщений (--input-w): со стороны середины экрана, ряд с головой внизу
+   окна. --head — сторона головы, --bubble-max — ширина облачка (как в
+   PortraitOverlay.tsx: не уже 280 px и головы с запасом, не шире окна).
+   Анимации крупнее головы — окно шире и выше на запас (--pad-*, панель),
+   а фигура в кадрах уходит под пол — и ниже: всё прежнее стоит внутри
+   отступов, кадр выходит в запас, а не за окно */
 .portrait-overlay {
   position: fixed;
   inset: 0;
+  padding: var(--pad-t, 0px) var(--pad-r, 0px) var(--pad-b, 0px) var(--pad-l, 0px);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -23,13 +31,54 @@ body,
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --head: min(
+    calc(100vw - var(--input-w, 0px) - var(--pad-l, 0px) - var(--pad-r, 0px)),
+    calc(100vh - var(--bubble-h, 0px) - var(--pad-t, 0px) - var(--pad-b, 0px))
+  );
+  --bubble-max: min(calc(100vw - 8px), max(280px, calc(var(--head) + 40px)));
+}
+
+.portrait-row {
+  position: relative;
+  flex: none;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* Голова закреплена координатами панели; временные кнопки и поздняя
+   загрузка стороны чата не участвуют в её размещении. */
+.portrait-overlay--anchored .portrait-row {
+  position: absolute;
+  left: var(--head-x);
+  top: var(--head-y);
+  width: var(--head);
+  height: var(--head);
 }
 
 .portrait-head {
   position: relative;
   flex: none;
-  width: min(100vw, calc(100vh - var(--bubble-h, 0px)));
+  width: var(--head);
+}
+
+.portrait-player {
+  position: absolute;
+  bottom: 10px;
+  left: calc(100% + 12px);
+  z-index: 45;
+}
+
+.portrait-initiative-mark {
+  --initiative-badge-bg: var(--panel, #fff);
+  position: absolute;
+  z-index: 8;
+  bottom: calc(100% - 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 30%);
+  pointer-events: none;
 }
 
 .portrait-overlay .live-portrait {
@@ -101,25 +150,27 @@ body,
   100% { opacity: 0; transform: translateY(-4px); }
 }
 
-/* Реплика персоны: плоская карточка над головой, хвостик к голове */
+/* Реплика персоны: плоская карточка над головой, хвостик к голове. Место
+   по горизонтали (left) и хвостика (--tail-x) ставит страница: над
+   серединой головы, но в окне целиком */
 .portrait-bubble-area {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: var(--bubble-h, 0px);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
   pointer-events: none;
+  /* Голову задвинули за верх экрана — облачко опускается на неё: поверх */
+  z-index: 1;
 }
 
 .portrait-bubble {
-  position: relative;
+  position: absolute;
+  bottom: 8px;
+  left: 4px;
   box-sizing: border-box;
-  max-width: calc(100vw - 8px);
+  max-width: var(--bubble-max);
   width: max-content;
-  margin-bottom: 8px;
   padding: 7px 24px 7px 10px;
   font-size: 12.5px;
   line-height: 1.4;
@@ -135,7 +186,7 @@ body,
 .portrait-bubble::after {
   content: '';
   position: absolute;
-  left: 50%;
+  left: var(--tail-x, 50%);
   bottom: -5px;
   width: 8px;
   height: 8px;
@@ -152,6 +203,39 @@ body,
   -webkit-line-clamp: 4;
   overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+/* Слово ещё не сказано: место занимает (облачко не растёт), не видно */
+.portrait-word--hidden {
+  visibility: hidden;
+}
+
+/* Мерка части: те же шрифт и ширина текста, без обрезки по строкам */
+.portrait-bubble-measure {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Какая часть длинной реплики: под крестиком */
+.portrait-bubble-count {
+  position: absolute;
+  right: 5px;
+  bottom: 4px;
+  font-size: 10px;
+  line-height: 1;
+  color: #6b6b6b;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Служебное: не отправилось */
+.portrait-bubble--note {
+  color: #565656;
 }
 
 .portrait-bubble-close {
@@ -183,6 +267,503 @@ body,
 @keyframes portrait-bubble-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Кнопки ответа на вопрос в облачке (да/нет; список без места сбоку —
+   номерами): плоский ряд под текстом, текст — на строку короче */
+.portrait-bubble--answers .portrait-bubble-text {
+  -webkit-line-clamp: 3;
+}
+
+/* Варианты вопроса — стопкой сбоку: облачко не шире головы (колонка поля
+   — под стопку) */
+.portrait-bubble--beside {
+  max-width: calc(var(--head) - 8px);
+}
+
+.portrait-answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.portrait-answer {
+  min-width: 40px;
+  height: 22px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  color: #121212;
+  background: transparent;
+  border: 1px solid #c2c2c2;
+  border-radius: 3px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.portrait-answer:hover {
+  background: #e9e9e6;
+  border-color: #6b6b6b;
+}
+
+.portrait-answer:disabled {
+  color: #a0a0a0;
+  cursor: default;
+}
+
+/* Варианты ответа стопкой в колонке поля: плоские карточки цвета облачка,
+   номер и подпись до трёх строк (хвост — цена, адрес — последней, не режется); не влезли — листаются. Место ставит
+   страница (placeChoices) */
+.portrait-choices {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  cursor: auto;
+  animation: portrait-bubble-in 0.16s ease-out;
+}
+
+.portrait-choice {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  color: #121212;
+  background: #f4f4f2;
+  border: 1px solid #c2c2c2;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.portrait-choice:hover {
+  border-color: #6b6b6b;
+}
+
+.portrait-choice:disabled {
+  color: #a0a0a0;
+  cursor: default;
+}
+
+.portrait-choice-n {
+  flex: none;
+  color: #6b6b6b;
+  font-variant-numeric: tabular-nums;
+}
+
+.portrait-choice-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.portrait-choice-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* С хвостом (цена, адрес) — название в две строки, хвост третьей */
+.portrait-choice-text--short {
+  -webkit-line-clamp: 2;
+}
+
+.portrait-choice-tail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Ваше сообщение, пока персона его читает и думает: плоская карточка
+   другого тона, чем реплика персоны, сбоку от головы (хвостик — к ней) или,
+   без поля, над головой. Место ставит страница (placeAsk); мышь — насквозь */
+.portrait-ask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Выше мини-чата: места мало — облачко рисуется поверх, мышь сквозь него */
+  z-index: 3;
+  box-sizing: border-box;
+  max-width: var(--bubble-max);
+  padding: 6px 9px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #121212;
+  background: #e2e8f0;
+  border: 1px solid #b3bfcd;
+  border-radius: 4px;
+  pointer-events: none;
+  animation: portrait-bubble-in 0.16s ease-out;
+}
+
+.portrait-ask--top {
+  width: max-content;
+}
+
+.portrait-ask::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: inherit;
+  border: 0 solid #b3bfcd;
+  transform: rotate(45deg);
+}
+
+/* Слева от головы — хвостик справа, справа — слева, над головой — снизу */
+.portrait-ask--left::after {
+  top: var(--tail-y, 50%);
+  right: -5px;
+  margin-top: -4px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+
+.portrait-ask--right::after {
+  top: var(--tail-y, 50%);
+  left: -5px;
+  margin-top: -4px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+
+.portrait-ask--top::after {
+  left: var(--tail-x, 50%);
+  bottom: -5px;
+  margin-left: -4px;
+  border-right-width: 1px;
+  border-bottom-width: 1px;
+}
+
+.portrait-ask-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* Поле для сообщений сбоку от головы, у её низа — на уровне плеч: плоское
+   поле и квадратная кнопка */
+.portrait-input {
+  flex: none;
+  box-sizing: border-box;
+  width: var(--input-w, 0px);
+  margin-bottom: 10px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: auto;
+}
+
+.portrait-overlay--field-left .portrait-input {
+  order: -1;
+}
+
+/* Поле прячется — голова остаётся у своего края окна */
+.portrait-overlay--field-left .portrait-row {
+  justify-content: flex-end;
+}
+
+.portrait-overlay--field-right .portrait-row {
+  justify-content: flex-start;
+}
+
+/* Появляется при наведении — коротко, один раз */
+.portrait-input {
+  animation: portrait-field-in 0.12s ease-out;
+}
+
+@keyframes portrait-field-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.portrait-input input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: #121212;
+  background: #f4f4f2;
+  border: 1px solid #c2c2c2;
+  border-radius: 4px;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.portrait-input input::placeholder {
+  color: #7a7a7a;
+}
+
+.portrait-input input:focus {
+  border-color: #6b6b6b;
+}
+
+.portrait-input button {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  font-size: 13px;
+  color: #121212;
+  background: #f4f4f2;
+  border: 1px solid #c2c2c2;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.portrait-input button:disabled {
+  color: #a0a0a0;
+  cursor: default;
+}
+
+.portrait-input svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Док у поля: пока мини-чат свёрнут, на месте поля — только кнопка чата
+   (и микрофон рядом, если он есть). Клик разворачивает панель целиком:
+   поле, история, микрофон */
+.portrait-dock {
+  position: absolute;
+  left: 100%;
+  bottom: 0;
+  z-index: 40;
+  flex: none;
+  margin-bottom: 10px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: auto;
+  animation: portrait-field-in 0.12s ease-out;
+}
+
+.portrait-overlay--field-left .portrait-dock {
+  left: auto;
+  right: 100%;
+}
+
+.portrait-dock-chat {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  color: #121212;
+  background: #f4f4f2;
+  border: 1px solid #c2c2c2;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.portrait-dock-chat:hover {
+  border-color: #6b6b6b;
+}
+
+.portrait-dock-chat svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Микрофон в доке — квадратный, как кнопка чата */
+.portrait-dock .portrait-mic {
+  position: static;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+}
+
+/* Мини-чат у поля: кнопка в доке разворачивает внизу колонки отдельные
+   элементы — строку поля (микрофон в её конце), кнопку «показать историю»
+   над ней и саму историю пузырями. Общей карточки нет: невидимый контейнер
+   только держит их столбиком и ловит мышь (место ставит placeChat) */
+.portrait-chat {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: auto;
+}
+
+.portrait-chat-log {
+  flex: 1 1 auto;
+  min-height: 96px;
+  max-height: 360px; /* потолок истории мини-чата */
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  animation: portrait-bubble-in 0.16s ease-out;
+}
+
+.portrait-chat-empty {
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #7a7a7a;
+  text-align: center;
+  background: #f4f4f2;
+  border: 1px solid #c2c2c2;
+  border-radius: 4px;
+}
+
+.portrait-msg {
+  max-width: 88%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+}
+
+.portrait-msg--me {
+  align-self: flex-end;
+  color: #121212;
+  background: #e2e8f0;
+  border: 1px solid #b3bfcd;
+}
+
+.portrait-msg--persona {
+  align-self: flex-start;
+  color: #121212;
+  background: #ffffff;
+  border: 1px solid #c2c2c2;
+}
+
+/* Служебное (не отправилось) */
+.portrait-msg--note {
+  color: #565656;
+}
+
+.portrait-chat-tools {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+/* Поле — внутри панели, всей шириной; order из ряда у головы (order: -1
+   для поля слева) сюда не должен попадать — иначе поле прыгает над
+   кнопкой истории */
+.portrait-chat .portrait-input {
+  order: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Микрофон в конце строки поля мини-чата — квадратный, как «Отправить» */
+.portrait-chat .portrait-mic {
+  position: static;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+}
+
+/* «Показать историю» — над кнопкой микрофона, с ней в одну колонку;
+   «Свернуть чат» (крестик) — рядом слева, сворачивает всё обратно
+   в кнопку у поля */
+.portrait-chat-hist,
+.portrait-chat-fold {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  font-size: 13px;
+  color: #121212;
+  background: #f4f4f2;
+  border: 1px solid #c2c2c2;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.portrait-chat-hist:hover,
+.portrait-chat-fold:hover {
+  border-color: #6b6b6b;
+}
+
+.portrait-chat-hist svg,
+.portrait-chat-fold svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Варианты ответа на вопрос — в мини-чате, над кнопкой микрофона */
+.portrait-chat .portrait-choices {
+  position: static;
+  flex: none;
+  width: auto;
+  max-height: none;
+  overflow: visible;
+  animation: none;
 }
 
 /* Подсказка вместо портрета: плоская карточка внизу окна */
@@ -228,39 +809,287 @@ body,
     border-color: #3a3a3a;
   }
 
-  .portrait-bubble-close {
+  .portrait-ask {
+    color: #e8e8e8;
+    background: #1e2631;
+    border-color: #3b4757;
+  }
+
+  .portrait-ask::after {
+    border-color: #3b4757;
+  }
+
+  .portrait-bubble-close,
+  .portrait-bubble-count,
+  .portrait-bubble--note {
     color: #9a9a9a;
+  }
+
+  .portrait-input input,
+  .portrait-input button {
+    color: #e8e8e8;
+    background: #1c1c1c;
+    border-color: #3a3a3a;
+  }
+
+  .portrait-input input::placeholder {
+    color: #8a8a8a;
+  }
+
+  .portrait-input input:focus {
+    border-color: #8a8a8a;
+  }
+
+  .portrait-input button:disabled {
+    color: #5e5e5e;
+  }
+
+  .portrait-dock-chat {
+    color: #e8e8e8;
+    background: #1c1c1c;
+    border-color: #3a3a3a;
+  }
+
+  .portrait-dock-chat:hover,
+  .portrait-chat-hist:hover,
+  .portrait-chat-fold:hover {
+    border-color: #8a8a8a;
+  }
+
+  .portrait-chat-hist,
+  .portrait-chat-fold {
+    color: #e8e8e8;
+    background: #1c1c1c;
+    border-color: #3a3a3a;
   }
 
   .portrait-bubble-close:hover {
     color: #e8e8e8;
   }
 
+  .portrait-answer {
+    color: #e8e8e8;
+    border-color: #3a3a3a;
+  }
+
+  .portrait-answer:hover {
+    background: #262626;
+    border-color: #8a8a8a;
+  }
+
+  .portrait-answer:disabled,
+  .portrait-choice:disabled {
+    color: #5e5e5e;
+  }
+
+  .portrait-choice {
+    color: #e8e8e8;
+    background: #1c1c1c;
+    border-color: #3a3a3a;
+  }
+
+  .portrait-choice:hover {
+    border-color: #8a8a8a;
+  }
+
+  .portrait-choice-n {
+    color: #9a9a9a;
+  }
+
+  .portrait-chat-empty {
+    color: #8a8a8a;
+    background: #1c1c1c;
+    border-color: #3a3a3a;
+  }
+
+  .portrait-msg--me {
+    color: #e8e8e8;
+    background: #1e2631;
+    border-color: #3b4757;
+  }
+
+  .portrait-msg--persona {
+    color: #e8e8e8;
+    background: #262626;
+    border-color: #3a3a3a;
+  }
+
+  .portrait-msg--note {
+    color: #9a9a9a;
+  }
+
   .portrait-z {
     color: #9aa1ab;
   }
+
+  .portrait-focus {
+    background: #1e2631;
+    border-color: #3b4757;
+  }
+
+  .portrait-focus span {
+    background: #c9d1db;
+  }
+
+}
+
+/* Тело: своя анимация персоны вместо головы — кадр низом к низу головы,
+   по середине (left ставит страница), может быть выше и шире головы. Голова
+   на это время скрыта, но остаётся на месте (взгляд и моргание не сбиваются) */
+.portrait-anim {
+  position: absolute;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.portrait-head--anim .live-portrait {
+  visibility: hidden;
+}
+
+/* Своей анимации движения нет: падает и прыгает — голова показывает это
+   позой (без плавности: окно поверх всех окон); идёт или держат — голова
+   неподвижна, шаги — только свои (раздел «Аватар» → «Анимации») */
+
+/* Падает — вытянулась; в прыжке — поджалась */
+.portrait-head--stretch .live-portrait {
+  transform: scale(0.93, 1.08);
+}
+
+.portrait-head--tuck .live-portrait {
+  transform: scale(1.05, 0.94);
+}
+
+/* «Посиди со мной»: тонкая полоска под головой — сколько прошло */
+.portrait-focus {
+  position: absolute;
+  left: 22%;
+  right: 22%;
+  bottom: 2px;
+  height: 3px;
+  background: #e2e8f0;
+  border: 1px solid #b3bfcd;
+  border-radius: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.portrait-focus span {
+  display: block;
+  height: 100%;
+  background: #4b5563;
+}
+
+/* Разговор голосом: значок микрофона у низа головы, со стороны облачка с
+   вашей фразой. Плоский и неподвижный (окно поверх всех окон — анимация
+   стоила бы кадров всё время разговора); слышит фразу — тёмный */
+.portrait-mic {
+  position: absolute;
+  bottom: 6px;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: #121212;
+  background: #e2e8f0;
+  border: 1px solid #b3bfcd;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.portrait-mic--left {
+  left: 6px;
+}
+
+.portrait-mic--right {
+  right: 6px;
+}
+
+/* Включается или ждёт (бот, голосовой чат) — бледная; не работает —
+   красная обводка; выключен — перечёркнут (portrait-mic-slash) */
+.portrait-mic--warn svg {
+  opacity: 0.5;
+}
+
+.portrait-mic--bad {
+  color: #b42318;
+  border-color: #d92d20;
+}
+
+.portrait-mic--off {
+  color: #5b6573;
+}
+
+.portrait-mic--on {
+  color: #f4f4f2;
+  background: #4b5563;
+  border-color: #4b5563;
+}
+
+.portrait-mic svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Тёмная тема — в тон облачку с вашей фразой (правила ниже светлых: та же
+   специфичность) */
+@media (prefers-color-scheme: dark) {
+  .portrait-mic {
+    color: #e8e8e8;
+    background: #1e2631;
+    border-color: #3b4757;
+  }
+
+  .portrait-mic--bad {
+    color: #ff8a80;
+    border-color: #f04438;
+  }
+
+  .portrait-mic--off {
+    color: #9aa4b2;
+  }
+
+  .portrait-mic--on {
+    color: #121212;
+    background: #c9d1db;
+    border-color: #c9d1db;
+  }
+}
+
+/* Брошенный файл в облачке сбоку — значок листа перед именем */
+.portrait-ask-file {
+  float: left;
+  width: 10px;
+  height: 12px;
+  margin: 3px 6px 0 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linejoin: round;
 }
 
 /* Сердечко над рукой, когда гладят */
 .portrait-heart {
   position: absolute;
-  width: 18px;
-  height: 17px;
-  margin: -24px 0 0 -9px;
-  fill: #e5484d;
   pointer-events: none;
-  animation: portrait-heart 0.9s ease-out forwards;
-}
-
-@keyframes portrait-heart {
-  0% { opacity: 0; transform: translateY(6px) scale(0.6); }
-  20% { opacity: 1; transform: translateY(0) scale(1); }
-  100% { opacity: 0; transform: translateY(-34px) scale(1); }
+  overflow: visible;
+  /* Размер, место, цвет и всплытие — у каждого своё (PatHearts.tsx) */
 }
 
 @media (prefers-reduced-motion: reduce) {
   .live-portrait-body { animation: none; }
-  .portrait-heart { animation-duration: 0.01s; }
   .portrait-z span { animation: none; opacity: 1; }
-  .portrait-bubble { animation: none; }
+  .portrait-bubble,
+  .portrait-ask { animation: none; }
+  .portrait-input,
+  .portrait-dock,
+  .portrait-chat-log { animation: none; }
 }

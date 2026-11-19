@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Окна панели и портрета на рабочем столе: свои команды (разрешены по умолчанию) и события",
-  "windows": ["panel", "portrait"],
+  "description": "Окна панели и портретов на рабочем столе (portrait — портрет на столе, portrait-<id> — портреты персон разговора голосом): свои команды (разрешены по умолчанию) и события",
+  "windows": ["panel", "portrait", "portrait-*"],
   "permissions": ["core:default"]
 }

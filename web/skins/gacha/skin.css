@@ -1654,8 +1654,7 @@ html[data-skin='gacha'] .home-presence-activity {
 }
 
 html[data-skin='gacha'] .chat-card-foot,
-html[data-skin='gacha'] .home-presence-reply,
-html[data-skin='gacha'] .home-dossier-foot {
+html[data-skin='gacha'] .home-presence-reply {
   border-top: 2px dashed var(--border-soft);
 }
 
@@ -1859,7 +1858,6 @@ html[data-skin='gacha'] .home-presence-grid {
   gap: 22px;
 }
 
-html[data-skin='gacha'] .home-dossier,
 html[data-skin='gacha'] .home-feed,
 html[data-skin='gacha'] .notes,
 html[data-skin='gacha'] .cal {
@@ -1870,23 +1868,7 @@ html[data-skin='gacha'] .cal {
   clip-path: none;
 }
 
-html[data-skin='gacha'] .home-dossier:hover {
-  transform: translate(-2px, -2px);
-  background: var(--gc-paper);
-  box-shadow: 4px 4px 0 0 var(--gc-ink);
-}
-
-html[data-skin='gacha'] .home-dossier h3 {
-  font-family: var(--font-disp);
-  font-weight: 900;
-  font-size: 18px;
-  text-transform: none;
-  color: var(--gc-ink);
-}
-
-html[data-skin='gacha'] .home-dossier-index,
-html[data-skin='gacha'] .home-feed-empty,
-html[data-skin='gacha'] .home-dossier-foot {
+html[data-skin='gacha'] .home-feed-empty {
   font-family: var(--font);
   font-weight: 700;
   font-size: 12px;
@@ -2055,10 +2037,6 @@ html[data-skin='gacha'] .start-guide-dlg-titlebar .lights i:nth-child(3) {
   background: var(--gc-teal);
 }
 
-html[data-skin='gacha'] .home-term-line .bright {
-  color: var(--gc-lemon);
-}
-
 /* Курсоры терминалов — мягкое «дыхание», без мигания */
 html[data-skin='gacha'] .home-term-cursor,
 html[data-skin='gacha'] .start-guide-dlg-cursor {
@@ -2072,11 +2050,6 @@ html[data-skin='gacha'] .home-foot-right {
   font-weight: 700;
   font-size: 12px;
   color: var(--text-muted);
-}
-
-html[data-skin='gacha'] .barcode i {
-  border-radius: 2px;
-  background: var(--gc-ink);
 }
 
 /* ===== «Старт» ===== */

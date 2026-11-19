@@ -708,6 +708,7 @@ def main():
     for r in roots:
         r.mkdir()
     patches = [
+        mock.patch("app.features.flavor_text.ensure_flavor_bank"),
         mock.patch.object(sa, "_PERSONAS_DIR", personas_dir),
         mock.patch.object(sa, "persona_dirs", lambda: [personas_dir]),
         mock.patch.object(sa, "_data_roots", lambda: list(roots)),

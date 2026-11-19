@@ -277,7 +277,13 @@ def main():
           ft.phrase("t_none", "cc_mode_on", "ШАБЛОН") == "ШАБЛОН")
 
     # ── 4. ensure_flavor_bank: hash-инвалидация ──
+    ready_errors = {"": {
+        "prompt_hash": ft._error_profile(SP)["prompt_hash"],
+        "languages": {lang: {key: list(values) for key, values in buckets.items()}
+                      for lang, buckets in ft._ERROR_FALLBACKS.items()},
+    }}
     ft._save_bank("t2", {"_meta": {"prompt_hash": ft._prompt_hash(SP)},
+                         "errors": ready_errors,
                          "kinds": {"generic": {"ok": ["Сделано."],
                                                "err": ["Сбой: {detail}."]}},
                          "phrases": {"cc_mode_on": ["Режим включён."]}})

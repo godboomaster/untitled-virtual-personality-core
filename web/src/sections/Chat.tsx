@@ -6,7 +6,7 @@ import type { AnswerOption, ApiHistoryMessage, ClearPart, InitiativeData, Person
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import {
-  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, setTaskCard, settlePending, touchActivity, useInbox,
+  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setPhoneMode, setFastPoll, setGenerating, setTaskCard, settlePending, touchActivity, useInbox,
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
@@ -25,6 +25,7 @@ import ChatOverview from './ChatOverview';
 import { formatSilence, INIT_TYPE_MAP, silenceProgress } from '../initiativeTypes';
 import { agoLabel } from '../timeAgo';
 import { usePersonaAvatars } from '../avatarStore';
+import PersonaAvatar from '../components/PersonaAvatar';
 import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
 import MessageText from '../components/MessageText';
@@ -34,11 +35,13 @@ import VoiceChat from '../components/VoiceChat';
 import CameraCapture from '../components/CameraCapture';
 import { downscalePhoto } from '../cameraImage';
 import { OFFLINE_SYNCED_EVENT, useOfflineMode } from '../offline/state';
+import { isStandalone } from '../standalone';
 import { offlineMessages, removeOfflineMessages, unansweredTail, useOfflineMessages } from '../offline/store';
 import { getKit, refreshKit } from '../offline/kit';
 import { onLocalPersonaRenamed } from '../offline/localPersonas';
 import { OfflineUnavailable } from '../offline/engine';
 import { replyOffline } from '../offline/reply';
+import { webchatReason } from '../offline/webchat';
 import { warmEmbedder } from '../offline/embed';
 import { OfflineLlm } from '../offline/plugin';
 import type { AlarmItem } from '../offline/plugin';
@@ -60,6 +63,7 @@ import { parseReminderWhen } from '../reminderWhen';
 import { fmtRecurrence, formFromRepeatText, recurrenceFromForm } from '../reminderRepeat';
 import { useRoomView } from '../room/useRoomView';
 import { BACK_PANEL, BACK_SCREEN, useBackHandler } from '../backStack';
+import DesktopAvatarButton from '../components/DesktopAvatarButton';
 
 // Допуск сравнения серверных меток: last_ts и timestamp реплики STM — один и
 // тот же float (memory.add_message), но после рестарта буфер читается из БД
@@ -305,6 +309,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // id пузыря, в который сейчас стримится ответ (ему markdown достраивается
   // на лету) — по id персоны
   const [streamMsgIdByPersona, setStreamMsgIdByPersona] = useState<Record<string, number | null>>({});
+  // Ответ уже печатается (пошли порции готового текста): он в истории,
+  // останавливать нечего — «Стоп» уступает место «Отправить»
+  const [replyTypingByPersona, setReplyTypingByPersona] = useState<Record<string, boolean>>({});
+  // «Стоп» нажат, ход ещё не закончился (агент доделывает шаг)
+  const [stoppingByPersona, setStoppingByPersona] = useState<Record<string, boolean>>({});
   // Провайдер, реально ответивший последним (по id персоны): «провайдер · модель»
   const [answerer, setAnswerer] = useState<Record<string, string>>({});
   // Счётчик завершённых обменов: досье по нему перечитывает STM
@@ -513,7 +522,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards, pending: pendingByPersona } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, phoneMode, answerOptions, taskCards, pending: pendingByPersona } = useInbox();
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -532,6 +541,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const waiting = waitingByPersona[persona.id] === true;
   const streamMsgId = streamMsgIdByPersona[persona.id] ?? null;
   const typing = waiting || remoteGenerating;
+  const replyTyping = replyTypingByPersona[persona.id] === true;
+  const stopping = stoppingByPersona[persona.id] === true;
   // Локальный стрим этой персоны ещё идёт — догрузку истории откладываем
   const inFlight = waiting || streamMsgId != null;
 
@@ -676,6 +687,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // inbox, пока наш запрос ещё в пути, — тоже быстрый опрос, иначе они
   // приходили пачкой раз в 15 с
   const ccOn = controlMode[persona.id] === true;
+  // Режим управления телефоном: значок и «Выйти»; браузера агента нет
+  const phoneOn = phoneMode[persona.id] === true && !ccOn;
   // Окно браузера агента рядом с чатом — в режиме управления, в обычном
   // чате (не досье/голос); выбор «показывать» помнится в этом браузере
   const [browserOpen, setBrowserOpenState] = useState(() => {
@@ -1267,9 +1280,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     } catch (e) {
       let note = t('offline.failed', { err: e instanceof Error ? e.message : String(e) });
       if (e instanceof OfflineUnavailable) {
+        // Без компьютера «отправится, когда вернётся связь» — неправда: ждать нечего
+        const sa = isStandalone() ? '.standalone' : '';
         if (e.reason === 'no_kit') note = t('offline.noKit');
-        else if (e.reason === 'model_broken') note = t('offline.modelBroken');
-        else note = t(e.cloud === 'failed' ? 'offline.cloudFailed' : 'offline.noRoute');
+        else if (e.reason === 'model_broken') note = t(`offline.modelBroken${sa}`);
+        // Веб-чаты включены, но не ответили — почему (вход, капча, лимит…)
+        else if (e.web && e.web !== 'no_sites') note = t(`offline.webFailed${sa}`, { why: t(`webchat.state.${webchatReason(e.web)}`) });
+        else note = t(e.cloud === 'failed' ? `offline.cloudFailed${sa}` : `offline.noRoute${sa}`);
       }
       setOfflineNote(note);
     } finally {
@@ -1375,6 +1392,34 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     if (ok) clearStm();
   };
 
+  // «Стоп»: персона думает над ответом (в этом окне или ход с другого
+  // устройства, голосом) — оборвать. Ответ модели обрывается сразу, стрим
+  // этого окна закончится cancelled; агент доделает шаг и ответит итогом
+  const stopReply = () => {
+    const pid = persona.id;
+    if (stoppingByPersona[pid]) return;
+    setStoppingByPersona((prev) => ({ ...prev, [pid]: true }));
+    const release = () => setStoppingByPersona((prev) => ({ ...prev, [pid]: false }));
+    api
+      .cancelChat(pid)
+      .then((r) => {
+        if (r.stopping) return; // агент — кнопка ждёт конца хода
+        if (!r.cancelled) {
+          release(); // ответ уже готов — останавливать нечего
+          return;
+        }
+        // Флаг «печатает» хода с другого устройства спадёт с опросом;
+        // запас — если за отменённым ходом в очереди следующая реплика
+        pollInboxNow(pid);
+        window.setTimeout(release, 4000);
+      })
+      .catch(release);
+  };
+  // Ход закончился — «Стоп» снова доступен для следующего
+  useEffect(() => {
+    if (!typing) setStoppingByPersona((prev) => (prev[persona.id] ? { ...prev, [persona.id]: false } : prev));
+  }, [typing, persona.id]);
+
   // Отправка сообщения и стриминг ответа
   const startGeneration = (pid: string, personaName: string, text: string,
                            replyContext?: string, image?: string | null, fromSkin = false,
@@ -1388,6 +1433,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     let interrupted = false;
     setUserMsgsStatus(pid, ['queued'], 'sent'); // ушло на бэкенд
     setWaitingByPersona((prev) => ({ ...prev, [pid]: true }));
+    setReplyTypingByPersona((prev) => ({ ...prev, [pid]: false }));
     // Пузырь ответа растёт по мере стриминга; бэкенд шлёт порции уже
     // финального текста (после _clean_response/маркеров), поэтому в финале
     // upsertBot() просто подтверждает тот же текст — без замены содержимого.
@@ -1444,6 +1490,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     streamChat(
       { persona: pid, message: text, replyContext, image: image ?? undefined, imageSource: camera ? 'camera' : undefined, fromSkin, phoneAction },
       (tok) => {
+        setReplyTypingByPersona((prev) => (prev[pid] ? prev : { ...prev, [pid]: true }));
         bubbleTexts[bubbleTexts.length - 1] += tok;
         upsertBot(bubbleIds[bubbleIds.length - 1], bubbleTexts[bubbleTexts.length - 1]);
       },
@@ -1465,6 +1512,20 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       },
     )
       .then((res) => {
+        if (res.cancelled) {
+          // «Стоп»: ответа не будет. Пузырь ответа убираем; реплика
+          // пользователя — в истории (персона её прочла), рост last_ts от
+          // неё — «свой», историю под него не перечитываем
+          delete recovering.current[pid];
+          absorbed.current[pid] = Math.max(absorbed.current[pid] ?? 0, getServerLastTs(pid));
+          absorbUntil.current[pid] = Date.now() + ABSORB_MS;
+          pollInboxNow(pid);
+          const drop = new Set(bubbleIds);
+          setSentByPersona((prev) => ({ ...prev, [pid]: (prev[pid] ?? []).filter((m) => !drop.has(m.id)) }));
+          setUserMsgsStatus(pid, ['queued', 'sent'], 'read');
+          if (typeof res.control_mode === 'boolean') setControlMode(pid, res.control_mode);
+          return;
+        }
         if (typeof res.reply_ts === 'number') replyTs = res.reply_ts;
         // Обмен целиком у нас: рост last_ts от этих реплик — «свой», историю
         // под него не перечитываем (иначе пузыри заменятся STM-копиями).
@@ -1509,12 +1570,19 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         // Режим управления мог переключиться самим этим сообщением —
         // обновляем сразу, не дожидаясь поллера inbox
         if (typeof res.control_mode === 'boolean') setControlMode(pid, res.control_mode);
+        if (typeof res.phone_mode === 'boolean') setPhoneMode(pid, res.phone_mode);
         // Вопрос режима управления с вариантами — кнопки под ответом
         setAnswerOptions(pid, res.answer_options ?? null);
         // Карточка задачи агента — итог хода (дальше её обновляет inbox)
         if ('task' in res) setTaskCard(pid, res.task ?? null);
-        // Ответ догенерировался, а вкладка уже не в фокусе — уведомляем (как в мессенджерах)
-        notifyBotMessage(pid, personaName, res.reply);
+        // Ответ догенерировался, а вкладка уже не в фокусе — уведомляем (как в
+        // мессенджерах). Ответ хода агента задач начинается строками хода —
+        // они в карточке, в уведомлении только сама реплика (как в пузыре)
+        const cardLines = new Set((res.task?.log ?? []).map((x) => x.text));
+        const said = cardLines.size
+          ? res.reply.split('\n').filter((ln) => !cardLines.has(ln.trim())).join('\n').trim()
+          : res.reply;
+        if (said) notifyBotMessage(pid, personaName, said);
       })
       .catch((e) => {
         if (e instanceof StreamInterruptedError) {
@@ -1537,6 +1605,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       .finally(() => {
         setWaitingByPersona((prev) => ({ ...prev, [pid]: false }));
         setStreamMsgIdByPersona((prev) => ({ ...prev, [pid]: null }));
+        setReplyTypingByPersona((prev) => ({ ...prev, [pid]: false }));
+        setStoppingByPersona((prev) => ({ ...prev, [pid]: false }));
         if (interrupted) {
           // Флаг «печатает» не гасим вслепую: генерация на сервере, возможно,
           // ещё идёт — берём свежие generating/last_ts с бэкенда сразу
@@ -2254,7 +2324,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               }}
             >
               <div className="avatar">
-                {avatars[p.id] ? <img src={avatars[p.id]} alt={p.name} /> : p.name.charAt(0)}
+                <PersonaAvatar persona={p} followWithin=".chat-persona-list" />
               </div>
               <div className="chat-persona-info">
                 <div className="chat-persona-name">
@@ -2287,7 +2357,12 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       ) : chatMode === 'voice' ? (
         <VoiceChat
           persona={persona}
-          messages={messages}
+          // Строки хода агента задач — в карточке, вслух их не читаем (как и
+          // в пузырях их нет)
+          messages={messages.map((m) => {
+            const text = withoutTaskLines(m);
+            return text === m.text ? m : { ...m, text };
+          })}
           avatar={avatars[persona.id]}
           typing={typing}
           onSend={(text) => submitMessage(text, null)}
@@ -2310,7 +2385,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             <Icon name="chevronLeft" size={20} />
           </button>
           <div className="avatar avatar--large">
-            {avatars[persona.id] ? <img src={avatars[persona.id]} alt={persona.name} /> : persona.name.charAt(0)}
+            <PersonaAvatar persona={persona} followWithin=".chat-header" />
           </div>
           <div>
             <div className="chat-header-name">{persona.name}</div>
@@ -2331,6 +2406,17 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               <button type="button" className="btn btn--chip chat-cc-btn" title={t('offline.stopTitle')} onClick={() => void OfflineLlm.stopLocal()}>
                 ■ {t('cc.stop')}
               </button>
+            )}
+            {phoneOn && apiOnline && (
+              <div className="chat-cc-controls">
+                <span className="chat-cc-badge" title={t('cc.badgePhoneTitle')}>
+                  <span className="status-led" />
+                  {t('cc.badgePhone')}
+                </span>
+                <button type="button" className="btn btn--chip chat-cc-btn" title={t('cc.exitTitle')} disabled={waiting} onClick={() => submitMessage(t('cc.exitPhrase'), null)}>
+                  {t('cc.exit')}
+                </button>
+              </div>
             )}
             {ccOn && apiOnline && (
               <div className="chat-cc-controls">
@@ -2380,7 +2466,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
         {((coreOffline && offlineIntro) || offlineNote) && (
           <div className="chat-offline-banner" role="status">
-            {coreOffline && offlineIntro && <span>{t('offline.banner')}</span>}
+            {coreOffline && offlineIntro && <span>{t(isStandalone() ? 'offline.banner.standalone' : 'offline.banner')}</span>}
             {offlineNote && <span className="chat-offline-note">{offlineNote}</span>}
           </div>
         )}
@@ -2442,7 +2528,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             // Кнопки ответа — под последним сообщением бота, пока режим
             // управления ждёт ответа и бот не занят; список «какой файл?» —
             // и вне режима
-            const answer = (ccOn || curAnswer?.scope === 'files') && !waiting && m.role === 'bot'
+            const answer = (ccOn || curAnswer?.scope === 'files' || curAnswer?.scope === 'phone') && !waiting && m.role === 'bot'
               && i === visibleMessages.length - 1
               ? curAnswer
               : null;
@@ -2524,10 +2610,16 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   <div className="message-time">
                     {m.time}
                     {/* Без связи подписи «облако / телефон / ждёт связи» не нужны:
-                        очередь видна по ◷; подписано только напоминание будильника */}
+                        очередь видна по ◷; подписаны напоминание будильника и
+                        уведомление «Сервисов» телефона */}
                     {m.offline === 'reminder' && (
                       <span className="msg-offline msg-offline--reminder" title={t('offline.tagTitle')}>
                         {t('offline.tag.reminder')}
+                      </span>
+                    )}
+                    {m.offline === 'notify' && (
+                      <span className="msg-offline" title={t('phoneSvc.tagTitle')}>
+                        {t('phoneSvc.tag')}
                       </span>
                     )}
                     {/* Доставка/прочтение: наши — очередь (пунктирный пузырь) → ✓ → ✓✓
@@ -2569,7 +2661,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             <span className="dot dot--green" />
             <span>{t('chat.online', { name: persona.name })}</span>
           </div>
-          <span>VPC CORE // ONLINE</span>
+          <span>{t('chat.coreOnlineTag')}</span>
         </div>
 
         {/* Плашка цитаты над вводом (когда выбран ответ на сообщение) */}
@@ -2680,9 +2772,26 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && send()}
           />
-          <button className="btn btn--primary" title={t('chat.send')} disabled={waiting || (!draft.trim() && !pendingImage)} onClick={send}>
-            {t('chat.send')}
-          </button>
+          {/* Пока персона думает — «Стоп» (Enter по-прежнему отправляет:
+              реплика встанет в очередь за ходом); печать готового ответа не
+              останавливаем — он уже в истории */}
+          {apiOnline && !offlineMode && typing && !replyTyping ? (
+            <button
+              type="button"
+              className="btn btn--primary chat-stop"
+              title={t('chat.stopTitle')}
+              aria-label={t('chat.stopTitle')}
+              disabled={stopping}
+              onClick={stopReply}
+            >
+              <Icon name="stop" size={14} />
+              <span>{stopping ? t('chat.stopping') : t('chat.stop')}</span>
+            </button>
+          ) : (
+            <button className="btn btn--primary" title={t('chat.send')} disabled={waiting || (!draft.trim() && !pendingImage)} onClick={send}>
+              {t('chat.send')}
+            </button>
+          )}
         </div>
       </div>
       )}
@@ -2716,7 +2825,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           <div className="chat-mood">
             <span className="dot dot--green" />
             <span>{mood}</span>
-            <span className="ctx-trend">// {trend}</span>
+            <span className="ctx-trend">{t('ui.commentPrefix')}{trend}</span>
           </div>
 
           {/* Самоинициатива: вероятность и последний случай, когда персона написала сама */}
@@ -2790,6 +2899,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
           {/* Быстрые действия */}
           <div className="ctx-actions">
+            <DesktopAvatarButton personaId={persona.id} />
             <button type="button" className="btn btn--ghost" onClick={() => setDossierOpen(true)}>
               {t('chat.dossier')}
             </button>

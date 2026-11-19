@@ -170,6 +170,8 @@ def _fake_bot(verdicts):
 
     bot = SimpleNamespace(
         persona_name="gate_test", features={}, owner="111",
+        persona=SimpleNamespace(_triggers=lambda: []),
+        notes=None,
         self_memory=None, file_db=None, _web_search_enabled=False,
         todo_manager=None, reminder_manager=None, inventory_manager=None,
         learning_manager=None, _activity_tracker=None, _rate_limit_enabled=False,

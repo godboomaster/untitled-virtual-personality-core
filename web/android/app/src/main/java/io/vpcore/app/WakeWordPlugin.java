@@ -141,6 +141,17 @@ public class WakeWordPlugin extends Plugin {
     }
 
     private boolean saveConnection(PluginCall call) {
+        // Без компьютера: адреса нет, имена персон — из приложения
+        if (call.getBoolean("standalone", false)) {
+            JSArray personas = call.getArray("personas", new JSArray());
+            WakeWordService.prefs(getContext()).edit()
+                    .remove(WakeWordService.KEY_BASE_URL)
+                    .remove(WakeWordService.KEY_TOKEN)
+                    .putBoolean(WakeWordService.KEY_STANDALONE, true)
+                    .putString(WakeWordService.KEY_PERSONAS, personas.toString())
+                    .apply();
+            return true;
+        }
         String baseUrl = call.getString("baseUrl", "");
         String token = call.getString("token", "");
         if (baseUrl == null || !baseUrl.matches("(?i)^https?://.+")) {
@@ -148,6 +159,7 @@ public class WakeWordPlugin extends Plugin {
             return false;
         }
         SharedPreferences.Editor e = WakeWordService.prefs(getContext()).edit()
+                .putBoolean(WakeWordService.KEY_STANDALONE, false)
                 .putString(WakeWordService.KEY_BASE_URL, baseUrl)
                 .putString(WakeWordService.KEY_TOKEN, token == null ? "" : token);
         // Приложение одной персоны: её имена и её чат (не переданы — прежние)
@@ -226,9 +238,10 @@ public class WakeWordPlugin extends Plugin {
     public void configure(PluginCall call) {
         String baseUrl = call.getString("baseUrl", "");
         SharedPreferences p = WakeWordService.prefs(getContext());
-        if (baseUrl == null || baseUrl.isEmpty()) {
+        if ((baseUrl == null || baseUrl.isEmpty()) && !call.getBoolean("standalone", false)) {
             // Сервер сменили или отвязали: прежнее ядро больше не спрашиваем
-            p.edit().remove(WakeWordService.KEY_BASE_URL).remove(WakeWordService.KEY_TOKEN).apply();
+            p.edit().remove(WakeWordService.KEY_BASE_URL).remove(WakeWordService.KEY_TOKEN)
+                    .putBoolean(WakeWordService.KEY_STANDALONE, false).apply();
             WakeWordService.stop(getContext());
             call.resolve();
             return;

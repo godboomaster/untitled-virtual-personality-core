@@ -11,8 +11,13 @@ import os
 import sys
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Dict, Tuple
+# Первым делом: трей/панель, читавшие вывод ядра, могли уйти — print и
+# полосы tqdm тогда не должны ронять ход (см. pipe_guard)
+from app.core import pipe_guard
+pipe_guard.install()
 from app.core.envfile import load_env_file
 
 # .env/.env.config текущей папки — приоритет над .env ядра (у отдельного
@@ -146,6 +151,9 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         commands.append(("reset_files", "Сбросить файловую базу"))
     if bot_instance._web_search_enabled:
         commands.append(("web", "Вкл/выкл веб-поиск в этом чате"))
+    # Режимы персоны (<id>_modes/<режим>.yaml с triggers) — если они есть
+    if getattr(bot_instance.persona, "mode_names", None) and bot_instance.persona._triggers():
+        commands.append(("mode", "Режим персоны: /mode [режим | off | auto]"))
 
     # Owner-only команды — показываем только владельцу (scope на его чат)
     owner_commands = [
@@ -284,6 +292,10 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
             pass
 
 
+# Сирота (запустивший ушёл): сколько ждать мягкой остановки до выхода силой
+ORPHAN_EXIT_SEC = 20
+
+
 def run_api():
     # Запускает FastAPI-сервер для веб-фронта и десктоп-приложения.
     import uvicorn
@@ -304,6 +316,19 @@ def run_api():
     # слушается в фоне, просьбы идут в это же API (app/voice/wake_listener)
     from app.voice import wake_listener
     wake_listener.start_with_core(host, port)
+    # Трей/панель ушли, не погасив ядро (упали, убиты) — гаснем сами: сперва
+    # микрофон, затем сервер, как от SIGTERM; повисла остановка — выходим
+    # силой (сирота 2026-10-28 повис на выходе с открытым микрофоном)
+    from app.core import parent_watch
+
+    def _launcher_gone():
+        wake_listener.stop_with_core()
+        server.should_exit = True
+        time.sleep(ORPHAN_EXIT_SEC)
+        logger.warning(f"[Parent] Остановка не закончилась за {ORPHAN_EXIT_SEC} с — выхожу")
+        os._exit(1)
+
+    parent_watch.install(_launcher_gone)
     # Дальше — как в uvicorn.run: сигнал остановки uvicorn поднимает заново
     # после завершения, это не ошибка; не поднялся (порт занят) — код 3
     try:

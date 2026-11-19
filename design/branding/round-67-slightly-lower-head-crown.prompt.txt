@@ -1,0 +1,10 @@
+Built-in image_gen. Edit target: 98-thinner-head-reference-junctions-square-logo.png. Output: 99-slightly-flattened-head-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: subtle head-shape adjustment to the existing square black-and-white ghost logo.
+Input image 1: sole edit target, 98-thinner-head-reference-junctions-square-logo.png.
+Primary request: gently press the TOP of the ghost's head DOWNWARD a little. Lower the crown/topmost point of the head outline by about 25–30 px at the 1254 px input scale, approximately 5% of the current head height. Smoothly blend this small compression into the upper-left and upper-right arcs, fading the displacement to zero near the horizontal mid-height of the head. The upper dome should become subtly lower and a little flatter, with a smooth rounded curve, no straight horizontal plateau or dent.
+Keep the head's full width unchanged. Keep both side extremes and the entire lower half of the head outline, both neck endpoints and their white clearance gaps FIXED in place. Preserve the current THIN, even head stroke, approximately 17–18 px at input scale. Do not move or scale the whole head.
+Keep the solid-black short narrow oval eyes EXACTLY unchanged in size, shape, position and spacing. Only the empty forehead space above them becomes slightly shorter.
+Everything else stays exactly as in the source: both left leaves and veins, separation from the head, the complete sharp faceted interwoven collar and its white openings and crossing, torso height and outline, jagged hem, shell separator, lower eggshell and cracks, stroke weights, logo scale and placement, square canvas, white background and margins except the naturally increased empty margin above the crown.
+Output one COMPLETE square logo with crisp flat black-and-white contours. No extra elements, text, shadows, gradients, color, texture, upper shell, cropping, recentering or border. Change only the upper head arc with a subtle smooth downward compression.

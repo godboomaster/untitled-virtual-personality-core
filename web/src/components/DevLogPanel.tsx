@@ -131,7 +131,7 @@ export default function DevLogPanel({ docked = false }: { docked?: boolean }) {
         </span>
       </div>
       <div className="devlog-body" ref={bodyRef}>
-        {entries.length === 0 && <div className="devlog-line devlog-line--dim">// {t('devlog.empty')}</div>}
+        {entries.length === 0 && <div className="devlog-line devlog-line--dim">{t('ui.commentPrefix')}{t('devlog.empty')}</div>}
         {entries.map((e) => (
           <div key={e.seq} className={`devlog-line devlog-line--${e.level.toLowerCase()}`}>
             <span className="devlog-ts">

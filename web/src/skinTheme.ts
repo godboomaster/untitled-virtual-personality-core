@@ -139,6 +139,17 @@ export function useAppliedSkin(): string | null {
   return useSkinThemeState().applied;
 }
 
+// Скин на <html> и его схема — для рисунков, которым нужна не CSS-тема, а
+// цвета скина (голова персоны: живая, иконка уведомления, листы виджета)
+export function useAppliedLook(): { skinId: string | null; scheme: AppTheme } {
+  const s = useSkinThemeState();
+  return { skinId: s.applied, scheme: resolveScheme(s.preference, s.applied) };
+}
+
+export function appliedLook(): { skinId: string | null; scheme: AppTheme } {
+  return { skinId: state.applied, scheme: resolveScheme(state.preference, state.applied) };
+}
+
 // Экран персоны: пока смонтирован, действует её своя тема (если задана)
 export function usePersonaSkinScope(personaId: string | null | undefined) {
   useEffect(() => {

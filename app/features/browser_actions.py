@@ -3271,11 +3271,24 @@ def _scroll_if_off_js(idx: int) -> str:
 # (_LABEL_TOGGLE_BODY_JS) отличает «наш клик уже перещёлкнул контрол» от
 # «клик прошёл мимо label-механики» — иначе кастомный чекбокс щёлкался бы
 # дважды. vpcSe — элемент из _scroll_if_off_js того же вызова
+# Галочка цели клика: контрол label-обёртки или единственный checkbox/radio
+# короткой строки-пункта (≤40 символов текста, до 4 уровней вверх) — свой
+# чекбокс сайта без label (input спрятан, рядом подпись). Выше строки
+# (карточка товара с «В избранное») не поднимаемся: чужую галочку не трогаем
+_OPT_CONTROL_FN_JS = (
+    "function vpcOptCtl(e){if(!e||!e.closest)return null;"
+    "var l=e.closest('label');"
+    "if(l)return l.control||l.querySelector('input[type=checkbox],"
+    "input[type=radio]');"
+    "var p=e,d=0;while(p&&p.tagName!=='BODY'&&d<4){"
+    "if((p.innerText||'').replace(/\\s+/g,' ').trim().length>40)break;"
+    "var q=p.querySelectorAll('input[type=checkbox],input[type=radio]');"
+    "if(q.length===1)return q[0];if(q.length>1)break;"
+    "p=p.parentElement;d++;}return null;}"
+)
 _LABEL_PRE_JS = (
-    "try{window.__vpcChk='';if(vpcSe){"
-    "var vpcL=vpcSe.closest?vpcSe.closest('label'):null;"
-    "var vpcLI=vpcL?(vpcL.control||vpcL.querySelector("
-    "'input[type=checkbox],input[type=radio]')):null;"
+    "try{window.__vpcChk='';if(vpcSe){" + _OPT_CONTROL_FN_JS +
+    "var vpcLI=vpcOptCtl(vpcSe);"
     "if(vpcLI&&/^(checkbox|radio)$/.test(vpcLI.type||''))"
     "window.__vpcChk=vpcLI.checked?'1':'0';}}catch(vpcX2){}"
 )
@@ -3287,8 +3300,8 @@ _LABEL_PRE_JS = (
 # выключенного: 'already' — уже включён, «нажми вопрос» ≠ «закрой его».
 # Состояние «до» неизвестно — не щёлкаем ('unknown' → честное «не уверен»)
 _LABEL_TOGGLE_BODY_JS = (
-    "var l=e.closest?e.closest('label'):null;if(!l)return '';"
-    "var i=l.control||l.querySelector('input[type=checkbox],input[type=radio]');"
+    _OPT_CONTROL_FN_JS +
+    "var i=vpcOptCtl(e);if(!i)return '';"
     "var p=window.__vpcChk;window.__vpcChk='';"
     "if(!i||!/^(checkbox|radio)$/.test(i.type||''))return '';"
     "var b=!!i.checked;"
@@ -5113,6 +5126,62 @@ _VPC_ON_JS = (
     "oc=vpcOnCls(pa);if(oc>=0)return oc;}"
     "}catch(x){}return -1;}"
 )
+# Пункт выбора с галочкой/кружком (фильтр «Вид шоколада: Белый/Темный…»,
+# согласие, вариант товара): <label> с checkbox/radio (или label[for]),
+# элемент role=checkbox/radio с подписью, иначе короткая строка (≤40
+# символов текста), где эта галочка — единственная: свой чекбокс сайта
+# (input спрятан или div role=checkbox, рядом span с подписью). 30.10 на
+# ozon пунктов фильтра в снимке не было — модель жала заголовок «Вид
+# шоколада» по кругу
+_OPT_ROWS_FN_JS = (
+    "var vpcOptSel='input[type=checkbox],input[type=radio],[role=checkbox],"
+    "[role=radio],[role=menuitemcheckbox],[role=menuitemradio]';"
+    "function vpcOptN(p){var a=p.querySelectorAll('input[type=checkbox],"
+    "input[type=radio]').length,b=p.querySelectorAll('[role=checkbox],"
+    "[role=radio],[role=menuitemcheckbox],[role=menuitemradio]').length;"
+    "return Math.max(a,b);}"
+    "function vpcOptRow(c){"
+    "var ct=(c.innerText||'').replace(/\\s+/g,' ').trim();"
+    "if(c.getAttribute('role')&&ct&&ct.length<=40)return c;"
+    "var lb=c.closest('label');"
+    "if(!lb&&c.id){try{lb=document.querySelector('label[for=\"'"
+    "+CSS.escape(c.id)+'\"]');}catch(x){}}"
+    "if(lb)return lb;"
+    "var p=c.parentElement,d=0;"
+    "while(p&&p.tagName!=='BODY'&&d<4){"
+    "var t=(p.innerText||'').replace(/\\s+/g,' ').trim();"
+    "if(t)return (t.length<=40&&vpcOptN(p)===1)?p:null;"
+    "p=p.parentElement;d++;}"
+    "return null;}"
+    "function vpcOptRows(root){var cs=root.querySelectorAll(vpcOptSel),rs=[];"
+    "for(var oi=0;oi<cs.length;oi++){var rw=vpcOptRow(cs[oi]);"
+    "if(rw&&rs.indexOf(rw)<0)rs.push(rw);}return rs;}"
+)
+# Состояние поля ввода (агент задач): fv — в поле что-то введено. Само
+# значение в снапшот не идёт (данные человека, снапшот уходит в LLM); код
+# страны маски «+7 (» и знаки маски «___-__» — не ввод. iv — сайт пометил
+# поле неверным (aria-invalid или :invalid у заполненного), er — текст его
+# ошибки (aria-errormessage/aria-describedby, иначе validationMessage)
+_FIELD_STATE_JS = (
+    "function vpcFv(e){try{if(/^(checkbox|radio|button|submit|reset|file|"
+    "range|color|hidden)$/i.test(e.type||''))return 0;"
+    "var v=e.isContentEditable?e.innerText:e.value;if(typeof v!=='string')return 0;"
+    "return v.replace(/^\\s*\\+\\d{1,3}/,'')"
+    ".replace(/[^0-9A-Za-z\u0400-\u04FF@]/g,'').length?1:0;}catch(x){return 0;}}"
+    "function vpcIv(e){try{if(e.getAttribute('aria-invalid')==='true')return 1;"
+    "return vpcFv(e)&&e.matches(':invalid')?1:0;}catch(x){return 0;}}"
+    "function vpcEr(e){if(!vpcIv(e))return '';var s='';try{"
+    "var ids=((e.getAttribute('aria-errormessage')||'')+' '+"
+    "(e.getAttribute('aria-describedby')||'')).split(/\\s+/);"
+    "for(var i=0;i<ids.length;i++){if(!ids[i])continue;"
+    "var d=document.getElementById(ids[i]);if(d)s+=' '+(d.innerText||'');}"
+    "if(!s.trim())s=e.validationMessage||'';"
+    # Ошибка браузера («'ab' is missing an '@'») и сайта повторяет значение
+    # — его вырезаем: в снапшот идёт только суть ошибки
+    "var v=String((e.isContentEditable?e.innerText:e.value)||'').trim();"
+    "if(v.length>=2)s=s.split(v).join('…');}catch(x){}"
+    "return s.replace(/\\s+/g,' ').trim().slice(0,80);}"
+)
 
 _VPC_NORM_CORE_JS = (
     "function __vpcFold(ch){"
@@ -5273,9 +5342,10 @@ _SNAPSHOT_JS = (
     # против нашего «var inner» убивает снапшот целиком (Identifier 'inner'
     # has already been declared)
     "(function(){"
-    + _VPC_ON_JS + _CARD_NAME_FN_JS +
+    + _VPC_ON_JS + _CARD_NAME_FN_JS + _FIELD_STATE_JS + _OPT_ROWS_FN_JS +
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],summary,[role=link],"
-    "[role=tab],[role=option],[role=menuitem],[role=switch]';"
+    "[role=tab],[role=option],[role=menuitem],[role=switch],[role=checkbox],"
+    "[role=radio],[role=menuitemcheckbox],[role=menuitemradio]';"
     # Поля ввода — тоже элементы снапшота (флаг ed): команда «введи X в поле Y»
     # целится в них; клик по ним безвреден (фокус)
     "var edsel='textarea,input:not([type]),input[type=text],input[type=search],input[type=email],"
@@ -5291,7 +5361,7 @@ _SNAPSHOT_JS = (
     # Пропорции держатся сами при смене SNAPSHOT_MAX
     "var M=" + str(SNAPSHOT_MAX) + ";"
     "var M25=Math.round(M*0.25),M50=Math.round(M*0.5),"
-    "M60=Math.round(M*0.6),M70=Math.round(M*0.7);"
+    "M60=Math.round(M*0.6),M70=Math.round(M*0.7),M85=Math.round(M*0.85);"
     # Активный слой поверх затемнённого фона (панель комментариев на
     # видеохостинге, модалка с бэкдропом, шторка корзины интернет-магазина):
     # ищем в стеке элементов в центре вьюпорта бэкдроп-подобный (fixed/
@@ -5506,6 +5576,8 @@ _SNAPSHOT_JS = (
     # неактивность — агент задач по ним решает, спрашивать ли «да»
     "sub:(e.form&&/^(submit|image)$/i.test(e.type||''))?1:0,"
     "fm:(e.form||(e.closest&&e.closest('form')))?1:0,dis:vpcDis(e),"
+    # Поле: заполнено / помечено неверным + текст ошибки (_FIELD_STATE_JS)
+    "fv:ed?vpcFv(e):0,iv:ed?vpcIv(e):0,er:ed?vpcEr(e):'',"
     "q:(ed&&(e.type==='search'||/search|поиск/i.test((e.id||'')+' '+"
     "(e.getAttribute('class')||'')+' '+(e.getAttribute('name')||'')+' '+"
     "(e.getAttribute('placeholder')||'')))?1:0),"
@@ -5692,6 +5764,21 @@ _SNAPSHOT_JS = (
     # длинной странице бюджет 100 съедают шапка/сайдбар/футер, идущие в DOM
     # раньше видимых карточек, и ссылка-заголовок нужной карточки не влезает
     # в снапшот — команда попадёт по span имени автора из pdiv-прохода
+    # Пункты с галочкой (_OPT_ROWS_FN_JS): видимые — ДО основного прохода
+    # (фильтры каталога — label без ссылок, а бюджет съедают сотни ссылок
+    # карточек; vpcLabels в конце до них не доходил), остальные — после.
+    # Строка, у которой размечен потомок (span-подпись с pointer), уже
+    # кликабельна через него
+    "function vpcOpts(lim,vpOnly){var rs=vpcOptRows(document);"
+    "for(var oj=0;oj<rs.length&&idx<lim;oj++){var ro=rs[oj];"
+    "if(ro.hasAttribute('data-vpc-idx')||ro.querySelector('[data-vpc-idx]'))continue;"
+    "var orr=ro.getBoundingClientRect();if(orr.width<2||orr.height<2)continue;"
+    "if(vpOnly&&!(orr.bottom>0&&orr.right>0&&orr.top<window.innerHeight"
+    "&&orr.left<window.innerWidth))continue;"
+    "if(!vpcVis(ro))continue;"
+    "var info=vpcInfo(ro,ro.tagName.toLowerCase());if(!info.text)continue;"
+    "ro.setAttribute('data-vpc-idx',idx);info.idx=idx;out.push(info);idx++;}}"
+    "vpcOpts(B+M85,true);"
     "var els=document.querySelectorAll(sel);"
     "var evp=[],eoff=[],evx=[],eox=[];"
     "for(i=0;i<els.length;i++){el=els[i];r=el.getBoundingClientRect();"
@@ -5709,7 +5796,7 @@ _SNAPSHOT_JS = (
     "var inf=vpcInfo(el,el.tagName.toLowerCase());"
     "if(!inf.text)continue;"
     "el.setAttribute('data-vpc-idx',idx);inf.idx=idx;out.push(inf);idx++;}"
-    "vpcLabels(document,B+M);"
+    "vpcLabels(document,B+M);vpcOpts(B+M,false);"
     # Кнопки-иконки БЕЗ текста (бургер-меню, крестик, корзина): у
     # «header-mobile__burger» ни innerText, ни aria-label — без этого прохода
     # элемент невидим, и нажать его нельзя никак. Подпись синтезируем из
@@ -5866,11 +5953,14 @@ def _state_flags(it: dict) -> dict:
     """Флаги состояния элемента из JS снапшота: on — переключатель выбран
     (1/0, -1 — не знаем; раньше терялся здесь, и логика выбранных опций
     агента была мертва), sub — кнопка отправки формы, fm — в форме, dis —
-    неактивен, qs — строго поисковое поле."""
+    неактивен, qs — строго поисковое поле; fv — поле заполнено, iv — сайт
+    пометил его неверным, er — текст ошибки (_FIELD_STATE_JS)."""
     on = it.get("on")
     return {"on": on if on in (0, 1, -1) and not isinstance(on, bool) else -1,
             "sub": bool(it.get("sub")), "fm": bool(it.get("fm")),
-            "dis": bool(it.get("dis")), "qs": bool(it.get("qs"))}
+            "dis": bool(it.get("dis")), "qs": bool(it.get("qs")),
+            "fv": bool(it.get("fv")), "iv": bool(it.get("iv")),
+            "er": " ".join(str(it.get("er") or "").split())[:80]}
 
 
 def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
@@ -5953,11 +6043,12 @@ FRAME_SNAPSHOT_ITEMS = 25  # бюджет элементов на фрейм (у
 
 _FRAME_SNAPSHOT_JS = (
     "(function(base,lim){"
-    + _VPC_ON_JS +
+    + _VPC_ON_JS + _FIELD_STATE_JS +
     "document.querySelectorAll('[data-vpc-idx],[data-vpc-gidx]').forEach(function(e){"
     "e.removeAttribute('data-vpc-idx');e.removeAttribute('data-vpc-gidx')});"
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],"
-    "summary,[role=link],[role=tab],[role=option],[role=menuitem],[role=switch]';"
+    "summary,[role=link],[role=tab],[role=option],[role=menuitem],[role=switch],"
+    "[role=checkbox],[role=radio],[role=menuitemcheckbox],[role=menuitemradio]';"
     "var edsel='textarea,input:not([type]),input[type=text],input[type=search],"
     "input[type=email],input[type=tel],input[type=url],input[type=number],"
     "input[type=password],[role=textbox],[role=searchbox],[role=combobox],"
@@ -5995,6 +6086,7 @@ _FRAME_SNAPSHOT_JS = (
     "x:Math.round(r.left),y:Math.round(r.top),ed:ed,on:vpcOn(e),"
     "sub:(e.form&&/^(submit|image)$/i.test(e.type||''))?1:0,"
     "fm:(e.form||e.closest('form'))?1:0,"
+    "fv:ed?vpcFv(e):0,iv:ed?vpcIv(e):0,er:ed?vpcEr(e):'',"
     "dis:(function(){try{if(e.matches(':disabled'))return 1;}catch(x){}"
     "return e.closest('[aria-disabled=true],fieldset[disabled],[inert]')?1:0;})(),"
     "md:(e.closest('dialog,[role=dialog],[aria-modal=true],[class*=popup],"
@@ -6170,9 +6262,10 @@ def snapshot_elements(host_part: Optional[str] = None,
 # (_mark_base): потребителю не нужно знать, какой снапшот пометил элемент.
 _GOAL_SNAPSHOT_JS = (
     "(function(goal){"
-    + _VPC_NORM_JS + _VPC_ON_JS + _CARD_NAME_FN_JS +
+    + _VPC_NORM_JS + _VPC_ON_JS + _CARD_NAME_FN_JS + _OPT_ROWS_FN_JS +
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],"
-    "summary,[role=link],[role=tab],[role=option],[role=menuitem],[role=switch]';"
+    "summary,[role=link],[role=tab],[role=option],[role=menuitem],[role=switch],"
+    "[role=checkbox],[role=radio],[role=menuitemcheckbox],[role=menuitemradio]';"
     "document.querySelectorAll('[data-vpc-gidx]').forEach(function(e){"
     "e.removeAttribute('data-vpc-gidx')});"
     "var B=__BASE__;var out=[],idx=B,i;"
@@ -6351,6 +6444,18 @@ _GOAL_SNAPSHOT_JS = (
     "var t=null;"
     "try{if(e2.matches(sel))t=e2;}catch(x){}"
     "if(!t){try{t=e2.closest(sel);}catch(x2){}}"
+    # Подпись пункта с галочкой («Темный» в фильтре): цель — его строка
+    # (label или короткая строка с единственной галочкой, _OPT_ROWS_FN_JS),
+    # а не pointer-предок ниже: 30.10 на ozon им оказывался весь блок
+    # «Вид шоколада Белый Молочный Темный…», и find вёл к заголовку
+    "if(!t){var lo=e2.closest('label');"
+    "if(lo&&(lo.control||lo.querySelector('input[type=checkbox],"
+    "input[type=radio]')))t=lo;}"
+    "if(!t){var pa4=e2,up4=0;"
+    "while(pa4&&pa4.tagName!=='BODY'&&up4<4){"
+    "if((pa4.innerText||'').replace(/\\s+/g,' ').trim().length>40)break;"
+    "if(vpcOptN(pa4)===1){t=pa4;break;}"
+    "pa4=pa4.parentElement;up4++;}}"
     # Цель сама — кликабельный якорь без href (пункт меню категорий):
     # matches/closest(sel) его не видят (селектор требует a[href])
     "if(!t){var pa2=e2,up2=0;"
@@ -6395,9 +6500,11 @@ _GOAL_SNAPSHOT_JS = (
     "var nr=ne.getBoundingClientRect();if(nr.width<2||nr.height<2)continue;"
     "if(!vpcVis(ne))continue;"
     "mark(ne);}"
-    "var nl=cont.querySelectorAll('label');"
+    # Пункты с галочкой места — label, role=checkbox, строка со своей
+    # галочкой (_OPT_ROWS_FN_JS)
+    "var nl=vpcOptRows(cont);"
     "for(var k2=0;k2<nl.length&&idx<B+M;k2++){var lb=nl[k2];"
-    "if(!lb.querySelector('input[type=radio],input[type=checkbox]'))continue;"
+    "if(lb.querySelector('[data-vpc-gidx]'))continue;"
     "var lr=lb.getBoundingClientRect();if(lr.width<2||lr.height<2)continue;"
     "if(!vpcVis(lb))continue;"
     "mark(lb);}"
@@ -10907,6 +11014,20 @@ _READ_TASK_JS = (
     "if(!e){c=tops('[class*=drawer],[class*=Drawer],[class*=cart],"
     "[class*=Cart],[class*=basket],[class*=modal],[class*=Modal],"
     "[class*=popup]').filter(fl);if(c.length)e=c[c.length-1];}"
+    # Слой без роли и говорящих классов (хеш styled-components: шторка
+    # корзины Додо, 29.10 — чтение отдавало ленту меню под ней): верхний
+    # элемент в середине вьюпорта, справа или слева (шторки выезжают сбоку),
+    # и его fixed-предок ≥30% вьюпорта, не содержащий main/article (корень
+    # приложения на весь экран — не слой)
+    "if(!e){var mb=vpcMainBox(),A=innerWidth*innerHeight,"
+    "xs=[0.5,0.85,0.15];for(var k=0;k<xs.length&&!e;k++){"
+    "var p=document.elementFromPoint(innerWidth*xs[k],innerHeight/2),d=0;"
+    "while(p&&p!==document.body&&p!==document.documentElement&&d<25){"
+    "var pr=p.getBoundingClientRect();"
+    "if(getComputedStyle(p).position==='fixed'&&pr.width*pr.height>=A*0.3"
+    "&&(mb===document.body||!p.contains(mb))"
+    "&&(p.innerText||'').trim().length>20){e=p;break;}"
+    "p=p.parentElement;d++;}}}"
     "if(!e)e=vpcMainBox();"
     "var t=(e?(e.innerText||''):'').replace(/\\n{3,}/g,'\\n\\n').trim();"
     "if(t.length>6000)t=t.slice(0,4200)+'\\n…\\n'+t.slice(-1600);"

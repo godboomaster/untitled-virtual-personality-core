@@ -139,6 +139,45 @@ class UserNotes:
     def is_full(self) -> bool:
         return len(self.all()) >= MAX_NOTES
 
+    def import_notes(self, items: Iterable[dict]) -> dict:
+        """Заметки, записанные на телефоне без ядра (web/src/offline/
+        localNotes.ts): со своими id и временем, автор — владелец. Повтор по
+        id не пишется (сеть оборвалась после записи); книжка заполнена — что
+        не влезло, пропускается. → {"imported", "skipped"}."""
+        items = list(items)
+        now = time.time()
+        fresh = []
+        with self._lock, file_lock(self.path):
+            notes = self._load()
+            have = {n.get("id") for n in notes}
+            for it in items:
+                nid = str(it.get("id") or "")
+                text = str(it.get("text") or "").strip()[:MAX_TEXT]
+                if not valid_note_id(nid) or nid in have or not text or len(notes) >= MAX_NOTES:
+                    continue
+                created = min(float(it.get("created_at") or now), now)
+                updated = it.get("updated_at")
+                note = {
+                    "id": nid,
+                    "text": text,
+                    "created_at": created,
+                    "updated_at": min(float(updated), now) if updated else None,
+                    "author_id": "web_user",
+                    "author_name": "",
+                    "owner": True,
+                    "source": "home",
+                }
+                notes.append(note)
+                have.add(nid)
+                fresh.append(note)
+            if fresh:
+                # Порядок в файле — по времени записи (с телефона — из прошлого)
+                notes.sort(key=lambda n: float(n.get("created_at") or 0))
+                atomic_write_json(self.path, notes)
+        if fresh:
+            logger.info(f"[Notes] {self.persona}: с телефона {len(fresh)}")
+        return {"imported": len(fresh), "skipped": len(items) - len(fresh)}
+
 
 def valid_note_id(note_id: str) -> bool:
     return bool(_NOTE_ID_RE.match(str(note_id or "")))

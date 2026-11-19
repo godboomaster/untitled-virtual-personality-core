@@ -88,6 +88,8 @@ pub struct Snapshot {
     voice: VoiceView,
     /// Портрет на рабочем столе: на столе ли и чей
     portrait: crate::portrait::Brief,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    robot: Option<crate::robot::View>,
 }
 
 fn now_secs() -> f64 {
@@ -137,6 +139,7 @@ fn build_snapshot(st: &AppState, cursor: u64) -> Snapshot {
         logs,
         voice: st.voice.view(),
         portrait: st.portrait.brief(),
+        robot: st.robot.as_ref().map(crate::robot::Robot::view),
     }
 }
 
@@ -334,6 +337,7 @@ pub fn save_settings(app: AppHandle, state: State<'_, AppState>, config: Config)
     // Слушание имени переключают трей и кнопка в панели, не эта форма:
     // открытая форма не должна вернуть старое значение
     cfg.wake_listen = state.sup.config().wake_listen;
+    cfg.wake_lang = state.sup.config().wake_lang;
     state.sup.set_config(cfg)?;
     Ok(settings(&app, &state))
 }
@@ -358,6 +362,27 @@ pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
 pub fn set_wake(state: State<'_, AppState>, enabled: bool) -> Result<VoiceView, String> {
     state.voice.set_enabled(enabled)?;
     Ok(state.voice.view())
+}
+
+/// Языки распознавания слушателя: «ru,en», «ru», «en» (перезапускает его)
+#[tauri::command]
+pub fn set_wake_lang(state: State<'_, AppState>, lang: String) -> Result<VoiceView, String> {
+    state.voice.set_lang(&lang)?;
+    Ok(state.voice.view())
+}
+
+/// «Запомнить мой голос» (фильтр фона): слушатель меряет вашу речь
+#[tauri::command]
+pub fn wake_calibrate(state: State<'_, AppState>) -> VoiceView {
+    state.voice.calibrate();
+    state.voice.view()
+}
+
+/// Забыть громкость вашего голоса: фильтр пропускает всё до фразы с именем
+#[tauri::command]
+pub fn wake_forget_voice(state: State<'_, AppState>) -> VoiceView {
+    state.voice.forget_voice();
+    state.voice.view()
 }
 
 #[tauri::command]

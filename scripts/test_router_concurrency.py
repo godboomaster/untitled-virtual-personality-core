@@ -771,7 +771,7 @@ def main():
         def get_response(self, messages, **kw):
             got_kw.update(kw)
             return None
-    lr._get_webchat = lambda site=None: _LChat()
+    lr._get_webchat = lambda site=None, persona=None: _LChat()
     lr.get_response([{"role": "user", "content": "x"}], task="query_rewrite",
                     persona="p")
     check("local_router: очередь side ждётся "

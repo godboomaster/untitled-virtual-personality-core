@@ -1,0 +1,7 @@
+Built-in image_gen. Edit target: 60-white-shell-separator-ghost.png. Add a black angular lower ghost outline following the shell's broken rim, retaining a thin white separator between the two contours.
+
+Precise local edit to the supplied ghost-and-cracked-egg logo.
+Add a BLACK ANGULAR LOWER OUTLINE TO THE GHOST'S BODY that follows/repeats the jagged broken edge of the lower eggshell.
+Currently the ghost's two sloping side outlines stop just above the shell, with no bottom line joining them. CONNECT those two side ends with a clean black zigzag hem line, tracing the SAME peaks, valleys and short straight segments of the shell's broken rim immediately underneath. Use sharp corners and straight segments, with a stroke weight consistent with the ghost outline. This line belongs to the GHOST, not the shell and not the middle of its torso.
+IMPORTANT: PRESERVE A THIN WHITE STRIP between the new ghost hem line and the existing eggshell rim along the entire shared edge. The new zigzag must run parallel just ABOVE the rim, with approximately 6–8 pixels of clear white separation between the dark strokes. Do not merge the two lines or erase the shell's existing outline. The ghost should now have a complete outlined body, with its angular lower hem echoing the shell's fracture.
+Keep the head, eyes, thin flat neck ribbon, smooth offsets, straight body sides, flat white body, both shell pieces, all crack lines, colors, positions, scale, framing and white background unchanged. No folds, shading, new details or text.

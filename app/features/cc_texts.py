@@ -188,6 +188,17 @@ _T = {
               "Включить его и выполнить «{cmd}»?",
         "en": "Control mode is off, so I haven't done anything. Turn it on "
               "and run \"{cmd}\"?"},
+    # То же, когда команду может выполнить и телефон (app/features/phone_control)
+    "cc_mode_offer_where": {
+        "ru": "Режим управления выключен, так что я ничего не сделал. Где выполнить «{cmd}»?\n"
+              "1. На компьютере\n2. На телефоне «{phone}»",
+        "en": "Control mode is off, so I haven't done anything. Where should I run \"{cmd}\"?\n"
+              "1. On the computer\n2. On the phone \"{phone}\""},
+    "cc_mode_offer_where_again": {
+        "ru": "Где выполнить: 1 — на компьютере, 2 — на телефоне?",
+        "en": "Where should I run it: 1 — on the computer, 2 — on the phone?"},
+    "cc_mode_offer_where_pc": {"ru": "На компьютере", "en": "On the computer"},
+    "cc_mode_offer_where_phone": {"ru": "На телефоне «{phone}»", "en": "On the phone \"{phone}\""},
     "cc_mode_offer_declined": {
         "ru": "Хорошо, режим управления не включаю.",
         "en": "Okay, I'm leaving control mode off."},
@@ -322,6 +333,18 @@ _T = {
                               "сайт)",
                         "en": "Same as last time — on {site}? (yes / another "
                               "site)"},
+    # Сайт ответил на «В корзину» окном способа получения (_receive_step)
+    "task_receive": {"ru": "Чтобы положить «{item}» в корзину, {site} "
+                           "спрашивает, как получить заказ:\n{options}\nЧто "
+                           "выбрать?",
+                     "en": "To put \"{item}\" into the cart, {site} asks how "
+                           "you'll get the order:\n{options}\nWhich one?"},
+    "task_receive_any": {"ru": "Прежде чем положить товар в корзину, {site} "
+                               "спрашивает, как получить заказ:\n{options}\n"
+                               "Что выбрать?",
+                         "en": "Before putting the item into the cart, {site} "
+                               "asks how you'll get the order:\n{options}\n"
+                               "Which one?"},
     # Разделы магазина (что заказать, не сказано) и выбранный раздел
     "task_sections": {"ru": "На {site} есть разделы:\n{options}\nЧто "
                             "посмотрим? Можно и сразу назвать, что хочешь.",
@@ -832,6 +855,9 @@ _EN_PHRASES = {
                            "anyway? (yes/no)"),
     "task_option_unchosen": ("Press \"{label}\"? It wasn't in your answer. "
                              "(yes/no)"),
+    "task_receive_close": ("Close the dialog where the site asks how you'll "
+                           "get the order? Then the item won't go into the "
+                           "cart. (yes/no)"),
 }
 
 

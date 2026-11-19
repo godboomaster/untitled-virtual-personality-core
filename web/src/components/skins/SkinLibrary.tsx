@@ -2,8 +2,9 @@
    есть (и какие сломаны), каким персонам назначен. Действия: применить к
    выбранной персоне / снять, предпросмотр, цвета, переименовать, обновить
    файлы, скачать, удалить (с подтверждением; удаление снимает скин со всех
-   персон). Встроенные скины не переименовываются, а удаление их скрывает —
-   вернуть можно кнопкой «Восстановить встроенные» над библиотекой. */
+   персон). Встроенные скины — с описанием; не переименовываются и не
+   удаляются, а скрываются — вернуть можно кнопкой «Восстановить встроенные»
+   над библиотекой. */
 
 import { useState } from 'react';
 import { confirmDialog } from '../../dialogStore';
@@ -64,13 +65,13 @@ export default function SkinLibrary({ entries, assignments, persona, personas, o
   const remove = async (entry: SkinEntry) => {
     const users = usersOf(entry.id);
     const ok = await confirmDialog({
-      title: t('skin.deleteTitle'),
+      title: t(entry.builtin ? 'skin.hideTitle' : 'skin.deleteTitle'),
       message: t(entry.builtin ? 'skin.deleteBuiltinConfirm' : 'skin.deleteConfirm', {
         name: skinTitle(entry, t),
         n: users.length,
       }),
-      confirmLabel: t('skin.delete'),
-      danger: true,
+      confirmLabel: t(entry.builtin ? 'skin.hide' : 'skin.delete'),
+      danger: !entry.builtin,
     });
     if (ok) deleteSkin(entry.id).catch(() => {});
   };
@@ -115,8 +116,14 @@ export default function SkinLibrary({ entries, assignments, persona, personas, o
               </span>
             </div>
 
-            {(entry.author || entry.version) && (
-              <div className="skin-card-meta">{[entry.author, entry.version && 'v' + entry.version].filter(Boolean).join(' · ')}</div>
+            {entry.descKey && t(entry.descKey) !== entry.descKey ? (
+              <div className="skin-card-desc">{t(entry.descKey)}</div>
+            ) : (
+              (entry.author || entry.version) && (
+                <div className="skin-card-meta">
+                  {[entry.author, entry.version && 'v' + entry.version].filter(Boolean).join(' · ')}
+                </div>
+              )
             )}
 
             <div className="skin-card-screens">
@@ -180,8 +187,12 @@ export default function SkinLibrary({ entries, assignments, persona, personas, o
               <button type="button" className="btn btn--ghost" onClick={() => void downloadSkin(entry)}>
                 ⬇ {t('skin.download')}
               </button>
-              <button type="button" className="btn btn--danger" onClick={() => void remove(entry)}>
-                {t('skin.delete')}
+              <button
+                type="button"
+                className={`btn ${entry.builtin ? 'btn--ghost' : 'btn--danger'}`}
+                onClick={() => void remove(entry)}
+              >
+                {t(entry.builtin ? 'skin.hide' : 'skin.delete')}
               </button>
             </div>
           </div>

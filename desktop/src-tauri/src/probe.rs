@@ -53,6 +53,36 @@ pub fn api_post_json(api: &ApiEnv, path: &str, body: &Value, timeout_ms: u64) ->
     finish(req.send_json(body.clone()))
 }
 
+/// Тело формы multipart с одним файлом (поле field, имя файла filename)
+pub fn multipart(boundary: &str, field: &str, filename: &str, bytes: &[u8]) -> Vec<u8> {
+    // Кавычки и переводы строк в имени сломали бы заголовок части
+    let name: String = filename.chars().map(|c| if matches!(c, '"' | '\\' | '\r' | '\n') { '_' } else { c }).collect();
+    let mut body = Vec::with_capacity(bytes.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// Файл формой multipart — как <input type=file> веба: POST /api/personas/{p}/files
+pub fn api_post_file(api: &ApiEnv, path: &str, field: &str, filename: &str, bytes: &[u8], timeout_ms: u64) -> Result<Value, String> {
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let boundary = format!("----vpc{nonce:x}");
+    let body = multipart(&boundary, field, filename, bytes);
+    let mut req = agent(timeout_ms)
+        .post(&format!("{}{path}", api.base))
+        .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"));
+    if let Some(t) = &api.token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    finish(req.send_bytes(&body))
+}
+
 pub fn health(api: &ApiEnv) -> bool {
     api_get(api, "/api/health", 1500).map(|v| v["status"] == "ok").unwrap_or(false)
 }
@@ -150,4 +180,19 @@ fn macos_free_percent() -> Option<u32> {
         )
     };
     (rc == 0 && (0..=100).contains(&val)).then_some(val as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::multipart;
+
+    #[test]
+    fn multipart_body() {
+        let body = multipart("XX", "file", "отчёт \"1\".pdf", b"%PDF");
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(
+            text,
+            "--XX\r\nContent-Disposition: form-data; name=\"file\"; filename=\"отчёт _1_.pdf\"\r\nContent-Type: application/octet-stream\r\n\r\n%PDF\r\n--XX--\r\n"
+        );
+    }
 }

@@ -1,0 +1,15 @@
+Built-in ImageGen. Edit target: 116-original-line-optical-tray.png.
+Location guide: references/head-shell-contours-markup-01.png.
+Candidate only: 117-subtle-head-shell-outlines.png. Not applied to production icons.
+
+Use case: precise-object-edit.
+Asset type: TINY LOCAL LINE-WEIGHT adjustment to an existing approved black-and-white ghost logo.
+Input image 1: SOLE COMPLETE EDIT TARGET, 116-original-line-optical-tray.png. This is the CURRENT version and fixes the exact composition, proportions, eyes, collar, leaves, torso and eggshell.
+Input image 2: LOCATION GUIDE ONLY, the user's screenshot with red hand-drawn outlines. The RED annotations identify ONLY the circular HEAD OUTLINE and the OUTER LOWER EGGSHELL PERIMETER (including its existing chipped outer left tip and tall angular right tip). The red marks are NOT artwork. Do not copy the red marks or crop/framing of image 2.
+Primary request: make ONLY those marked BLACK contours a TINY BIT thicker than they are in IMAGE 1. This is a restrained comparison candidate; a previous heavy/blurry version was rejected. Aim for about 10–15 percent extra width, NOT 30 percent, not double. At the 1254px canvas scale of IMAGE 1, add only about 2 pixels of black on each side of the existing selected contour centerline (roughly 4 pixels total extra width). If a line already looks heavy, add less.
+ONLY TWO CHANGES:
+- Slightly thicken the circular head contour, following precisely its current circle and preserving its open ends and collar clearances.
+- Slightly thicken the exterior U-shaped perimeter of the lower eggshell, following the exact existing left outside edge, left chipped tip, lower-left facets, bottom curve/facets, lower-right facets and outside right rising edge with its angular tip. Preserve all corners, locations and outline centerlines.
+DO NOT thicken the long central interior jagged rim across the top of the shell. DO NOT thicken or otherwise edit the ghost's torso sides or jagged hem. DO NOT thicken cracks, collar, leaves or their veins. Keep both eyes exactly unchanged. Preserve all existing white clearance slits and the open upper-left shell corner. Do not close gaps, merge components, move endpoints toward other strokes, or add new black connections.
+CRITICAL INVARIANTS: same square 1254x1254 composition as IMAGE 1; same location, margins, overall silhouette, head circle diameter, eye shape/size/spacing, leaf count/shapes/directions/positions, exact woven angular collar and crossover, body height/width, shell width/height, jagged rim, crack paths and all unmarked line weights. No rescaling, recentering, crop, redesign, squashing, bigger head, shorter body, flattening shell, simplification, additional cracks or removal of features.
+Rendering: clean crisp opaque pure BLACK ink on the SAME flat WHITE background as IMAGE 1. Very sharp intentional line edges with normal antialiasing only. NO blur, glow, soft dilation fringe, drop shadow, gray ink, texture, grain, gradients, colored annotations, text, labels, measurements, border or mockup. Output ONE COMPLETE clean logo. The change must be subtle and confined to the two marked exterior contours.

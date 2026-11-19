@@ -186,7 +186,7 @@ html[data-skin='sci-fi-hud'] .chrome-bar {
    --bk — цвет засечек, --bk1 — левого верхнего угла, --bl — длина плеча.
    ===================================================================== */
 html[data-skin='sci-fi-hud'] :is(
-  .card, .home-hero, .boot-panel, .chat-card, .home-presence, .home-dossier, .home-feed,
+  .card, .home-hero, .boot-panel, .chat-card, .home-presence, .home-feed,
   .notes, .cal, .pcreate-panel, .dossier-panel, .dialog-panel, .info-modal,
   .skin-theme-card, .start-guide-steps, .persona-card, .start-control-card
 ) {
@@ -231,7 +231,7 @@ html[data-skin='sci-fi-hud'] :is(.pcreate-panel, .dossier-panel, .dialog-panel, 
 }
 
 /* Наведение на кликабельные панели: засечки становятся акцентом, без подъёма */
-html[data-skin='sci-fi-hud'] :is(.chat-card, .home-presence, .home-dossier, .skin-theme-card):hover {
+html[data-skin='sci-fi-hud'] :is(.chat-card, .home-presence, .skin-theme-card):hover {
   --bk: var(--sfh-hi);
   background-color: var(--sfh-glass);
   border-color: var(--sfh-line-2);
@@ -1729,9 +1729,8 @@ html[data-skin='sci-fi-hud'] .home-tele-note {
   color: var(--text-dim);
 }
 
-/* Карточки присутствия и разделов консоли */
-html[data-skin='sci-fi-hud'] .home-presence-name,
-html[data-skin='sci-fi-hud'] .home-dossier h3 {
+/* Карточки присутствия */
+html[data-skin='sci-fi-hud'] .home-presence-name {
   font-family: var(--font-disp);
   font-size: 17px;
   font-weight: 600;
@@ -1741,8 +1740,6 @@ html[data-skin='sci-fi-hud'] .home-dossier h3 {
 
 html[data-skin='sci-fi-hud'] .home-presence-status,
 html[data-skin='sci-fi-hud'] .home-presence-reply,
-html[data-skin='sci-fi-hud'] .home-dossier-foot,
-html[data-skin='sci-fi-hud'] .home-dossier-index,
 html[data-skin='sci-fi-hud'] .home-feed-empty {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1754,13 +1751,8 @@ html[data-skin='sci-fi-hud'] .home-presence-activity {
   color: var(--text-dim);
 }
 
-html[data-skin='sci-fi-hud'] .home-presence-reply,
-html[data-skin='sci-fi-hud'] .home-dossier-foot {
+html[data-skin='sci-fi-hud'] .home-presence-reply {
   border-top: 1px solid var(--sfh-line);
-}
-
-html[data-skin='sci-fi-hud'] .home-dossier-foot .go {
-  color: var(--sfh-hi);
 }
 
 html[data-skin='sci-fi-hud'] .home-feed-row {
@@ -1794,18 +1786,10 @@ html[data-skin='sci-fi-hud'] .start-guide-dlg-titlebar .lights i {
   background: transparent;
 }
 
-html[data-skin='sci-fi-hud'] .home-term-line .bright {
-  color: var(--term-bright);
-}
-
 html[data-skin='sci-fi-hud'] .home-term-cursor,
 html[data-skin='sci-fi-hud'] .start-guide-dlg-cursor {
   background: var(--term-bright);
   animation: sfh-breathe 2.6s ease-in-out infinite;
-}
-
-html[data-skin='sci-fi-hud'] .barcode i {
-  background: var(--sfh-ink);
 }
 
 /* Заметки и календарь */

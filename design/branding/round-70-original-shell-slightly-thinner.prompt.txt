@@ -1,0 +1,9 @@
+Built-in image_gen. Edit target: 100-circular-head-square-logo.png. Output: 102-original-egg-line-slightly-thinner-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: subtle line-weight adjustment to the original square ghost logo.
+Input image 1: sole edit target, 100-circular-head-square-logo.png. Use this ORIGINAL BOLD-SHELL version as the base.
+Primary request: keep the original eggshell drawing style and make its black linework ONLY A LITTLE thinner. Reduce the LOWER EGGSHELL outer border and jagged top rim stroke widths by approximately 15%, to about 85% of their original thickness. The shell should still have a strong, bold black outline very close to this input, with just a modest lighter weight.
+Preserve the original clean, smooth-faceted shell silhouette and all its corners and curves, exact size and placement, original broken rim geometry, white interior and main crack paths. Keep the original pointed tapered crack style; reduce crack thickness only slightly, about 10–15%, maintaining their original visual character. This is a small adjustment to the original ink weight, not a delicate hand-drawn or hairline outline. Keep crisp solid-black edges, no sketchiness or wobble.
+Everything above the shell stays EXACTLY unchanged: true circular head and its thin outline, solid-black short narrow oval eyes and their spacing, two left leaves with veins, white clearance from the head, faceted interwoven collar and white cuts, body outline and jagged hem with current line weights. Preserve the white separation between the ghost hem and shell rim, full square composition, canvas size, overall logo scale and position, margins and white background.
+Output ONE COMPLETE square black-and-white logo. Only the lower shell line weights become subtly lighter than the original input. No other redesign, thin pen-line treatment, new objects, upper shell, text, colors, shading, shadows, gradients, texture or border.

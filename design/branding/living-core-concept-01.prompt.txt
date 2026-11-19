@@ -1,0 +1,11 @@
+Generated with the built-in image_gen tool. Concept exploration; not yet integrated into the application.
+
+Use case: logo-brand.
+Asset type: one polished logo concept presentation for the existing open-source project Virtual Persona Core.
+Project: a platform for living AI characters with persistent memory, moods, their own lives between conversations, proactive messages, and desktop companions. Existing visual language is precise monochrome sci-fi HUD, graphite and off-white, with a small green life-status core. Current mark is a plain white ring with a green central dot.
+Primary request: design an original, extremely simple and memorable new logo called "Living Core". Evolve the circle-and-core idea into an open circular shell whose negative space subtly reads as a living human side profile facing right. A small vivid green circular inner core suggests awareness and continuity. The silhouette must be confident and geometric, slightly organic, with no tiny detail, readable as a small application icon. Prioritize a striking purposeful abstract emblem over a literal face. Avoid resembling a power button, camera, letter G, generic robot, or chat bubble.
+Create a beautifully art-directed landscape brand concept sheet with ONE identical emblem applied consistently across the sheet, not multiple competing proposals.
+Composition: generous editorial whitespace, strict layout. Large left graphite panel with oversized ivory and green emblem and modest exact wordmark "Virtual Persona" with small "CORE" beneath. Right off-white panel showing the exact same emblem as a rounded-square dark desktop application icon, then the same mark in solid black monochrome, then small icon scale examples. Top small label "VIRTUAL PERSONA CORE"; bottom discreet English concept label "01 / LIVING CORE". Typography modern clean sans serif. Text only those exact labels, no invented filler.
+Palette: graphite #151715, ivory #F2F1EB, signal green #64D98B, restrained neutral gray.
+Style: flat vector-like graphic design, crisp consistent edges, optically balanced geometry, premium independent software brand identity. No 3D, no gradients, no glow, no neon effects, no textures, no stock mockup objects, no ornament, no watermark. A logo design presentation, not a website screenshot.
+Landscape aspect ratio around 3:2.

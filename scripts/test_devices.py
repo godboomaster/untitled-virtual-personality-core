@@ -412,7 +412,8 @@ def test_routes():
     orig = server_mod._api_token
     server_mod._api_token = "s3cr3t"
     try:
-        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
+        # Устройство — в сети (с этой машины токен не нужен)
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
         auth = {"Authorization": "Bearer s3cr3t"}
         hello = {"id": "vpc-pi", "name": "Робот", "names": ["робот", "robot"],
                  "capabilities": ["camera.snapshot"]}
@@ -564,7 +565,7 @@ def test_stream_photo():
         return None
 
     async def run(req):
-        resp = await server_mod.chat_stream(req, SimpleNamespace(headers={"host": "127.0.0.1:8000"}))
+        resp = await server_mod.chat_stream(req, SimpleNamespace(headers={"host": "127.0.0.1:8000"}, client=SimpleNamespace(host="127.0.0.1")))
         events = []
         async for chunk in resp.body_iterator:
             for frame in chunk.split("\n\n"):

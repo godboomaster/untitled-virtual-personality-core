@@ -1,24 +1,45 @@
 @import './fonts.css';
 
 /* Clean Neutral: миниатюра в галерее — тёплая бумага, оливковая колонка
-   меню, кремовые карточки с мягкой тенью, антиква в заголовке */
+   меню, кремовые карточки с тонкой линией, антиква в заголовке; тёмная
+   схема — графит, светлый шалфей. Плоско: без теней и градиентов. */
 .skin-swatch[data-swatch='clean-neutral'] {
   --sw-bg: #f3f0e8;
   --sw-panel: #fbfaf6;
   --sw-side: #4f5844;
+  --sw-side-i: #f4efe3;
   --sw-text: #2d2e29;
   --sw-dim: #a48d78;
   --sw-in: #fbfaf6;
+  --sw-in-line: #e2dbce;
   --sw-out: #56604a;
-  --sw-line: #e4ddd0;
+  --sw-line: #e2dbce;
+  --sw-field: #fdfcf9;
   --sw-accent: #5e7449;
-  border: 1px solid #e4ddd0;
+  --sw-dot-1: #dfb9b6;
+  --sw-dot-2: #e6dac8;
+  --sw-dot-3: #afcfa3;
+  border: 1px solid var(--sw-line);
   border-radius: 14px;
-  background:
-    radial-gradient(120% 90% at 100% 0%, rgba(208, 225, 232, 0.55), transparent 60%),
-    radial-gradient(90% 80% at 0% 100%, rgba(232, 240, 213, 0.6), transparent 65%),
-    var(--sw-bg);
-  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.06), 0 10px 22px -14px rgba(80, 66, 44, 0.3);
+  background: var(--sw-bg);
+}
+
+.skin-swatch[data-swatch='clean-neutral'][data-scheme='dark'] {
+  --sw-bg: #1b1c18;
+  --sw-panel: #24261f;
+  --sw-side: #141511;
+  --sw-side-i: #ece7da;
+  --sw-text: #ece7da;
+  --sw-dim: #9a968a;
+  --sw-in: #24261f;
+  --sw-in-line: #373a31;
+  --sw-out: #3d4632;
+  --sw-line: #373a31;
+  --sw-field: #171814;
+  --sw-accent: #a9c08a;
+  --sw-dot-1: #6e4a46;
+  --sw-dot-2: #4a4d42;
+  --sw-dot-3: #5d6f4c;
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar {
@@ -26,26 +47,22 @@
   gap: 4px;
   padding: 0 8px;
   background: transparent;
-  border-bottom: 1px solid rgba(164, 141, 120, 0.22);
+  border-bottom: 1px solid var(--sw-line);
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #cbb9a4;
+  background: var(--sw-dot-2);
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i:first-child {
-  background: #dfb9b6;
-}
-
-.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i:nth-child(2) {
-  background: #e6dac8;
+  background: var(--sw-dot-1);
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i:nth-child(3) {
-  background: #afcfa3;
+  background: var(--sw-dot-3);
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-side {
@@ -55,21 +72,28 @@
   padding: 9px 6px;
   border: none;
   border-radius: 9px;
-  background: linear-gradient(180deg, #56604a, #474f3d);
-  box-shadow: 0 6px 12px -8px rgba(47, 52, 38, 0.6);
+  background: var(--sw-side);
+}
+
+.skin-swatch[data-swatch='clean-neutral'][data-scheme='dark'] .skin-swatch-side {
+  border: 1px solid #2d3028;
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-side i {
   height: 5px;
   border-radius: 99px;
-  background: #f3eee2;
+  background: var(--sw-side-i);
   opacity: 0.35;
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-side i:first-child {
   height: 8px;
-  background: #f6f2e8;
   opacity: 1;
+}
+
+.skin-swatch[data-swatch='clean-neutral'][data-scheme='dark'] .skin-swatch-side i:first-child {
+  background: #2a2d25;
+  box-shadow: inset 0 0 0 1px #373a31;
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-main {
@@ -87,27 +111,14 @@
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-msg {
-  position: relative;
   height: 13px;
-  border: none;
+  border: 1px solid var(--sw-in-line);
   border-radius: 7px 7px 7px 3px;
   background: var(--sw-in);
-  box-shadow: 0 1px 1px rgba(80, 66, 44, 0.06), 0 4px 8px -5px rgba(80, 66, 44, 0.35);
-}
-
-/* Цитатная черта у пузыря персоны */
-.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-msg--in::before {
-  content: '';
-  position: absolute;
-  left: 4px;
-  top: 3px;
-  bottom: 3px;
-  width: 1.5px;
-  border-radius: 1px;
-  background: #7a9c57;
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-msg--out {
+  border-color: var(--sw-out);
   border-radius: 7px 7px 3px 7px;
   background: var(--sw-out);
 }
@@ -117,12 +128,16 @@
   padding: 0 2px;
   border: 1px solid var(--sw-line);
   border-radius: 99px;
-  background: #fdfcf9;
+  background: var(--sw-field);
 }
 
 .skin-swatch[data-swatch='clean-neutral'] .skin-swatch-send {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #4f5844;
+  background: var(--sw-accent);
+}
+
+.skin-swatch[data-swatch='clean-neutral']:not([data-scheme='dark']) .skin-swatch-send {
+  background: var(--sw-side);
 }

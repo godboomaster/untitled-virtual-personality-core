@@ -23,6 +23,10 @@ public class ReminderBootReceiver extends BroadcastReceiver {
         }
         final boolean missed = Intent.ACTION_BOOT_COMPLETED.equals(action);
         final Context app = context.getApplicationContext();
+        // Аватар поверх приложений был включён — вернуть после перезагрузки и обновления
+        if (!"android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED".equals(action)) {
+            AvatarOverlayService.restore(app);
+        }
         final PendingResult result = goAsync();
         new Thread(() -> {
             try {

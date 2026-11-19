@@ -1,7 +1,6 @@
 package io.vpcore.app;
 
 import android.app.AlarmManager;
-import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -11,7 +10,6 @@ import android.os.Build;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -295,7 +293,7 @@ final class ReminderAlarms {
                 .putExtra(BackgroundInboxService.EXTRA_PERSONA, persona);
         PendingIntent pi = PendingIntent.getActivity(ctx, persona.hashCode(), open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification n = new NotificationCompat.Builder(ctx, BackgroundInboxService.CHANNEL_MESSAGES)
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, BackgroundInboxService.CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_stat_vpc)
                 .setContentTitle(name)
                 .setContentText(text)
@@ -305,11 +303,9 @@ final class ReminderAlarms {
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_REMINDER)
-                .build();
-        try {
-            NotificationManagerCompat.from(ctx).notify(TAG_NOTIFY + e.optString("ref"), 0, n);
-        } catch (SecurityException ex) {
+                .setCategory(NotificationCompat.CATEGORY_REMINDER);
+        // В общую стопку уведомлений приложения — отдельной карточкой, не в переписку
+        if (!NotifyStack.post(ctx, TAG_NOTIFY + e.optString("ref"), 0, b, persona)) {
             Log.w(TAG, "уведомления запрещены — напоминание не показано");
         }
     }

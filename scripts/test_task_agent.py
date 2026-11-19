@@ -240,6 +240,14 @@ def main():
         ScriptedRouter(['{"action":"task","goal":"закажи мне пиццу"}']))
     check("resolve_intent_llm → task-действие для агента",
           act == {"kind": "task", "goal": "закажи мне пиццу"} and err is None)
+    from app.features import task_agent as _ta_mod
+    check("правило шагов: «найди мне <товар>» — до страницы товара, "
+          "выбирает человек, без корзины",
+          "ends on the item's page, not on the shop's main page"
+          in _ta_mod._STEP_RULES
+          and "open the one the user picks" in _ta_mod._STEP_RULES
+          and "without adding it to the cart unless asked"
+          in _ta_mod._STEP_RULES)
 
     # ── 4. Полный прогон: вопрос → ответ → выбор → граница оплаты ──
     cc = FakeCC()
@@ -321,7 +329,9 @@ def main():
     router = ScriptedRouter([
         {"action": "type", "n": 2, "text": "+7 900 000-00-00"},
     ])
-    reply = agent.start("c4", "закажи пиццу на pizza.test", router)
+    # Номер — от человека (в цели): свой номер модель не вводит (_type_gate)
+    reply = agent.start("c4", "закажи пиццу на pizza.test, мой телефон "
+                        "+7 900 000-00-00", router)
     check("телефон → подтверждение, ввода нет",
           "Делаю?" in reply and not cc.executed)
     agent.cancel("c4")
@@ -816,7 +826,8 @@ def main():
     cc = FormCC()
     agent = TaskAgent(cc)
     agent.on_typed = lambda a: typed.append((a.get("text"), list(cc.executed)))
-    agent.start("h1", "x", ScriptedRouter([
+    # Пароль — от человека (в цели): свой модель не вводит (_type_gate)
+    agent.start("h1", "войди, пароль Kotik2019!", ScriptedRouter([
         {"action": "type", "n": 8, "text": "Kotik2019!"}]), user_id="A")
     check("on_typed: ввод в поле пароля отмечен до вопроса",
           typed and typed[0] == ("Kotik2019!", []))
@@ -1079,7 +1090,7 @@ def main():
         router = ScriptedRouter([
             {"action": "type", "n": 8, "text": "Kotik2019!"},
             {"action": "done", "message": "ок"}])
-        agent.start("l1", "x", router, user_id="A")
+        agent.start("l1", "войди, пароль Kotik2019!", router, user_id="A")
         q = agent._runs["l1"]["awaiting"]
         agent.feed("l1", "да", router, user_id="A")
     finally:
@@ -2257,7 +2268,7 @@ def main():
         {"idx": 2, "tag": "input", "role": "textbox", "text": "Поиск адреса",
          "ed": True, "q": True, "qs": False, "fm": True}]
 
-    def a5(reply_objs, chat, fail_type=False):
+    def a5(reply_objs, chat, fail_type=False, goal="x"):
         class A5CC(type(real_cc({}))):
             pass
         cc = real_cc({s_url: [dict(x) for x in s_items]}, url=s_url)
@@ -2270,7 +2281,7 @@ def main():
                 return orig(action, router)
             cc._dispatch = _d
         agent = TaskAgent(cc)
-        reply = agent.start(chat, "x", ScriptedRouter(reply_objs), user_id="A")
+        reply = agent.start(chat, goal, ScriptedRouter(reply_objs), user_id="A")
         return cc, agent, reply
 
     cc, agent, reply = a5([{"action": "type", "n": 1, "text": "пицца",
@@ -2279,8 +2290,10 @@ def main():
     check("A5: ввод+Enter в строго поисковое поле — без «да»",
           [a["kind"] for a in cc.dispatched] == ["type"]
           and cc.dispatched[0].get("field_safe"))
+    # Адрес — от человека (в цели): свой модель не вводит (_type_gate)
     cc, agent, reply = a5([{"action": "type", "n": 2, "text": "Ленина",
-                            "submit": True}], "a5b")
+                            "submit": True}], "a5b",
+                          goal="найди пиццерию на Ленина")
     check("A5: «Поиск адреса» (q по подписи, в форме) + Enter — «да»",
           not cc.dispatched and "Делаю?" in reply)
     cc, agent, reply = a5([{"action": "type", "n": 1, "text": "пицца"},

@@ -1,0 +1,7 @@
+Built-in image_gen. Edit target: 51-slightly-wider-face-ghost.png. Widen only the lower-middle cheek contours while preserving the crown, eyes, flat collar interface and the remaining emblem.
+
+Precise local facial-contour edit of the supplied ghost-and-cracked-egg logo.
+The user clarifies: widen the head SPECIFICALLY IN THE CHEEK AREA, not uniformly over the whole head.
+Gently push the left and right LOWER-MIDDLE side contours of the white face outward, around the level of the lower halves/bottoms of the eyes, to create subtly fuller, wider cheeks. Use smooth understated cheek bulges, about 5–7% extra width at that cheek level, tapering seamlessly back into the existing upper head curve and existing flat lower face edge at the ribbon. The widest point should move slightly lower toward the cheeks. No ears, points, blush marks, smile or extra facial detail.
+Keep the top crown and forehead, overall head height, eye shapes/sizes/spacing, flat face-to-ribbon boundary and thin ribbon unchanged. This is a localized cheek-contour adjustment, not scaling the whole face or turning it into a wide ellipse.
+Preserve the slender straight-sided white body without folds, smooth collar offsets, sharp body/shell junction, both eggshell pieces, cracks, facets, outlines, all colors, positions, framing and white background. No other changes.

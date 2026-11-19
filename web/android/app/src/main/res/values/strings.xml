@@ -16,6 +16,8 @@
     <string name="bg_channel_messages_desc">Reminders and messages from personas while the app is closed</string>
     <string name="bg_test_title">Test</string>
     <string name="bg_test_text">Persona message notifications work</string>
+    <!-- Общая стопка уведомлений (NotifyStack): «вы» в карточке-переписке персоны -->
+    <string name="notify_you">You</string>
     <!-- Виджет «Инициатива» (InitiativeWidget) -->
     <string name="widget_initiative_label">Persona initiative</string>
     <string name="widget_initiative_desc">Messages personas write on their own</string>
@@ -57,6 +59,20 @@
     <string name="portrait_w_offline">No connection to the core: the portrait will appear once it answers</string>
     <string name="portrait_w_gone">Persona not found</string>
     <string name="portrait_w_preview">The persona\'s live portrait</string>
+    <string name="portrait_w_write">Write to %1$s</string>
+    <string name="portrait_w_user">You: %1$s</string>
+    <string name="portrait_in_hint">Message</string>
+    <string name="portrait_in_send">Send</string>
+    <string name="portrait_in_mic">Dictate</string>
+    <string name="portrait_in_listening">Listening…</string>
+    <string name="portrait_in_sending">Sending…</string>
+    <string name="portrait_in_denied">The core refused access — check the token in the app (Connection)</string>
+    <string name="portrait_in_no_mic">No microphone access</string>
+    <string name="portrait_in_no_speech">No speech recognition on this phone — use the keyboard\'s mic</string>
+    <string name="portrait_in_not_heard">Didn\'t catch that — try again</string>
+    <string name="portrait_in_mic_error">Speech recognition failed</string>
+    <string name="portrait_in_failed">Your message to %1$s didn\'t go through — the text is kept in the Write window</string>
+    <string name="portrait_in_failed_last">Your last message didn\'t go through — the core returned an error. Send it again?</string>
     <!-- Голосовая активация по имени (WakeWordService) -->
     <string name="wake_channel">Listen for name</string>
     <string name="wake_channel_desc">Silent notification while the app listens for a persona\'s name</string>
@@ -79,6 +95,8 @@
     <!-- By voice without the core: what the service says itself (PhoneVoiceOps.say, WakeWordService) -->
     <string name="wake_say_offline_later">The core is not responding. I\'ll answer when you open the app</string>
     <string name="wake_say_offline_queued">The core is not responding and nothing else can answer. The message is waiting in the chat</string>
+    <string name="wake_say_phone_later">I\'ll answer when you open the app</string>
+    <string name="wake_say_phone_queued">Nothing can answer: no cloud key and no Gemma on the phone. The message is waiting in the chat</string>
     <string name="wake_say_offline_slow">The answer will be in the chat</string>
     <string name="wake_act_open_ok">Opening %1$s</string>
     <string name="wake_act_alarm_ok">Alarm set for %1$s</string>
@@ -101,4 +119,28 @@
     <string name="wake_tap_alarm">Set an alarm for %1$s</string>
     <string name="wake_tap_timer">Start the timer</string>
     <string name="wake_tap_alarms">Open the alarms</string>
+    <!-- Управление экраном (PhoneControlService): название и описание в спец. возможностях -->
+    <string name="phone_control_label">Virtual Persona: screen control</string>
+    <string name="phone_control_desc">Lets your persona tap, type and scroll on this phone when you ask it to in the chat (\"on the phone, tap Send\"). The commands come only from your own Virtual Persona core. Risky taps (send, delete, confirm) need your \"yes\" first, payments are never tapped, and banking, password and sign-in code apps are not read or touched.</string>
+    <string name="avatar_overlay_channel">Avatar over apps</string>
+    <string name="avatar_overlay_title">%1$s over your apps</string>
+    <string name="avatar_overlay_title_any">Avatar over your apps</string>
+    <string name="avatar_overlay_text">Tap to pat, drag to move, pinch to resize, long-press for the menu</string>
+    <string name="avatar_overlay_hide">Hide</string>
+    <string name="avatar_gaze_label">Virtual Persona: where you tap</string>
+    <string name="avatar_gaze_desc">Lets the avatar floating over your apps look where you tap or type. The service only gets the position of the tapped element on the screen; it does not read the screen text and sends nothing anywhere. It also sees whether the keyboard is open (window types only), so the avatar lets taps through while you type. Events arrive only while the avatar is on the screen.</string>
+    <string name="avatar_overlay_text_pass">Taps go through the avatar to the app below</string>
+    <string name="avatar_overlay_pass">Let taps through</string>
+    <string name="avatar_overlay_catch">Catch taps</string>
+    <string name="avatar_menu_write">Write</string>
+    <string name="avatar_menu_persona">Switch persona</string>
+    <string name="avatar_menu_app">Open the app</string>
+    <string name="avatar_menu_back">Back</string>
+    <string name="avatar_menu_no_personas">No other persona has head sheets on the phone yet</string>
+    <string name="portrait_w_out">%1$s: over your apps</string>
+    <string name="portrait_w_away">%1$s is over your apps now. Tap to bring them back</string>
+    <string name="portrait_w_no_overlay">Allow "Display over other apps": in the app, Avatar → Over apps</string>
+    <string name="avatar_menu_widget">Back to the widget</string>
+    <string name="portrait_w_back">Bring back</string>
+    <string name="portrait_w_switch">Switch persona</string>
 </resources>

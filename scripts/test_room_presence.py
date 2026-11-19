@@ -46,6 +46,7 @@ def main():
     importlib.reload(lp_mod)
     from app.api import room_api
     importlib.reload(room_api)
+    from app.core import llm_economy
 
     ok = 0
     failed = []
@@ -340,6 +341,9 @@ def main():
         fake = FakeLocal(True, '{"place": true, "zone": "window", "spot": '
                                '{"label": "смотрит в телескоп", "place": "у телескопа", "pose": "look"}}')
         lp_mod.get_local_router = lambda ctx: fake
+        # Размещение моделью — пункт «Экономии нейронки» (по умолчанию
+        # эвристика, см. scripts/test_llm_economy.py)
+        llm_economy.update({"room_llm_placement": True})
         living._place_room_items({})
         pl = room.read_placements("room_sig")
         check("размещение: удалённые предметы выброшены лениво",
@@ -368,6 +372,7 @@ def main():
         check("места тика: item:Телескоп из размещения", "item:Телескоп" in spots_now)
     finally:
         lp_mod.get_local_router = orig_glr
+        llm_economy.update({"room_llm_placement": False})
     check("флаги: room_pokes_to_llm по умолчанию false, room_llm_placement true",
           lp_mod.LivingPersonaConfig({}).room_pokes_to_llm is False
           and lp_mod.LivingPersonaConfig({}).room_llm_placement is True)
@@ -381,6 +386,16 @@ def main():
     check("layout: координаты и размер зажаты, поза нормализована",
           g_item["marker"] == {"x": 1.0, "y": 0.5} and g_item["size"] == 25.0
           and g_item["spot"]["pose"] == "stand" and lay["avatar"]["head"] == "hex")
+    # Тело и одежда аватара (body) сохраняются; не число — 400
+    lay_b = room_api.put_layout(persona, {"avatar": {"head": "squircle", "eyes": 16, "accessory": 7, "shade": 1, "body": 5}})
+    check("layout: тело аватара (body) сохранено",
+          lay_b["avatar"] == {"head": "squircle", "eyes": 16, "accessory": 7, "shade": 1, "body": 5})
+    try:
+        room_api.put_layout(persona, {"avatar": {"head": "hex", "body": "suit"}})
+        check("layout: body не число — 400", False)
+    except room_api.RoomError as e:
+        check("layout: body не число — 400", e.status == 400)
+    lay = room_api.put_layout(persona, {"avatar": {"head": "hex", "eyes": 1, "accessory": 0, "shade": 2}})
     lay = room_api.put_layout(persona, {"items": {"Гитара": {"hidden": True},
                                                   "Кружка": {"size": 5}}})
     check("layout: частичное слияние сохраняет прежние поля",

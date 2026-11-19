@@ -49,6 +49,7 @@ export interface RoomSceneProps {
   nextPlan?: RoomPlan | null;
   compact?: boolean; // PiP: только сцена и одна строка статуса
   offline?: boolean; // нет связи с ядром: сцена приглушена, персона дремлет за столом
+  mood?: { valence: number; arousal: number } | null; // настроение — эмоции глаз в покое
   editable?: boolean; // перетаскивание/resize меток предметов
   ownerDocument?: Document | null;
   className?: string;
@@ -70,7 +71,7 @@ function RoomSceneImpl(props: RoomSceneProps) {
   const {
     personaId, personaName, config, spotKey, pose, statusLine, avatar, sprite, sprites, roomBg, items,
     itemsReady = true, timeOfDay, weather, note, nextPlan, compact = false, offline = false, editable = false, ownerDocument, className, style,
-    overlay, onClick, onItemChange, onPoke, onNoteOpen,
+    overlay, onClick, onItemChange, onPoke, onNoteOpen, mood = null,
   } = props;
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -217,6 +218,7 @@ function RoomSceneImpl(props: RoomSceneProps) {
           seed={personaId}
           name={personaName}
           dozing={offline}
+          mood={mood}
           onPoke={poke}
         />
       )}
@@ -523,10 +525,11 @@ interface AvatarLayerProps {
   seed: string;
   name: string;
   dozing: boolean;
+  mood: { valence: number; arousal: number } | null;
   onPoke: () => void;
 }
 
-const AvatarLayer = memo(function AvatarLayer({ point, body, cue, seat, avatar, sprite, sprites, seed, name, dozing, onPoke }: AvatarLayerProps) {
+const AvatarLayer = memo(function AvatarLayer({ point, body, cue, seat, avatar, sprite, sprites, seed, name, dozing, mood, onPoke }: AvatarLayerProps) {
   const { t } = useI18n();
   const anchorRef = useRef<HTMLDivElement>(null);
   const mountedAt = useRef(0);
@@ -596,7 +599,7 @@ const AvatarLayer = memo(function AvatarLayer({ point, body, cue, seat, avatar, 
               alt={t('room.spriteAlt')}
             />
           ) : (
-            <AvatarFigure config={avatar} pose={shownBody} attention={shownCue} seat={seat} height={132} seed={seed} dozing={dozing && !walk} />
+            <AvatarFigure config={avatar} pose={shownBody} attention={shownCue} seat={seat} height={132} seed={seed} dozing={dozing && !walk} mood={mood} />
           )}
         </div>
       </div>

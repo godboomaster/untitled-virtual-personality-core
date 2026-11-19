@@ -13,9 +13,11 @@
      Запись обёрнута в try/catch: переполнение квоты не роняет применение,
      а показывается в панели скинов. Когда бэкенд появляется, локальная
      библиотека переносится на сервер.
-   Встроенные скины (presets/, сейчас их нет — PRESETS пуст) поставляются
-   с приложением: не удаляются, правка цветов встроенного создаёт
-   пользовательскую копию.
+   Встроенные скины (presets/<id>.<экран>.html) поставляются с приложением:
+   метаданные — в PRESETS, файлы — отдельными чанками, грузятся при первом
+   показе (loadSkinFiles). Персонам сами не назначаются; «удаление» скрывает
+   встроенный из библиотеки (вернуть — restoreBuiltinSkins), правка цветов
+   создаёт пользовательскую копию.
 
    Старый формат (vpc-skin:<персона> — файлы прямо под персоной, legacy-
    комбинированный файл дублировался на каждый экран) при первой загрузке
@@ -43,6 +45,7 @@ export interface SkinEntry {
   id: string;
   name: string;
   nameKey?: string; // i18n-ключ имени встроенного скина
+  descKey?: string; // i18n-ключ описания встроенного скина
   author?: string;
   version?: string;
   contract: number;
@@ -98,24 +101,88 @@ const RETRY_SERVER_MS = 10000;
 
 // ── Встроенные скины ──
 
-function builtin(id: string, nameKey: string, name: string, html: string): SkinEntry {
-  const file = 'builtin:' + id;
-  const meta = readSkinMeta(html);
+type RawModule = { default: string };
+
+interface Preset {
+  id: string; // встроенный скин — 'builtin-' + id (так же его знает сервер)
+  name: string; // имя из <meta name="vpc-skin-name"> файлов
+  files: Record<SkinScreen, () => Promise<RawModule>>;
+}
+
+// Каждый файл — свой чанк: в основной бандл встроенные скины не попадают
+const PRESETS: Preset[] = [
+  {
+    id: 'ink',
+    name: 'Тушь',
+    files: {
+      chat: () => import('./presets/ink.chat.html?raw'),
+      dossier: () => import('./presets/ink.dossier.html?raw'),
+      room: () => import('./presets/ink.room.html?raw'),
+    },
+  },
+  {
+    id: 'form',
+    name: 'Бланк',
+    files: {
+      chat: () => import('./presets/form.chat.html?raw'),
+      dossier: () => import('./presets/form.dossier.html?raw'),
+      room: () => import('./presets/form.room.html?raw'),
+    },
+  },
+  {
+    id: 'pixel',
+    name: 'Пиксель',
+    files: {
+      chat: () => import('./presets/pixel.chat.html?raw'),
+      dossier: () => import('./presets/pixel.dossier.html?raw'),
+      room: () => import('./presets/pixel.room.html?raw'),
+    },
+  },
+  {
+    id: 'netrunner',
+    name: 'Нетраннер',
+    files: {
+      chat: () => import('./presets/netrunner.chat.html?raw'),
+      dossier: () => import('./presets/netrunner.dossier.html?raw'),
+      room: () => import('./presets/netrunner.room.html?raw'),
+    },
+  },
+  {
+    id: 'retro',
+    name: 'Ретрофутуризм',
+    files: {
+      chat: () => import('./presets/retro.chat.html?raw'),
+      dossier: () => import('./presets/retro.dossier.html?raw'),
+      room: () => import('./presets/retro.room.html?raw'),
+    },
+  },
+  {
+    id: 'metro',
+    name: 'Метро',
+    files: {
+      chat: () => import('./presets/metro.chat.html?raw'),
+      dossier: () => import('./presets/metro.dossier.html?raw'),
+      room: () => import('./presets/metro.room.html?raw'),
+    },
+  },
+];
+
+// Подпись файла встроенного экрана (ключ в кеше files)
+const presetSig = (id: string, screen: SkinScreen) => `builtin:${id}.${screen}`;
+
+function builtin(p: Preset): SkinEntry {
   const screens: SkinEntry['screens'] = {};
-  const sizes: SkinEntry['sizes'] = {};
-  for (const s of detectScreens(html)) {
-    screens[s] = file;
-    sizes[s] = sizeOf(html);
-  }
+  for (const s of SKIN_SCREENS) if (p.files[s]) screens[s] = presetSig(p.id, s);
   return {
-    id: 'builtin-' + id,
-    name: meta.name ?? name,
-    nameKey,
-    author: meta.author,
-    version: meta.version,
-    contract: meta.contract,
+    id: 'builtin-' + p.id,
+    name: p.name,
+    nameKey: `skin.preset.${p.id}`,
+    descKey: `skin.preset.${p.id}.desc`,
+    author: 'Virtual Persona Core',
+    version: '1.0',
+    contract: 3,
     screens,
-    sizes,
+    sizes: {},
     colors: {},
     builtin: true,
     createdAt: 0,
@@ -123,12 +190,22 @@ function builtin(id: string, nameKey: string, name: string, html: string): SkinE
   };
 }
 
-// [id, i18n-ключ имени, имя, HTML] — HTML через import './presets/<id>.html?raw'
-const PRESETS: [string, string, string, string][] = [];
-const PRESET_FILES: Record<string, string> = Object.fromEntries(
-  PRESETS.map(([id, , , html]) => ['builtin:' + id, html]),
-);
-const BUILTINS: SkinEntry[] = PRESETS.map(([id, nameKey, name, html]) => builtin(id, nameKey, name, html));
+const BUILTINS: SkinEntry[] = PRESETS.map(builtin);
+
+// Загрузка файлов встроенного скина (чанки приложения, без сети и сервера)
+function loadPreset(entry: SkinEntry): Promise<void> {
+  const preset = PRESETS.find((p) => 'builtin-' + p.id === entry.id);
+  if (!preset) return Promise.resolve();
+  return Promise.all(
+    SKIN_SCREENS.filter((s) => preset.files[s]).map((s) =>
+      preset.files[s]().then((m) => {
+        files.set(presetSig(preset.id, s), m.default);
+        // Размер — подпись экрана в карточке библиотеки
+        entry.sizes[s] = sizeOf(m.default);
+      }),
+    ),
+  ).then(() => undefined);
+}
 
 // ── Состояние ──
 
@@ -139,7 +216,7 @@ let assignments: Record<string, string> = {};
 let hiddenBuiltins: string[] = [];
 let lastError: SkinStoreError | null = null;
 // Загруженные файлы: подпись → HTML (одинаковый файл в памяти один раз)
-const files = new Map<string, string>(Object.entries(PRESET_FILES));
+const files = new Map<string, string>();
 // Какие файлы уже лежат в localStorage (офлайн-режим)
 const localFiles = new Set<string>();
 const loading = new Map<string, Promise<void>>();
@@ -694,17 +771,21 @@ function filesLoaded(entry: SkinEntry): boolean {
   return SKIN_SCREENS.every((s) => !entry.screens[s] || fileOf(entry.screens[s]) != null);
 }
 
-// Догрузить файлы скина с сервера (один запрос на скин; дедуп параллельных)
+// Догрузить файлы скина: встроенного — из чанков приложения, остальных —
+// с сервера (один запрос на скин; дедуп параллельных)
 export function loadSkinFiles(id: string): Promise<PersonaSkins> {
   const entry = findEntry(id);
   if (!entry) return Promise.resolve({});
-  if (filesLoaded(entry) || mode !== 'server') return Promise.resolve(skinFilesNow(entry));
+  if (filesLoaded(entry) || (mode !== 'server' && !entry.builtin)) return Promise.resolve(skinFilesNow(entry));
   let p = loading.get(id);
   if (!p) {
-    p = api
-      .getSkin(id)
-      .then((r) => {
-        for (const [sig, html] of Object.entries(r.files)) files.set(sig, html);
+    const fetchFiles = entry.builtin
+      ? loadPreset(entry)
+      : api.getSkin(id).then((r) => {
+          for (const [sig, html] of Object.entries(r.files)) files.set(sig, html);
+        });
+    p = fetchFiles
+      .then(() => {
         loadFailedAt.delete(id);
         emit();
       })
@@ -881,7 +962,7 @@ export async function updateSkin(id: string, patch: SkinPatch): Promise<SkinEntr
 }
 
 async function forkBuiltin(entry: SkinEntry, patch: SkinPatch): Promise<SkinEntry> {
-  const screens = skinFilesNow(entry);
+  const screens = await loadSkinFiles(entry.id);
   for (const s of SKIN_SCREENS) {
     const html = patch.screens?.[s];
     if (html === null) delete screens[s];
@@ -1082,7 +1163,8 @@ export function useSkinFiles(skinId: string | null): { files: PersonaSkins; load
   }, [entry, loaded, failedAt]);
   // Недавний сбой загрузки — не «грузится»: иначе индикатор висел бы до повтора
   const recentlyFailed = failedAt != null && Date.now() - failedAt < RETRY_SERVER_MS;
-  return { files: entry ? skinFilesNow(entry) : {}, loading: !loaded && mode === 'server' && !recentlyFailed };
+  const remote = mode === 'server' || !!entry?.builtin;
+  return { files: entry ? skinFilesNow(entry) : {}, loading: !loaded && remote && !recentlyFailed };
 }
 
 export interface PersonaSkinState {

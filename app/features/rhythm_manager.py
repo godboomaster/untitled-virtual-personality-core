@@ -473,6 +473,9 @@ class RhythmManager:
         идентичности."""
         if self._sender is None:
             return False
+        if self.context.startswith("api_"):
+            from app.api import said
+            said.expect_kind(self.context.removeprefix("api_"), chat_id, text, said.INITIATIVE_KIND)
         topic_id = None
         if self._tracker is not None:
             try:

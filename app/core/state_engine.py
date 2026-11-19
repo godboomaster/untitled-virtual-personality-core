@@ -8,12 +8,15 @@
   offline_log (append-only): type (state_change | world_event |
                  external_stimulus), payload, consumed
 
-Тик-цикл: каждые tick_interval_minutes для каждого известного чата Gemma
-механически обновляет параметры состояния (STATE_TICK_PROMPT) и оценивает
-повод написать пользователю (INITIATIVE_SCORE_PROMPT). Если Gemma
-недоступна — детерминированный эвристический дрейф: энергия падает днём и
-восстанавливается ночью, mood тянется к baseline_mood из выжимки персонажа.
-Без LLM система продолжает жить, просто скучнее.
+Тик-цикл: каждые tick_interval_minutes для каждого известного чата —
+детерминированный эвристический дрейф: энергия падает днём и
+восстанавливается ночью, mood тянется к настроению дня, повод написать
+пользователю — скоринг по молчанию и фактам жизни. Тик моделью (Gemma
+механически обновляет параметры по STATE_TICK_PROMPT и тем же вызовом
+оценивает повод написать, _INITIATIVE_SUFFIX) — только пунктом «Экономии
+нейронки» state_model_tick (app/core/llm_economy) и у персон, где он не
+выключен (features.state_engine.use_gemma); модель недоступна — та же
+эвристика.
 
 Ключевой принцип: Gemma работает с persona_context (выжимкой), не с полным
 system_prompt. Любой текст, который видит пользователь, генерирует основная
@@ -35,7 +38,7 @@ from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
-from app.core import room
+from app.core import llm_economy, room
 from app.core.language import user_language_line
 
 logger = logging.getLogger(__name__)
@@ -191,19 +194,11 @@ RULES:
 - pastime does not change every tick — it usually holds for 1-3 ticks in a row
 - do not invent new NPCs/places — use only what is given in the context"""
 
-INITIATIVE_SCORE_PROMPT = """Rate from 0 to 1: how much of a reason the character has right now to write to the user.
-Consider: time since the last message, change of mood/pastime, presence of an
-unread fact from the character's life, the usual frequency of communication of this pair.
-
-Return JSON: {{"score": <float 0..1>, "reason": "<short explanation>"}}
-
-Context:
-Time since the user's last message: {silence_hours:.1f} h
-Current state: {state}
-Previous state: {prev_state}
-Unconsumed life facts: {unconsumed_count}
-Hours since the last initiative: {since_initiative:.1f}
-{language_line}"""
+# Свои эмоции персоны (условие «по настроению» у эмоций живого лица): их
+# имена — теги mood, лицо портрета само встаёт в эту эмоцию
+_OWN_EMOTIONS_SUFFIX = """
+- the character has their own named emotions (name — when): {own}; when the
+  state fits one of them, mood.tag is its exact name"""
 
 # Суффикс к тик-промпту для объединённого вызова: один Gemma-вызов на
 # чат/тик вместо двух. Настройки proactive из yaml передаются в скоринг.
@@ -309,7 +304,9 @@ class StateEngine:
         # и запрет вербализации состояния в диалоге
         self.primitive = primitive
         # use_gemma=false (features.state_engine.use_gemma): только
-        # эвристический дрейф, локальная модель не дёргается вовсе
+        # эвристический дрейф, локальная модель не дёргается вовсе. true —
+        # модель разрешена, но тикает ею только пункт «Экономии нейронки»
+        # state_model_tick (см. _model_tick)
         self.use_gemma = use_gemma
         self.local = get_local_router(context)
         self._lock = threading.RLock()
@@ -389,6 +386,15 @@ class StateEngine:
         # Состояние чата (создаёт дефолтное при первом обращении).
         with self._lock:
             return self._ensure_state(chat_id)
+
+    def peek_mood(self, chat_id: str) -> Optional[dict]:
+        """Настроение чата без побочных эффектов (состояния нет — None, не
+        создаётся): режимы персоны по mood (app/core/persona_modes) смотрят
+        на него при каждом промпте."""
+        with self._lock:
+            state = self._states.get(chat_id)
+            mood = state.get("mood") if isinstance(state, dict) else None
+            return dict(mood) if isinstance(mood, dict) else None
 
     def _ensure_state(self, chat_id: str,
                       user_language: Optional[str] = None) -> dict:
@@ -515,6 +521,11 @@ class StateEngine:
 
     # ── Тик состояния ─────────────────────────────────────
 
+    def _model_tick(self) -> bool:
+        # Тик моделью: глобальный пункт state_model_tick включён И персона его
+        # не запретила (use_gemma); иначе — эвристика, модель не зовётся
+        return self.use_gemma and llm_economy.enabled("state_model_tick")
+
     def tick(self, chat_id: str, persona_context: dict,
              storylines: Optional[List] = None,
              last_world_fact: str = "",
@@ -533,9 +544,11 @@ class StateEngine:
         with self._lock:
             prev = dict(self._ensure_state(chat_id, user_language))
         day = self.day_mood(chat_id, persona_context)
-        new_state = self._tick_via_gemma(
-            chat_id, prev, persona_context, storylines or [], last_world_fact,
-            spots=spots, user_language=user_language, day=day)
+        new_state = None
+        if self._model_tick():
+            new_state = self._tick_via_gemma(
+                chat_id, prev, persona_context, storylines or [], last_world_fact,
+                spots=spots, user_language=user_language, day=day)
         if new_state is None:
             new_state = self._heuristic_tick(prev, persona_context, spots=spots,
                                              user_language=user_language, day=day)
@@ -555,13 +568,13 @@ class StateEngine:
         """Тик состояния + скоринг инициативы ОДНИМ Gemma-вызовом — вдвое
         меньше локальных вызовов на чат/тик. Настройки proactive из yaml
         уходят в промпт скоринга. known_places — санитайзер location
-        (см. tick). Возвращает (new_state, score 0..1). Без Gemma —
-        эвристика обоих."""
+        (см. tick). Возвращает (new_state, score 0..1). Без Gemma (в т.ч.
+        по умолчанию — см. _model_tick) — эвристика обоих."""
         with self._lock:
             prev = dict(self._ensure_state(chat_id, user_language))
         day = self.day_mood(chat_id, persona_context)
         new_state, score = None, None
-        if self.use_gemma and self.local.is_available(task="state_engine"):
+        if self._model_tick() and self.local.is_available(task="state_engine"):
             try:
                 prompt = self._build_tick_prompt(
                     prev, persona_context, storylines or [], last_world_fact,
@@ -717,6 +730,8 @@ class StateEngine:
         baseline = dict((persona_context or {}).get("baseline_mood") or {})
         if baseline.get("tag"):
             baseline["tag"] = short_mood_tag(baseline["tag"])
+        # Свои эмоции персоны (живое лицо): их имена — тоже теги mood
+        own = str((persona_context or {}).get("own_emotions") or "").strip()
         return STATE_TICK_PROMPT.format(
             state=json.dumps(prev, ensure_ascii=False),
             daytime=_daytime_en(),
@@ -733,7 +748,7 @@ class StateEngine:
             storylines=json.dumps(
                 [s.get("title") for s in storylines[:3]], ensure_ascii=False),
             last_world_fact=last_world_fact or _NONE,
-        )
+        ) + (_OWN_EMOTIONS_SUFFIX.format(own=own) if own else "")
 
     @staticmethod
     def _state_from_gemma(data: dict, prev: dict) -> dict:
@@ -878,48 +893,6 @@ class StateEngine:
         if note:
             diff["internal_note"] = note
         return diff
-
-    # ── Скоринг инициативы ────────────────────────────────
-
-    def score_initiative(self, chat_id: str, silence_hours: float,
-                         since_initiative_hours: float,
-                         user_language: Optional[str] = None) -> float:
-        """0..1. Отдельный Gemma-скоринг (standalone-вариант; в фоновом цикле
-        живой персоны используется объединённый tick_and_score — один вызов).
-        При недоступности Gemma — эвристика по сигналам."""
-        with self._lock:
-            state = self._states.get(chat_id)
-        if state is None:
-            return 0.0
-
-        unconsumed_count = self.life_facts_count(chat_id)
-        if self.use_gemma and self.local.is_available(task="state_engine"):
-            try:
-                prompt = INITIATIVE_SCORE_PROMPT.format(
-                    silence_hours=silence_hours,
-                    state=json.dumps(state, ensure_ascii=False),
-                    prev_state="{}",
-                    unconsumed_count=unconsumed_count,
-                    since_initiative=since_initiative_hours,
-                    language_line=user_language_line(user_language),
-                )
-                response = self.local.get_response(
-                    messages=[
-                        {"role": "system", "content": "You return only valid JSON."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.2,
-                    max_tokens=120,
-                    task="state_engine",
-                )
-                from app.core.persona_context import _extract_json
-                data = _extract_json(response or "")
-                if data and "score" in data:
-                    return max(0.0, min(1.0, float(data["score"])))
-            except Exception as e:
-                logger.debug(f"[StateEngine] Скоринг Gemma не удался: {e}")
-
-        return self._heuristic_score(chat_id, silence_hours, since_initiative_hours)
 
     # ── Контекст для промптов ────────────────────────────
 

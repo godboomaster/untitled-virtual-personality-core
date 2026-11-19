@@ -1,5 +1,7 @@
 import type { OfflineKit } from './kit';
 import type { ChatMsg } from './plugin';
+import { loreNote } from './lore';
+import type { LoreResult } from './lore';
 import { recallNote } from './recall';
 import type { RecallDoc } from './recall';
 
@@ -18,9 +20,9 @@ const LOCAL_HISTORY_MIN = 2;
 const LOCAL_LINE_MAX = 600; // символов одной реплики истории
 const LOCAL_HISTORY_ROOM = 1500; // меньше места истории — ужать промпт
 const LOCAL_LEVELS = [
-  { character: 4000, self: 1200, facts: 25, recall: 3 },
-  { character: 3000, self: 600, facts: 15, recall: 2 },
-  { character: 2000, self: 0, facts: 8, recall: 2 },
+  { character: 4000, self: 1200, facts: 25, recall: 3, lore: 3 },
+  { character: 3000, self: 600, facts: 15, recall: 2, lore: 2 },
+  { character: 2000, self: 0, facts: 8, recall: 2, lore: 1 },
 ];
 
 // Правила модели телефона — здесь, а не в ките: ими пользуется только она,
@@ -38,6 +40,15 @@ export const LOCAL_RULES =
   'including actions in asterisks. Reminders are handled by the app: confirm one only when a note ' +
   "from the app says it was set. If asked to do something on the computer (open sites, to-dos, " +
   "inventory), say you'll do it once you're back on the computer. Don't invent facts about the user.";
+
+// То же без компьютера вовсе (кит из базового кита приложения, kit.standalone):
+// «вернусь на компьютер» обещало бы то, чего у пользователя нет
+export const LOCAL_RULES_STANDALONE =
+  "Reply directly to the user's latest message, in character, briefly and conversationally. " +
+  "Don't repeat your earlier replies word for word. Write everything in the reply's language, " +
+  'including actions in asterisks. Reminders are handled by the app: confirm one only when a note ' +
+  "from the app says it was set. If asked to open sites, keep to-dos or inventory, say it isn't " +
+  "available in the phone app yet. Don't invent facts about the user.";
 
 export interface HistoryLine {
   role: 'user' | 'assistant';
@@ -99,6 +110,7 @@ export function selfMemoryNote(kit: OfflineKit, max = Infinity): string {
 export interface MemoryContext {
   recall: RecallDoc[]; // реплики постарше к теме вопроса, лучшие сверху
   facts: RecallDoc[]; // факты к теме вопроса
+  lore?: LoreResult | null; // куски лора персоны; нет — лора у персоны нет
 }
 
 /** Текст не длиннее max — по абзацу или строке, если так теряется не больше
@@ -163,10 +175,11 @@ export function localPrompt(
   let userText = text;
   for (const [i, lv] of LOCAL_LEVELS.entries()) {
     const recall = recallNote(memory.recall.slice(0, lv.recall));
-    userText = recall ? `${recall}\n\n${text}` : text;
+    userText = [loreNote(memory.lore, lv.lore), recall, text].filter(Boolean).join('\n\n');
     system = [
       localCharacter(kit, lv.character),
-      LOCAL_RULES,
+      kit.standalone ? LOCAL_RULES_STANDALONE : LOCAL_RULES,
+      memory.lore ? kit.rules?.lore_gap : '',
       p.style,
       localFacts(kit, memory, lv.facts),
       kit.dossier ?? '',

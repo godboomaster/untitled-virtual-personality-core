@@ -3708,6 +3708,12 @@ class WebChatLLM:
                              extra_image_bytes: Optional[bytes] = None
                              ) -> Optional[str]:
         from app.features import browser_actions as ba
+        from app.core import reply_length, turn_cancel
+        # Лимит длины сайту не передать числом — словами в инструкции
+        # (app/core/reply_length): иначе эссе на тысячи знаков за минуту-две
+        note = reply_length.webchat_note(max_tokens, messages)
+        if note:
+            messages = list(messages) + [{"role": "system", "content": note}]
         prompt = self._join_messages(messages)
         if not prompt:
             return None
@@ -3802,6 +3808,10 @@ class WebChatLLM:
                 logger.info(f"[WebChat] {self.site}#{self.channel}: пауза "
                             f"{wait:.0f} с перед отправкой (темп сайта)")
                 time.sleep(wait)
+            # Ход отменили, пока ждали лок, вкладку и темп сайта — не слать.
+            # После отправки не обрываем: сайт допишет, а новая реплика в тот
+            # же тред, пока он пишет, не ушла бы
+            turn_cancel.check()
             # Вкладка из реестра фоновых (raw-CDP)? Тогда её исчезновение
             # посреди вызова детектируется мгновенно (_tab_vanished)
             tab_token = self._snap_for(ba, tab_id)

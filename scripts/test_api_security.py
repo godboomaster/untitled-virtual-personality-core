@@ -384,15 +384,103 @@ def test_fastapi_endpoints():
               r.status_code == 404)
 
         # ── авторизация: hmac.compare_digest вместо == ──
+        # Устройство в сети (с этой машины токен не нужен — раздел J); Host
+        # подставной, локальный: по одному Host оно прошло бы как своё
         server_mod._api_token = "s3cr3t-token"
-        r = client.get("/api/personas")
+        remote = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
+        r = remote.get("/api/personas")
         check("auth: без токена при заданном API_TOKEN → 401", r.status_code == 401)
-        r = client.get("/api/personas", headers={"Authorization": "Bearer wrong"})
+        r = remote.get("/api/personas", headers={"Authorization": "Bearer wrong"})
         check("auth: неверный токен → 401", r.status_code == 401)
-        r = client.get("/api/personas", headers={"Authorization": "Bearer s3cr3t-token"})
+        r = remote.get("/api/personas", headers={"Authorization": "Bearer s3cr3t-token"})
         check("auth: верный токен → 200", r.status_code == 200)
     finally:
         server_mod._api_token = orig_token
+
+
+# ════════════ J. Эта машина — без токена, сеть — с токеном ════════════
+
+def test_this_machine():
+    section("J. security.from_this_machine — свой браузер без токена")
+    try:
+        from fastapi.testclient import TestClient
+        from starlette.requests import Request
+    except ImportError as e:
+        print(f"  (пропущено — fastapi недоступен: {e})")
+        return
+    from app.api.security import from_this_machine
+    import app.api.server as server_mod
+
+    def req(peer="127.0.0.1", host="127.0.0.1:8000", **headers):
+        hs = [(b"host", host.encode())] + [(k.replace("_", "-").encode(), v.encode())
+                                           for k, v in headers.items()]
+        return Request({"type": "http", "method": "GET", "path": "/api/personas", "headers": hs,
+                        "client": (peer, 50000) if peer is not None else None, "query_string": b""})
+
+    local_cases = [
+        ("curl/панель: без Origin и Sec-Fetch-Site", req(), True),
+        ("свой фронт (Origin localhost:5173)", req(origin="http://localhost:5173", sec_fetch_site="same-site"), True),
+        ("свой фронт на [::1]", req(peer="::1", host="[::1]:8000", origin="http://[::1]:5173"), True),
+        ("привязка к \"::\": адрес ::ffff:127.0.0.1", req(peer="::ffff:127.0.0.1"), True),
+        ("страница самого ядра (same-origin)", req(sec_fetch_site="same-origin"), True),
+        ("unix-сокет (адреса нет) — решает Host", req(peer=None), True),
+        ("устройство в сети с подставным Host: localhost", req(peer="192.168.1.20", host="localhost:8000"), False),
+        ("::ffff:192.168.1.20", req(peer="::ffff:192.168.1.20"), False),
+        ("Host по адресу в сети", req(host="192.168.1.5:8000"), False),
+        ("DNS rebinding (Host evil.test)", req(host="evil.test:8000", origin="http://evil.test:8000"), False),
+        ("туннель/прокси (X-Forwarded-For)", req(x_forwarded_for="1.2.3.4"), False),
+        ("прокси (Forwarded)", req(forwarded="for=1.2.3.4"), False),
+        ("прокси (X-Real-IP)", req(x_real_ip="1.2.3.4"), False),
+        ("прокси (Cf-Connecting-Ip)", req(cf_connecting_ip="1.2.3.4"), False),
+        ("чужой сайт (Origin)", req(origin="https://evil.test", sec_fetch_site="cross-site"), False),
+        ("Origin null (песочница, file://)", req(origin="null", sec_fetch_site="cross-site"), False),
+        ("картинка/переход с чужой страницы (cross-site без Origin)", req(sec_fetch_site="cross-site"), False),
+        ("same-site без Origin (no-cors с localhost:другой порт)", req(sec_fetch_site="same-site"), False),
+        ("адрес в адресной строке (Sec-Fetch-Site: none)", req(sec_fetch_site="none"), False),
+    ]
+    for name, r, want in local_cases:
+        check(f"{name} → {'эта машина' if want else 'нужен токен'}", from_this_machine(r) is want)
+    r = req(origin="https://my.site", sec_fetch_site="cross-site")
+    check("Origin из API_CORS_ORIGINS → эта машина",
+          from_this_machine(r, frozenset({"https://my.site"})) is True)
+    check("…а без него — нет", from_this_machine(r) is False)
+
+    orig = server_mod._api_token, server_mod._api_token_local
+    try:
+        local = TestClient(server_mod.app, base_url="http://127.0.0.1")
+        remote = TestClient(server_mod.app, base_url="http://127.0.0.1", client=("192.168.1.20", 50000))
+        server_mod._api_token, server_mod._api_token_local = "s3cr3t-token", False
+        check("токен задан: эта машина без токена → 200", local.get("/api/personas").status_code == 200)
+        check("токен задан: свой фронт (Origin localhost:5173) → 200",
+              local.get("/api/personas", headers={"Origin": "http://localhost:5173"}).status_code == 200)
+        check("токен задан: свой фронт с устаревшим токеном → 200",
+              local.get("/api/personas", headers={"Origin": "http://localhost:5173",
+                                                  "Authorization": "Bearer old"}).status_code == 200)
+        check("токен задан: чужой сайт → 403 (LocalOriginGuard)",
+              local.get("/api/personas", headers={"Origin": "https://evil.test"}).status_code == 403)
+        check("токен задан: адресная строка → 401",
+              local.get("/api/personas", headers={"Sec-Fetch-Site": "none"}).status_code == 401)
+        check("токен задан: через прокси → 401",
+              local.get("/api/personas", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 401)
+        check("токен задан: устройство в сети → 401", remote.get("/api/personas").status_code == 401)
+        r = local.get("/api/token", headers={"Origin": "http://localhost:5173"})
+        check("GET /api/token своему фронту без токена → токен (для телефона)",
+              r.status_code == 200 and r.json().get("token") == "s3cr3t-token")
+        check("GET /api/token устройству в сети без токена → 401", remote.get("/api/token").status_code == 401)
+        server_mod._api_token_local = True
+        check("API_TOKEN_LOCAL=1: эта машина без токена → 401", local.get("/api/personas").status_code == 401)
+        check("API_TOKEN_LOCAL=1: с токеном → 200",
+              local.get("/api/personas", headers={"Authorization": "Bearer s3cr3t-token"}).status_code == 200)
+        server_mod._api_token, server_mod._api_token_local = "", False
+        check("без токена: эта машина → 200", local.get("/api/personas").status_code == 200)
+        check("без токена: устройство в сети с подставным Host → 403", remote.get("/api/personas").status_code == 403)
+        check("без токена: адресная строка → 403",
+              local.get("/api/personas", headers={"Sec-Fetch-Site": "none"}).status_code == 403)
+        server_mod._api_token_local = True
+        check("без токена и API_TOKEN_LOCAL=1: эта машина → 200 (токена нет — нечего требовать)",
+              local.get("/api/personas").status_code == 200)
+    finally:
+        server_mod._api_token, server_mod._api_token_local = orig
 
 
 # ════════════ H. chat_stream: «печать» не блокирует поток пула ════════════
@@ -519,6 +607,7 @@ def main():
     test_atomic_write()
     test_settings_api_env_rejection()
     test_fastapi_endpoints()
+    test_this_machine()
     test_typed_chunks_nonblocking()
     test_reply_stm_ts()
     test_persona_yaml_nonblocking()

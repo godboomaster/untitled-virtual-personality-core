@@ -1,0 +1,33 @@
+Built-in image_gen. Two understated negative-space refinements on ghost bases 05 and 07: an echo of the outer contour and a small living asymmetry. No inserted pictograms. Concept explorations, not integrated into the application.
+
+34-ghost-inner-echo
+Use case: logo-brand.
+Asset type: restrained refinement of a ghost logo's negative-space bottom notch.
+Input image 1: EDIT TARGET A, approved 05 ORIGAMI: broad rounded rectangular black ghost, two rounded-square eyes, short left foot and longer angular right tail.
+Input image 2: EDIT TARGET B, approved 07 RIBBON: tall arched black ghost, two vertical capsule eye holes, longer left tail and shorter right tail.
+USER'S LATEST DIRECTION: they LIKE THE GHOST. They don't know what to put into the notch. They want something distinctive and understated, not banal, not too obvious. All literal pictograms (flames, leaves, phoenix, heartbeat, keys), forced letters VPC, arrows and infinity emblems have been rejected. The solution must be OWNABLE NEGATIVE-SPACE GEOMETRY, not another object stuffed inside the ghost.
+Keep the approved ghosts' heads, eyes, proportions and broad silhouettes intact. Change ONLY the lower quarter/notch. Keep most of the original angular tail geometry, with a carefully designed new negative-space feature.
+No inserted badge, no detached symbol, no separate miniature mascot or additional eyes, no mouth or horizontal closed hole, no decoration on the belly. No generic icons, no arrows, rings, infinity glyphs, letters, birds, flames, leaves or hearts.
+The notch remains a SINGLE OPEN SPACE connected generously to the background below, shaped as part of the contour. Two eye holes are the only enclosed holes. Simple, quiet, original, with personality emerging through optical balance. Broad solid shapes, readable as a small icon.
+
+Presentation: one landscape 3:2 sheet on plain warm ivory #F4F0E7, two equally spaced columns. Edited 05 at left, edited 07 at right, same perceived size. Near-black #151817 marks. Small labels "05 / ORIGAMI" and "07 / RIBBON" below corresponding ghosts, one modest exact "Virtual Persona" wordmark with tiny spaced "CORE" centered at bottom. Specific small concept title top left. Generous clean spacing.
+Precise flat vector-like artwork. No texture, grain, shading, gradients, glow, shadows, 3D, mockup objects, additional explanatory captions or watermark.
+Concept 30 / INNER ECHO:
+The negative-space notch discreetly ECHOES THE GHOST'S OWN OUTER HEAD CONTOUR IN MINIATURE, as a subtle self-similar shape. Replace the triangle's apex with a small scaled echo of the outer crown and shoulders: 05 gets a softly squared arch matching its broad rounded head; 07 gets a slimmer arched top matching its tall crown. The inner contour is about one quarter of the ghost's width and stays fully in the bottom quarter. The little crown flows directly outward into the existing sloping notch and original tails. NO narrow neck, NO keyhole stem, NO face or eyes inside the notch, NO full miniature ghost illustration. It should be perceived first as a beautifully balanced distinctive cut, with the resemblance between inner and outer contours discovered on closer look.
+This creates a quiet idea of a presence inside a presence, continuing identity and life through repetition of the same shape. Express this only through the contour. Preserve the recognizable original unequal tail ends, avoid replacing the entire hem with a generic symmetrical arch. Top-left title exactly "30 / INNER ECHO".
+
+35-ghost-living-shift
+Use case: logo-brand.
+Asset type: restrained refinement of a ghost logo's negative-space bottom notch.
+Input image 1: EDIT TARGET A, approved 05 ORIGAMI: broad rounded rectangular black ghost, two rounded-square eyes, short left foot and longer angular right tail.
+Input image 2: EDIT TARGET B, approved 07 RIBBON: tall arched black ghost, two vertical capsule eye holes, longer left tail and shorter right tail.
+USER'S LATEST DIRECTION: they LIKE THE GHOST. They don't know what to put into the notch. They want something distinctive and understated, not banal, not too obvious. All literal pictograms (flames, leaves, phoenix, heartbeat, keys), forced letters VPC, arrows and infinity emblems have been rejected. The solution must be OWNABLE NEGATIVE-SPACE GEOMETRY, not another object stuffed inside the ghost.
+Keep the approved ghosts' heads, eyes, proportions and broad silhouettes intact. Change ONLY the lower quarter/notch. Keep most of the original angular tail geometry, with a carefully designed new negative-space feature.
+No inserted badge, no detached symbol, no separate miniature mascot or additional eyes, no mouth or horizontal closed hole, no decoration on the belly. No generic icons, no arrows, rings, infinity glyphs, letters, birds, flames, leaves or hearts.
+The notch remains a SINGLE OPEN SPACE connected generously to the background below, shaped as part of the contour. Two eye holes are the only enclosed holes. Simple, quiet, original, with personality emerging through optical balance. Broad solid shapes, readable as a small icon.
+
+Presentation: one landscape 3:2 sheet on plain warm ivory #F4F0E7, two equally spaced columns. Edited 05 at left, edited 07 at right, same perceived size. Near-black #151817 marks. Small labels "05 / ORIGAMI" and "07 / RIBBON" below corresponding ghosts, one modest exact "Virtual Persona" wordmark with tiny spaced "CORE" centered at bottom. Specific small concept title top left. Generous clean spacing.
+Precise flat vector-like artwork. No texture, grain, shading, gradients, glow, shadows, 3D, mockup objects, additional explanatory captions or watermark.
+Concept 31 / LIVING SHIFT:
+Keep the original asymmetric triangular notch mostly intact. Give its upper meeting point a small deliberate offset: the two inner edges approach each other slightly out of alignment, one ending as a short crisp vertical shoulder, the opposing side turning through one softly rounded concave corner before continuing down the diagonal hem. Think of a static geometric construction that has quietly shifted as if breathing or moving, an intentional tiny irregularity in an otherwise precise silhouette. Only ONE short shoulder and ONE small curve, no doubled outline, no extra line, no floating piece, no swirl, no letterform.
+The edit must be subtle yet visibly designed: enough of a unique contour to remember, but it should take a second look to notice. Retain original tail lengths and silhouette character. Keep the notch broad and open, upper eyes unchanged, no large white pictogram. The charm comes from a slight living asymmetry and tension between the two inner edges. Top-left title exactly "31 / LIVING SHIFT".

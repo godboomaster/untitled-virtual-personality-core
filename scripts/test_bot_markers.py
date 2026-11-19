@@ -104,6 +104,10 @@ class _Router:
         return False
 
     def __getattr__(self, name):
+        # process_message читает последний провайдер только для строки лога;
+        # это не вызов модели.
+        if name == "_last_provider":
+            return None
         # Любой вызов основной модели в этом тесте — ошибка
         raise AssertionError(f"LLM вызвана: router.{name}")
 
@@ -142,6 +146,9 @@ class _SM:
         self.saved = []
 
     def active(self, chat_id):
+        return False
+
+    def recording(self, chat_id):
         return False
 
     def match_scenario(self, *a, **kw):
@@ -230,7 +237,7 @@ def _bot(todo=True, inventory=True, control_on=False, single_user=True):
         bot.rule_calls.append(text)
         return "Remember the scenario"
     bot._extract_rule_from_correction = _rule
-    bot._pipeline_failure_reply = lambda user_id, chat_id: "STOP"
+    bot._pipeline_failure_reply = lambda user_id, chat_id, **kw: "STOP"
     return bot
 
 

@@ -24,6 +24,9 @@ pub struct Config {
     /// Слушать имя персоны микрофоном панели (voice.rs); не задано —
     /// как WAKE_LISTEN в .env проекта
     pub wake_listen: Option<bool>,
+    /// Языки распознавания слушателя: «ru,en», «ru» или «en»; не задано —
+    /// как WAKE_LANG в .env проекта (там пусто — оба)
+    pub wake_lang: Option<String>,
 }
 
 impl Default for Config {
@@ -37,6 +40,7 @@ impl Default for Config {
             start_on_launch: true,
             auto_restart: true,
             wake_listen: None,
+            wake_lang: None,
         }
     }
 }
@@ -84,6 +88,8 @@ pub struct ApiEnv {
     pub ollama: String,
     /// WAKE_LISTEN=1 — слушать имя на этом компьютере (без панели — само ядро)
     pub wake_listen: bool,
+    /// WAKE_LANG — языки распознавания (wake_lang_choice); пусто — оба
+    pub wake_lang: String,
     /// Папка репозитория и данных ядра (app/core/paths.py: VPC_DATA_DIR, затем
     /// DATA_DIR, иначе data) — портрет на рабочем столе без запущенного бота
     pub repo: PathBuf,
@@ -116,7 +122,17 @@ impl ApiEnv {
             .or_else(|| get("DATA_DIR").filter(|d| !d.trim().is_empty()))
             .map(|d| repo.join(d.trim()))
             .unwrap_or_else(|| repo.join("data"));
-        ApiEnv { base: format!("http://{host}:{port}"), port, token, ollama, wake_listen, repo: repo.to_path_buf(), data }
+        let wake_lang = get("WAKE_LANG").unwrap_or_default();
+        ApiEnv {
+            base: format!("http://{host}:{port}"),
+            port,
+            token,
+            ollama,
+            wake_listen,
+            wake_lang,
+            repo: repo.to_path_buf(),
+            data,
+        }
     }
 }
 
@@ -169,9 +185,37 @@ pub fn logs_dir(repo: &Path, fallback: &Path) -> PathBuf {
     }
 }
 
+/// Языки распознавания как выбор в панели — по тем же правилам, что
+/// wake_langs() в app/voice/wake_listener.py: ru и en через запятую (или
+/// пробел, «+»), неизвестное — мимо; пусто, «auto», «both» — оба
+pub fn wake_lang_choice(raw: &str) -> &'static str {
+    let lower = raw.to_lowercase();
+    let mut langs: Vec<&str> = Vec::new();
+    for part in lower.split(|c: char| c == ',' || c == ';' || c == '+' || c == '/' || c.is_whitespace()) {
+        if (part == "ru" || part == "en") && !langs.contains(&part) {
+            langs.push(part);
+        }
+    }
+    match langs.as_slice() {
+        ["ru"] => "ru",
+        ["en"] => "en",
+        _ => "ru,en",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_env_line;
+    use super::{parse_env_line, wake_lang_choice};
+
+    #[test]
+    fn wake_lang() {
+        assert_eq!(wake_lang_choice(""), "ru,en");
+        assert_eq!(wake_lang_choice("auto"), "ru,en");
+        assert_eq!(wake_lang_choice("EN, ru"), "ru,en");
+        assert_eq!(wake_lang_choice("ru"), "ru");
+        assert_eq!(wake_lang_choice(" en "), "en");
+        assert_eq!(wake_lang_choice("fr"), "ru,en");
+    }
 
     fn p(s: &str) -> Option<(String, String)> {
         parse_env_line(s)

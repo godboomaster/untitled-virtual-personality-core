@@ -1,0 +1,9 @@
+Built-in image_gen. Edit target: 96-clean-four-collar-junctions-square-logo.png. Output: 97-head-leaves-separated-square-logo.png.
+
+Use case: precise-object-edit
+Asset type: small separation fix in the existing square black-and-white logo.
+Input image 1: sole edit target, 96-clean-four-collar-junctions-square-logo.png.
+Primary request: add a CLEAR WHITE SEPARATION between the lower-left HEAD OUTLINE and the TWO LEAVES beside the neck. In the input, the descending head contour touches and merges with the upper leaf near their shared attachment. Open a clean narrow white channel through this contact area so the head line and leaf outlines read as separate elements.
+At the 1254 px input scale, use an approximately 7–9 px white clearance following the diagonal boundary between the descending head contour and the leaf cluster, all the way to the collar junction. End the head contour just short of the leaf/collar attachment, with a neat intentional white gap. Preserve the natural direction and thickness of the head outline. The leaves remain attached to their collar twig and retain their existing shapes and white veins; their black outlines must no longer touch the head outline anywhere. No tiny residual black bridge, no stray pointed sliver.
+Make this single small local edit ONLY at the LEFT head-to-leaves contact. Preserve both leaf shapes and positions as closely as possible. Keep the full current faceted interwoven infinity collar, central crossing and its white cuts exactly unchanged. Keep the right-hand joins, eyes, head outline elsewhere, body, hem, lower cracked shell and all cracks, stroke weights, overall emblem scale and placement, white background and square canvas unchanged.
+Output one COMPLETE square logo in crisp flat black and white. No extra decorative stroke or divider object: the separation is clean empty white space. No text, colors, new shapes, upper shell, shadows, gradients, texture or border.

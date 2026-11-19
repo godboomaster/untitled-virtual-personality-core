@@ -1,0 +1,3 @@
+Built-in image_gen. Edit target: 40-round-head-ribbon-ghost.png. Replace transparency with a solid white background; preserve the emblem.
+
+Edit the supplied image by replacing ONLY its transparent background with a uniform pure WHITE background (#FFFFFF). Preserve the entire emblem exactly: circular white ghost head, two dark capsule eyes, black neck ribbon, downward-flaring white cloth, all outlines and folds, both cracked ivory eggshell pieces, their positions, proportions, colors, details and framing. No redesign, no added shadows, no text, no new objects. The result must be the same emblem on a solid white background.

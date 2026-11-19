@@ -1,0 +1,8 @@
+Built-in image_gen. Edit target: 42-straight-edge-ribbon-ghost.png. User contour guide: references/collar-offset-markup-01.png. Small mirrored outward steps below the ribbon before the straight body edges.
+
+Precise local edit to image 1, the white round-headed ghost with black neck ribbon and straight-sided body in a cracked egg on white.
+Image 2 is a contour guide ONLY: its pink line shows a short horizontal outward step followed by the long sloping body edge. Do not copy the pink color or dark background.
+
+At BOTH lower side corners of the black neck ribbon, add a SMALL HORIZONTAL OUTWARD STEP, mirrored left and right. Each step extends outward roughly ONE outline-stroke width, then turns cleanly into the existing straight outward-slanting body edge continuing down to the same shell junction. Thus the cloth body starts slightly WIDER than the ribbon, with a short visible shoulder/ledge just below it. Follow the profile in the guide on the right and mirror it on the left. The step is modest, not a large shoulder, sleeve, arm or bow. Keep the body and ribbon attached, with no empty gap.
+
+Preserve the circular head, eyes, black ribbon itself, clean white fold-free body, straight body edges BELOW the new little steps, sharp angular zigzag where body meets shell, both eggshell pieces and their fractures, beige facets, positions, outlines, scale, framing and solid white background. Change only the immediate ribbon-to-cloth transition and the starts of the side edges. No internal body lines, no pink annotation, no new objects or text.

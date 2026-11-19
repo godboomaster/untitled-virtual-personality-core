@@ -332,7 +332,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
             autoFocusName
           />
           {/* Провайдер и модель в форме не задаются: они настраиваются потом в досье персоны */}
-          {createError && <div className="field-hint">// {createError}</div>}
+          {createError && <div className="field-hint">{t('ui.commentPrefix')}{createError}</div>}
         </div>
 
         {/* Правая панель: YAML всегда редактируем (textarea). Пока оператор

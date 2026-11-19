@@ -297,21 +297,27 @@ public class RoomWidget extends AppWidgetProvider {
 
     // Запрос к ядру по адресу и токену фоновой службы (и у PortraitWidget)
     static String request(Context ctx, String method, String path, String body) throws Exception {
+        return request(ctx, method, path, body, 8_000, 20_000);
+    }
+
+    // То же со своими таймаутами: проверка связи — короче, ответ модели — дольше
+    static String request(Context ctx, String method, String path, String body,
+                          int connectMs, int readMs) throws Exception {
         SharedPreferences bg = BackgroundInboxService.prefs(ctx);
         String url = bg.getString(BackgroundInboxService.KEY_BASE_URL, "").replaceAll("/+$", "");
         String token = bg.getString(BackgroundInboxService.KEY_TOKEN, "");
         if (url.isEmpty()) throw new IllegalStateException("нет адреса ядра");
         HttpURLConnection c = (HttpURLConnection) new URL(url + path).openConnection();
         try {
-            c.setConnectTimeout(8_000);
-            c.setReadTimeout(20_000);
+            c.setConnectTimeout(connectMs);
+            c.setReadTimeout(readMs);
             c.setUseCaches(false);
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json");
             if (!token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
             if (body != null) {
                 c.setDoOutput(true);
-                c.setRequestProperty("Content-Type", "application/json");
+                c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                 try (OutputStream out = c.getOutputStream()) {
                     out.write(body.getBytes(StandardCharsets.UTF_8));
                 }

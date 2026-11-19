@@ -2,6 +2,8 @@ import type { OfflineKit } from './kit';
 import { OfflineLlm, pluginCode } from './plugin';
 export { wantsSearch } from './gate';
 import type { WebResult } from './plugin';
+import { BASE_KIT } from './baseKit';
+import { phoneLocation } from './phoneEnv';
 
 /* Что ядро добавляет к ответу и что телефон без ноутбука добывает сам:
    строка окружения (местные дата и время, погода Open-Meteo по городу из
@@ -62,9 +64,12 @@ async function weatherLine(env: NonNullable<OfflineKit['env']>): Promise<string 
   return line;
 }
 
-/** Блок окружения для промпта: погода (если есть) и время + правило ядра. */
+/** Блок окружения для промпта: погода (если есть) и время + правило ядра.
+ * Город — из кита (настройки ядра), нет его там — заданный на телефоне. */
 export async function envNote(kit: OfflineKit): Promise<string> {
-  const weather = kit.env ? await weatherLine(kit.env) : null;
+  const own = kit.env ? null : phoneLocation();
+  const env = kit.env ?? (own ? { ...own, codes: BASE_KIT.weather_codes } : null);
+  const weather = env ? await weatherLine(env) : null;
   const line = weather ? `${weather} | ${timeLine()}` : timeLine();
   return `User's current environment: ${line}\n${kit.rules.env}`;
 }

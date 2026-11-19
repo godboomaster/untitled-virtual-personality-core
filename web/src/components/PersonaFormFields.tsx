@@ -148,7 +148,7 @@ export default function PersonaFormFields({
               </div>
               <div className="field-hint">
                 {renameError
-                  ? `// ${renameError}`
+                  ? `${t('ui.commentPrefix')}${renameError}`
                   : !idValid
                     ? t('pc.idFormat')
                     : t('pc.idRenameHint')}

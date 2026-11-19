@@ -55,10 +55,36 @@ export interface WakeStatus {
   error: string;
   issue: string;
   lastHeard: string;
+  /** Фильтр фона; нет — слушатель старее панели */
+  near?: NearStatus | null;
+  /** Языки распознавания (ru, en); нет — слушатель старее панели */
+  langs?: string[];
+  /** Язык разговора сейчас */
+  lang?: string;
+  /** Модель одного из языков не загрузилась — почему (слушает без неё) */
+  langError?: string;
 }
+
+/** Фильтр фона «кто ближе к микрофону» (app/voice/near_gate.py) */
+export interface NearStatus {
+  on: boolean;
+  /** Громкость вашего голоса, дБ; null — ещё не знает */
+  level: number | null;
+  /** panel — записали кнопкой, name — по фразе с именем */
+  source: string;
+  margin: number;
+  calibrating: boolean;
+  calibLeft: number;
+  /** ok, no_speech */
+  calibResult: string;
+}
+
+/** Выбор языков слушателя в панели */
+export type WakeLang = 'ru,en' | 'ru' | 'en';
 
 export interface VoiceView {
   enabled: boolean;
+  lang: WakeLang;
   phase: VoicePhase;
   pid: number | null;
   status: WakeStatus | null;
@@ -70,6 +96,9 @@ export interface VoiceView {
 export interface PortraitBrief {
   shown: boolean;
   persona: string;
+  /** Клавиши анимаций: off — привязок нет, on — слушает, mouse — только
+   *  мышь (нет доступа «Мониторинг ввода»), unsupported — не умеет */
+  keys?: 'off' | 'on' | 'mouse' | 'unsupported';
 }
 
 export interface PortraitInfo extends PortraitBrief {
@@ -91,6 +120,38 @@ export interface Snapshot {
   logs: LogBatch;
   voice: VoiceView;
   portrait: PortraitBrief;
+  /** Отсутствует в обычной панели; контроллер создаётся только с --robot. */
+  robot?: RobotView;
+}
+
+export type RobotAction = 'enable' | 'project' | 'stop' | 'poweroff';
+
+export interface RobotConfig {
+  host: string;
+  user: string;
+  port: number;
+  identityFile: string;
+  deviceId: string;
+}
+
+export interface RobotIdleSettings {
+  intervalMinutes: number;
+  probabilityPercent: number;
+}
+
+export interface RobotView {
+  config: RobotConfig;
+  service: 'unknown' | 'active' | 'inactive' | 'failed' | 'unreachable';
+  connected: boolean | null;
+  busy: boolean;
+  action: RobotAction | null;
+  error: string | null;
+  sshError: string | null;
+  shutdownRequested: boolean;
+  shutdownStartedAt: number | null;
+  powerState: 'unknown' | 'on' | 'shutting_down' | 'off';
+  idleSettings: RobotIdleSettings | null;
+  idleError: string | null;
 }
 
 export interface Config {
@@ -103,6 +164,8 @@ export interface Config {
   autoRestart: boolean;
   /** null — как WAKE_LISTEN в .env; переключается кнопкой и в трее */
   wakeListen: boolean | null;
+  /** null — как WAKE_LANG в .env; выбирается в «Голосовой активации» */
+  wakeLang: string | null;
 }
 
 export interface Settings {
@@ -126,10 +189,17 @@ export const api = {
   detectPython: (repoDir: string) => invoke<string>('detect_python', { repoDir }),
   setAutostart: (enabled: boolean) => invoke<boolean>('set_autostart', { enabled }),
   setWake: (enabled: boolean) => invoke<VoiceView>('set_wake', { enabled }),
+  setWakeLang: (lang: WakeLang) => invoke<VoiceView>('set_wake_lang', { lang }),
+  wakeCalibrate: () => invoke<VoiceView>('wake_calibrate'),
+  wakeForgetVoice: () => invoke<VoiceView>('wake_forget_voice'),
   portraitInfo: () => invoke<PortraitInfo>('portrait_info'),
   setPortrait: (shown: boolean, persona?: string) => invoke<void>('portrait_set', { shown, persona }),
+  keysSettings: () => invoke<void>('portrait_keys_settings'),
   hidePanel: () => invoke<void>('hide_panel'),
   quit: () => invoke<void>('quit'),
+  robotAction: (action: RobotAction) => invoke<void>('robot_action', { action }),
+  robotSave: (config: RobotConfig) => invoke<RobotView>('robot_save', { config }),
+  robotIdleSave: (settings: RobotIdleSettings) => invoke<RobotView>('robot_idle_save', { settings }),
 };
 
 export function isUp(phase: Phase): boolean {

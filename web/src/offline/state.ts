@@ -1,17 +1,23 @@
 import { useEffect, useReducer } from 'react';
 import { api, isNativeApp } from '../api';
-import { refetchPersonas, useApiPersonas, useCoreHealth } from '../apiData';
+import { coreHealth, refetchPersonas, useApiPersonas, useCoreHealth } from '../apiData';
 import { offlineMessages, personasWithOffline, removeOfflineMessages, unansweredTail } from './store';
 import { pushAlarms, syncLocalReminders } from './reminders';
 import { refreshAllKits } from './kit';
 import { isLocalPersona, localPersonas } from './localPersonas';
-import { followShortPrompt, syncLocalPersonas } from './personaSync';
+import { followShortPrompt, syncLocalPersonas, syncShortPrompts } from './personaSync';
+import { syncLocalNotes } from './localNotes';
+import { syncLocalLore } from './localLore';
+import { syncPhoneLocation } from './phoneEnv';
+import { syncPendingAvatars } from '../avatarStore';
 
 /* Режим «без ноутбука» в приложении на телефоне и возврат к ноутбуку.
 
    Режим включён, когда ядро не отвечает (опрос /api/health), или приложение
-   запущено без ноутбука кнопкой на экране запуска (offlineBoot) — пока ядро
-   не ответит. Ядро снова на связи — переписка уходит на него
+   открылось, не дожидаясь ядра (offlineBoot: обычный запуск с настроенным
+   ядром, кнопка на экране запуска), — пока ядро не ответит и не отдаст
+   список персон. Отказ ядра (не 401 — тот спрашивает экран запуска сам) —
+   событие CORE_DENIED_EVENT: экран запуска объясняет причину. Ядро снова на связи — переписка уходит на него
    (syncOffline): всё до последнего ответа — в историю и память
    (…/offline/import), а хвост реплик без ответа остаётся в очереди — чат
    отправит его обычным путём, чтобы на него ответила полная персона.
@@ -19,12 +25,16 @@ import { followShortPrompt, syncLocalPersonas } from './personaSync';
    (personaSync.ts): без них ей некуда лечь. */
 
 export const OFFLINE_SYNCED_EVENT = 'vpc-offline-synced';
+// Ядро на связи, но список персон не отдаёт (403 и т. п.) — detail: причина
+export const CORE_DENIED_EVENT = 'vpc-core-denied';
 // Сообщений за один приём — как MAX_IMPORT ядра (app/api/offline_api.py):
 // больше — 422, и переписка не ушла бы никогда
 const IMPORT_CHUNK = 200;
 // Персона с телефона не перенеслась (ядро отвечает, а запрос оборвался) —
 // повтор, пока связь есть
 const LOCAL_RETRY_MS = 60_000;
+// Ядро ответило на health, а список персон оборвался по сети — повтор
+const LEAVE_RETRY_MS = 5_000;
 
 let offlineBoot = false;
 const listeners = new Set<() => void>();
@@ -47,6 +57,32 @@ export function useOfflineMode(): boolean {
   return isNativeApp() && (health === 'down' || (offlineBoot && health !== 'ok'));
 }
 
+let leaving: Promise<void> | null = null;
+
+/** Ядро ответило: список персон с него — и только тогда выйти из режима без
+ * ядра (иначе чаты пошли бы в ядро, которое не пускает). */
+function leaveOfflineBoot() {
+  if (leaving) return;
+  leaving = refetchPersonas()
+    .then((err) => {
+      if (!err) {
+        setOfflineBoot(false);
+        void syncWithCore();
+        return;
+      }
+      // 401 — экран запуска уже спрашивает токен (AUTH_REQUIRED_EVENT)
+      if (err.status === 401) return;
+      if (err.status === 0) {
+        window.setTimeout(() => coreHealth() === 'ok' && offlineBoot && leaveOfflineBoot(), LEAVE_RETRY_MS);
+        return;
+      }
+      window.dispatchEvent(new CustomEvent(CORE_DENIED_EVENT, { detail: err.message || `HTTP ${err.status}` }));
+    })
+    .finally(() => {
+      leaving = null;
+    });
+}
+
 let syncing: Promise<string[]> | null = null;
 
 /** Отдать ноутбуку переписку без него. → персоны, чья переписка ушла. */
@@ -66,7 +102,18 @@ export function syncOffline(): Promise<string[]> {
         try {
           await api.offlineImport(
             persona,
-            part.map((m) => ({ id: m.id, role: m.role, text: m.text, ts: m.ts, source: m.source })),
+            // Уведомление сервисов ядро и так кладёт в историю как реплику
+            // персоны — помечать его отдельно ядру незачем (старое ядро такой
+            // пометки не знает и не приняло бы всю пачку)
+            part.map((m) => ({
+              id: m.id,
+              role: m.role,
+              text: m.text,
+              ts: m.ts,
+              source: m.source === 'notify' ? undefined : m.source,
+              // Режим, которым ответил телефон, — в журнал режимов ядра
+              ...(m.role === 'assistant' && typeof m.mode === 'string' ? { mode: m.mode } : {}),
+            })),
           );
           removeOfflineMessages(persona, part.map((m) => m.id));
           sent += part.length;
@@ -89,13 +136,22 @@ export function syncOffline(): Promise<string[]> {
 export async function syncWithCore(): Promise<void> {
   const moved = await syncLocalPersonas();
   await syncOffline();
-  // Кит перенесённой — сразу и, пока ядро составляет краткое описание, ещё
-  for (const id of moved) void followShortPrompt(id);
+  // Краткие описания без ядра — до кита перенесённых: с ним ядро не станет
+  // составлять своё
+  const shorts = await syncShortPrompts();
+  // Кит перенесённой (и той, чьё описание ушло) — сразу и, пока ядро
+  // составляет краткое описание, ещё
+  for (const id of new Set([...moved, ...shorts])) void followShortPrompt(id);
   await syncLocalReminders();
+  await syncLocalNotes();
+  // Лор, загруженный без ядра, — до китов: новая метка лора придёт с ними
+  await syncLocalLore();
+  await syncPendingAvatars();
+  await syncPhoneLocation();
   await refreshAllKits();
 }
 
-/** App: ядро на связи — выйти из запуска без ноутбука и отдать ему переписку
+/** App: ядро на связи — выйти из запуска без ядра и отдать ему переписку
  * и поставленные без него напоминания. Запуск — будильник телефона заново
  * по сохранённым китам (на случай, если его сбросила система). */
 export function useOfflineSync() {
@@ -107,13 +163,11 @@ export function useOfflineSync() {
   }, []);
   useEffect(() => {
     if (!isNativeApp() || health !== 'ok') return;
-    if (offlineBoot) {
-      setOfflineBoot(false);
-      void refetchPersonas();
-    }
-    void syncWithCore();
+    if (offlineBoot) leaveOfflineBoot();
+    else void syncWithCore();
     const timer = window.setInterval(() => {
-      if (localPersonas().some((p) => p.status === 'pending')) void syncWithCore();
+      if (offlineBoot) leaveOfflineBoot();
+      else if (localPersonas().some((p) => p.status === 'pending')) void syncWithCore();
     }, LOCAL_RETRY_MS);
     return () => window.clearInterval(timer);
   }, [health, personaCount]);

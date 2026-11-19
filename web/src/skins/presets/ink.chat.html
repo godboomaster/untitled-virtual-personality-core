@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="ru" data-vpc-active="chat">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="vpc-skin-contract" content="3" />
+<meta name="vpc-skin-name" content="Тушь" />
+<meta name="vpc-skin-author" content="Virtual Persona Core" />
+<meta name="vpc-skin-version" content="1.0" />
+<title>Тушь — chat</title>
+<style>
+  /* «Тушь»: страница манги — белый лист, чёрные рамки панелей с белыми
+     полями между ними, точечный растр вместо теней, реплики персоны —
+     баллоны с хвостиком, свои — чёрные плашки-подписи. Один цвет-пятно —
+     киноварь: отправка, непрочитанное, отметки. Тёмная тема — негатив. */
+  :root {
+    --bg: #f7f5ef;
+    --panel: #fffefa;
+    --panel2: #efece4;
+    --ink: #141414;
+    --muted: #57554f;
+    --line: #141414;
+    --accent: #d6361f;
+    --on-accent: #fffefa;
+    --persona-bg: #fffefa;
+    --persona-ink: #141414;
+    --user-bg: #141414;
+    --user-ink: #fffefa;
+    --field: #fffefa;
+    --track: #fffefa;
+    --danger: #d6361f;
+    --scene: #fffefa;
+    --dot: #141414;
+    --rw: 1px;
+    --bw: 2px;
+    --f-disp: "Avenir Next Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
+    --f-text: "Avenir Next", "Segoe UI", "Noto Sans", sans-serif;
+    --f-mono: "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+    --tone: radial-gradient(circle, var(--dot) 0 1px, transparent 1.2px) 0 0 / 5px 5px;
+    --scrim: radial-gradient(circle, var(--dot) 0 1.2px, transparent 1.4px) 0 0 / 4px 4px;
+
+    --vpc-shell-bg: var(--bg);
+    --vpc-shell-panel: var(--panel);
+    --vpc-shell-text: var(--ink);
+    --vpc-shell-dim: var(--muted);
+    --vpc-shell-border: var(--line);
+    --vpc-shell-accent: var(--accent);
+    --vpc-shell-font: "Avenir Next", "Segoe UI", "Noto Sans", sans-serif;
+    --vpc-shell-font-disp: "Avenir Next Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
+    --vpc-shell-font-mono: "SF Mono", Menlo, Consolas, monospace;
+    --vpc-shell-radius: 0px;
+    --vpc-shell-shadow: none;
+  }
+  html[data-theme="dark"] {
+    --bg: #0c0c0c;
+    --panel: #141414;
+    --panel2: #1e1e1d;
+    --ink: #f2efe8;
+    --muted: #aaa69d;
+    --line: #f2efe8;
+    --accent: #ff5d43;
+    --on-accent: #0c0c0c;
+    --persona-bg: #141414;
+    --persona-ink: #f2efe8;
+    --user-bg: #f2efe8;
+    --user-ink: #0c0c0c;
+    --field: #0c0c0c;
+    --track: #0c0c0c;
+    --danger: #ff5d43;
+    --scene: #141414;
+    --dot: #f2efe8;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-text);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+  }
+  [hidden] { display: none !important; }
+  [data-vpc-screen] { display: none; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .count { font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .sep { color: var(--muted); }
+  .head-avatar {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    font-family: var(--f-disp);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .head-id { flex: 1; min-width: 0; }
+  .head-name {
+    font-family: var(--f-disp);
+    font-size: 18px;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-sub {
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mark { flex: none; }
+  [data-collapsed]:not([data-expanded]) > [data-extra] { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  html[data-vpc-active="chat"] [data-vpc-screen="chat"] { display: flex; }
+  .chat { position: relative; height: 100vh; width: 100%; overflow: hidden; }
+  .side {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--panel);
+  }
+  .side--left { width: 224px; border-right: var(--bw) solid var(--line); }
+  .side--right { width: 268px; gap: 16px; padding: 16px 16px 24px; border-left: var(--bw) solid var(--line); }
+  .side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 16px 16px 8px; }
+  .pl-list { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 14px; }
+  .pl-item {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    text-align: left;
+    background: none;
+    border: var(--rw) solid transparent;
+  }
+  .pl-avatar { width: 32px; height: 32px; object-fit: cover; }
+  .pl-body { display: flex; flex-direction: column; min-width: 0; }
+  .pl-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-status { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-unread {
+    min-width: 20px;
+    padding: 0 6px;
+    text-align: center;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    line-height: 18px;
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: var(--bw) solid var(--line);
+  }
+  .head-btn {
+    flex: none;
+    padding: 7px 14px;
+    background: none;
+    border: var(--bw) solid var(--line);
+    font-weight: 600;
+  }
+  .head-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .panel-btn {
+    display: none;
+    flex: none;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    padding: 0;
+    background: none;
+    border: var(--bw) solid var(--line);
+  }
+  .panel-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+  .chat[data-open="left"] .panel-btn--left, .chat[data-open="right"] .panel-btn--right {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .feed {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 22px;
+  }
+  .msg {
+    position: relative;
+    align-self: flex-start;
+    max-width: min(78%, 640px);
+    padding: 10px 14px;
+    background: var(--persona-bg);
+    color: var(--persona-ink);
+  }
+  .msg[data-role="user"] { align-self: flex-end; background: var(--user-bg); color: var(--user-ink); }
+  .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg-image { display: block; max-width: min(100%, 320px); max-height: 320px; margin-top: 8px; cursor: zoom-in; }
+  .msg-quote { margin-bottom: 6px; padding-left: 8px; border-left: 2px solid currentColor; font-size: 12px; opacity: .8; }
+  .msg-quote-author { font-weight: 600; }
+  .msg-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    line-height: 1.3;
+    opacity: .75;
+  }
+  .msg-delivery { margin-left: 4px; }
+  .msg-reply { padding: 0 2px; background: none; border: none; color: inherit; opacity: 0; }
+  .msg:hover .msg-reply, .msg:focus-within .msg-reply { opacity: 1; }
+  @media (hover: none) { .msg-reply { opacity: .8; } }
+  .typing {
+    flex: none;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 22px 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .typing[data-active] { display: flex; }
+  .typing-dots {
+    width: 18px;
+    height: 4px;
+    background: linear-gradient(90deg, currentColor 0 4px, transparent 4px 7px, currentColor 7px 11px, transparent 11px 14px, currentColor 14px 18px);
+    animation: typing-steps 1.2s steps(4, jump-none) infinite;
+  }
+  @keyframes typing-steps {
+    from { clip-path: inset(0 100% 0 0); }
+    to { clip-path: inset(0 0 0 0); }
+  }
+  .replybar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    background: var(--panel);
+    border-top: var(--rw) solid var(--line);
+    font-size: 12px;
+  }
+  .replybar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .attachbar {
+    flex: none;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    background: var(--panel);
+    border-top: var(--rw) solid var(--line);
+  }
+  .attachbar:has([data-vpc="attach-preview"]:not([hidden])) { display: flex; }
+  .attachbar-thumb { max-height: 48px; max-width: 120px; cursor: zoom-in; }
+  .x-btn {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    background: none;
+    border: var(--rw) solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1;
+  }
+  .bar {
+    flex: none;
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 16px 12px;
+    background: var(--panel);
+    border-top: var(--bw) solid var(--line);
+  }
+  .bar-attach {
+    flex: none;
+    width: 40px;
+    padding: 0;
+    background: none;
+    border: var(--bw) solid var(--line);
+    font-size: 20px;
+    line-height: 1;
+  }
+  .bar-input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    background: var(--field);
+    border: var(--bw) solid var(--line);
+    border-radius: 0;
+    outline: none;
+  }
+  .bar-input:focus { border-color: var(--accent); }
+  .bar-send {
+    flex: none;
+    padding: 0 18px;
+    background: var(--accent);
+    color: var(--on-accent);
+    border: var(--bw) solid var(--accent);
+    font-weight: 700;
+  }
+  .ctx-block { display: flex; flex-direction: column; gap: 3px; }
+  .ctx-line { font-size: 14px; }
+  .ctx-note { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .ctx-note:empty { display: none; }
+  .ctx-trend { font-size: 12px; color: var(--muted); }
+  .ctx-fold { border-top: var(--rw) solid var(--line); }
+  .ctx-fold summary {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 8px 0 6px;
+    cursor: pointer;
+    list-style: none;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .ctx-fold summary::-webkit-details-marker { display: none; }
+  .ctx-fold summary::before { content: '+'; width: 10px; color: var(--accent); }
+  .ctx-fold[open] summary::before { content: '−'; }
+  .todo { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .todo-check {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    font-size: 11px;
+    line-height: 1;
+    background: none;
+    border: var(--rw) solid var(--line);
+    color: transparent;
+  }
+  .todo[data-done] .todo-check { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .todo[data-done] .todo-text { text-decoration: line-through; color: var(--muted); }
+  .inv-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+  .inv-icon {
+    flex: none;
+    min-width: 52px;
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .feat-list { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 4px; }
+  .feat { padding: 1px 6px; border: var(--rw) solid var(--line); font-size: 11px; color: var(--muted); }
+  .scrim { display: none; }
+  @media (max-width: 1000px) {
+    .side--right {
+      display: none;
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 30;
+      width: min(300px, 88vw);
+    }
+    .panel-btn--right { display: grid; }
+    .chat[data-open="right"] .side--right { display: flex; }
+    .chat[data-open] .scrim { display: block; position: absolute; inset: 0; z-index: 25; background: var(--scrim); }
+  }
+  @media (max-width: 720px) {
+    .side--left {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      z-index: 30;
+      width: min(280px, 84vw);
+    }
+    .panel-btn--left { display: grid; }
+    .chat[data-open="left"] .side--left { display: flex; }
+    .head { gap: 8px; padding: 8px 10px; }
+    .head-avatar { width: 34px; height: 34px; font-size: 15px; }
+    .head-name { font-size: 16px; }
+    .head-btn { padding: 6px 10px; }
+    .mark { display: none; }
+    .feed { gap: 10px; padding: 14px 12px; }
+    .msg { max-width: 88%; }
+    .typing { padding: 2px 12px 6px; }
+    .bar { gap: 6px; padding: 8px 10px 10px; }
+    .bar-attach { width: 36px; }
+    .bar-send { padding: 0 12px; }
+  }
+
+  .kicker, .ctx-fold summary {
+    font-family: var(--f-disp);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: var(--ink);
+  }
+  .count { color: var(--muted); }
+  .head-avatar {
+    border: var(--bw) solid var(--ink);
+    border-radius: 50%;
+    background: var(--panel);
+    font-weight: 800;
+  }
+  .head-name {
+    font-size: 21px;
+    font-weight: 800;
+    font-style: italic;
+    text-transform: uppercase;
+    letter-spacing: .01em;
+  }
+  .head-sub { font-family: var(--f-mono); font-size: 11px; }
+  .mark {
+    width: 34px;
+    height: 34px;
+    border: var(--bw) solid var(--ink);
+    background: var(--tone);
+  }
+
+  .chat { gap: 8px; padding: 8px; background: var(--bg); }
+  .side, .main { border: var(--bw) solid var(--ink); background: var(--panel); }
+  .side--left, .side--right { border-width: var(--bw); }
+  .head, .bar { background: var(--panel); }
+  .head { border-bottom: var(--bw) solid var(--ink); }
+  .bar { border-top: var(--bw) solid var(--ink); }
+  .side-head { border-bottom: 1px dashed var(--ink); margin: 0 12px 8px; padding: 14px 4px 8px; }
+  .pl-list { padding: 0 8px 14px; }
+  .pl-item { border: var(--bw) solid transparent; }
+  .pl-item:hover { border-color: var(--ink); }
+  .pl-item[data-active] { background: var(--ink); color: var(--panel); }
+  .pl-item[data-active] .pl-status { color: color-mix(in srgb, var(--panel) 75%, var(--ink)); }
+  .pl-avatar { border-radius: 50%; border: 1.5px solid currentColor; }
+  .pl-unread { background: var(--accent); color: var(--on-accent); }
+  .head-btn { border-color: var(--ink); text-transform: uppercase; font-family: var(--f-disp); font-weight: 800; letter-spacing: .04em; }
+  .head-btn:hover { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+  .panel-btn { border-color: var(--ink); }
+
+  /* Лента: баллоны персоны и подписи пользователя */
+  .feed { gap: 18px; padding: 22px 26px; }
+  .msg { padding: 12px 18px; font-size: 14.5px; }
+  .msg[data-role="persona"] {
+    margin-left: 6px;
+    border: var(--bw) solid var(--ink);
+    border-radius: 24px;
+  }
+  .msg[data-role="persona"]::before, .msg[data-role="persona"]::after {
+    content: '';
+    position: absolute;
+    left: 18px;
+    bottom: -13px;
+    width: 16px;
+    height: 14px;
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+  }
+  .msg[data-role="persona"]::before { background: var(--ink); }
+  .msg[data-role="persona"]::after { left: 20.5px; bottom: -8.5px; width: 10px; height: 9px; background: var(--persona-bg); }
+  .msg[data-role="user"] { border: var(--bw) solid var(--ink); }
+  .msg-quote { border-left-style: dashed; }
+  .msg-meta { opacity: .7; }
+  .msg[data-status="read"] .msg-delivery { color: var(--accent); }
+  .typing { font-family: var(--f-disp); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+  .replybar, .attachbar { border-top: 1px dashed var(--ink); }
+  .replybar-author { font-family: var(--f-disp); text-transform: uppercase; }
+  .x-btn { border-color: var(--ink); color: var(--ink); }
+  .bar-attach { border-color: var(--ink); }
+  .bar-input { border-color: var(--ink); }
+  .bar-send {
+    border-color: var(--ink);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-family: var(--f-disp);
+    font-size: 15px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  .bar-send:active { transform: translate(1px, 1px); }
+
+  /* Правая панель — лист с заметками, разделёнными пунктиром */
+  .side--right { gap: 12px; }
+  .ctx-block { padding-bottom: 12px; border-bottom: 1px dashed var(--ink); }
+  .ctx-fold { border-top: none; }
+  .ctx-fold + .ctx-fold { border-top: 1px dashed var(--ink); }
+  .ctx-fold summary::before { color: var(--accent); font-family: var(--f-mono); }
+  .todo-check { border: 1.5px solid var(--ink); }
+  .todo[data-done] .todo-check { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+  .feat { border-color: var(--ink); color: var(--ink); }
+  @media (max-width: 1000px) {
+    .side--right { top: 8px; right: 8px; bottom: 8px; }
+  }
+  @media (max-width: 720px) {
+    .chat { gap: 0; padding: 6px; }
+    .side--left { top: 6px; left: 6px; bottom: 6px; }
+    .side--right { top: 6px; right: 6px; bottom: 6px; }
+    .feed { gap: 16px; padding: 16px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<section class="chat" data-vpc-screen="chat" data-vpc-no-fallback="panels">
+
+  <aside class="side side--left">
+    <div class="side-head">
+      <span class="kicker" data-vpc-label="persona-list">Персоны</span>
+      <span class="count" data-vpc-count="personas">0</span>
+    </div>
+    <div class="pl-list" data-vpc="persona-list"></div>
+    <template data-vpc="persona-item">
+      <button type="button" class="pl-item">
+        <img class="pl-avatar" data-vpc-field="avatar" alt="" />
+        <span class="pl-body">
+          <span class="pl-name" data-vpc-field="name"></span>
+          <span class="pl-status" data-vpc-field="status"></span>
+        </span>
+        <span class="pl-unread" data-vpc-field="unread" data-vpc-label-title="unread"></span>
+      </button>
+    </template>
+  </aside>
+
+  <div class="main">
+    <header class="head">
+      <button type="button" class="panel-btn panel-btn--left" data-panel="left"
+              data-vpc-label-title="persona-list" data-vpc-label-aria="persona-list" aria-label="Персоны">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h12M2 8h12M2 12.5h12" /></svg>
+      </button>
+      <div class="head-avatar" data-vpc="persona-avatar">?</div>
+      <div class="head-id">
+        <div class="head-name" data-vpc="persona-name">…</div>
+        <div class="head-sub">
+          <span data-vpc="persona-status">…</span><span class="sep" aria-hidden="true"> / </span><span class="head-model" data-vpc="persona-model">…</span>
+        </div>
+      </div>
+      <span class="mark" aria-hidden="true"></span>
+      <button type="button" class="head-btn" data-vpc="open-dossier"
+              data-vpc-label="open-dossier" data-vpc-label-title="open-dossier-title">Досье</button>
+      <button type="button" class="panel-btn panel-btn--right" data-panel="right"
+              data-vpc-label-title="presence" data-vpc-label-aria="presence" aria-label="Присутствие">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v11h-11zM10 2.5v11" /></svg>
+      </button>
+    </header>
+
+    <main class="feed" data-vpc="messages"></main>
+    <template data-vpc="message">
+      <article class="msg">
+        <div class="msg-quote" data-vpc-optional>
+          <b class="msg-quote-author" data-vpc-field="quote-author"></b>
+          <span class="msg-quote-text" data-vpc-field="quote-text"></span>
+        </div>
+        <div class="msg-text" data-vpc-field="text"></div>
+        <img class="msg-image" data-vpc-field="image" alt="" />
+        <div class="msg-meta">
+          <span class="msg-stamp" data-vpc-optional><span class="msg-time" data-vpc-field="time"></span><span class="msg-delivery" data-vpc-field="delivery"></span></span>
+          <button type="button" class="msg-reply" data-vpc-item-action="reply" data-vpc-label-title="reply">↩&#xFE0E;</button>
+        </div>
+      </article>
+    </template>
+
+    <div class="typing" data-vpc="typing-indicator"><i class="typing-dots" aria-hidden="true"></i><span data-vpc-label="typing">печатает</span></div>
+
+    <div class="replybar" data-vpc="reply-bar" hidden>
+      <b class="replybar-author" data-vpc-field="reply-author"></b>
+      <span class="replybar-text" data-vpc-field="reply-text"></span>
+      <button type="button" class="x-btn" data-vpc-action="cancel-reply" data-vpc-label-title="cancel-reply">✕</button>
+    </div>
+
+    <div class="attachbar">
+      <img class="attachbar-thumb" data-vpc="attach-preview" alt="" hidden />
+      <button type="button" class="x-btn" data-vpc="cancel-attach" data-vpc-label-title="remove-attach">✕</button>
+    </div>
+
+    <div class="bar">
+      <button type="button" class="bar-attach" data-vpc="attach-image" title="Прикрепить картинку" data-vpc-label-title="attach">+</button>
+      <input class="bar-input" data-vpc="input" type="text" placeholder="Сообщение…"
+             data-vpc-label-placeholder="message-placeholder" />
+      <button type="button" class="bar-send" data-vpc="send" data-vpc-label="send">Отправить</button>
+    </div>
+  </div>
+
+  <aside class="side side--right">
+    <section class="ctx-block ctx-block--presence">
+      <div class="kicker" data-vpc-label="presence">Присутствие</div>
+      <div class="ctx-line"><span data-vpc="persona-status">…</span></div>
+      <div class="ctx-note" data-vpc="ctx-pastime">…</div>
+      <div class="ctx-note ctx-env"><span data-vpc="local-time"></span> <span data-vpc="weather"></span></div>
+    </section>
+
+    <section class="ctx-block">
+      <div class="kicker" data-vpc-label="mood">Настроение</div>
+      <div class="ctx-line"><span data-vpc="ctx-mood">…</span> <span class="ctx-trend" data-vpc="ctx-trend"></span></div>
+    </section>
+
+    <section class="ctx-block">
+      <div class="kicker" data-vpc-label="initiative">Самоинициатива</div>
+      <div class="ctx-note" data-vpc="ctx-initiative">…</div>
+      <div class="ctx-note" data-vpc="ctx-last-reply">…</div>
+      <div class="ctx-note" data-vpc="ctx-last-init"></div>
+    </section>
+
+    <section class="ctx-block">
+      <div class="kicker" data-vpc-label="next-reminder">Ближайшее напоминание</div>
+      <div class="ctx-note" data-vpc="ctx-next-reminder">…</div>
+      <div class="ctx-note" data-vpc="ctx-learning"></div>
+    </section>
+
+    <details class="ctx-fold" open>
+      <summary><span data-vpc-label="todos">Дела</span> <span class="count" data-vpc-count="todos">0</span></summary>
+      <div class="todo-list" data-vpc="todo-list"></div>
+      <template data-vpc="todo-item">
+        <div class="todo">
+          <button type="button" class="todo-check" data-vpc-item-action="toggle-todo">✓</button>
+          <span class="todo-text" data-vpc-field="text"></span>
+        </div>
+      </template>
+    </details>
+
+    <details class="ctx-fold">
+      <summary><span data-vpc-label="inventory">Инвентарь</span> <span class="count" data-vpc-count="inventory">0</span></summary>
+      <div class="inv-list" data-vpc="inventory-list"></div>
+      <template data-vpc="inventory-item">
+        <div class="inv-row">
+          <span class="inv-icon" data-vpc-field="icon"></span>
+          <span class="inv-name" data-vpc-field="name"></span>
+        </div>
+      </template>
+    </details>
+
+    <details class="ctx-fold">
+      <summary><span data-vpc-label="modules">Модули</span> <span class="count" data-vpc-count="features">0</span></summary>
+      <div class="feat-list" data-vpc="feature-list"></div>
+      <template data-vpc="feature-item">
+        <span class="feat" data-vpc-field="label"></span>
+      </template>
+    </details>
+  </aside>
+
+  <div class="scrim" aria-hidden="true"></div>
+</section>
+
+<script>
+  /* Боковые панели на узкой ширине — выдвижные: кнопки в шапке,
+     закрытие кликом мимо панели и по Escape. */
+  (function () {
+    var root = document.querySelector('[data-vpc-screen="chat"]');
+    if (!root) return;
+    function close() { root.removeAttribute('data-open'); }
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-panel]') : null;
+      if (btn) {
+        var side = btn.getAttribute('data-panel');
+        if (root.getAttribute('data-open') === side) { close(); } else { root.setAttribute('data-open', side); }
+        return;
+      }
+      if (root.hasAttribute('data-open') && !(e.target.closest && e.target.closest('.side'))) { close(); }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && root.hasAttribute('data-open')) { close(); e.preventDefault(); }
+    });
+    document.addEventListener('vpc:ready', function () {
+      if (window.vpc && vpc.on) { vpc.on('persona', close); }
+    });
+  })();
+</script>
+
+<!-- ==== VPC-BRIDGE:START ====
+     Служебный блок: при загрузке скина приложение ПЕРЕЗАПИШЕТ его
+     своей эталонной версией. Не редактировать, не удалять маркеры. -->
+<script>/* заглушка: приложение подставит сюда рабочий код моста */</script>
+<!-- ==== VPC-BRIDGE:END ==== -->
+
+</body>
+</html>

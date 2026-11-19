@@ -18,7 +18,6 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.SystemClock;
-import android.service.notification.StatusBarNotification;
 import android.text.format.DateFormat;
 import android.util.Log;
 
@@ -38,7 +37,10 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -78,6 +80,10 @@ import java.util.concurrent.TimeUnit;
  * Адрес, токен и clientId лежат в SharedPreferences: служба переживает
  * выгрузку приложения и перезапуск системой (START_STICKY).
  *
+ * Пока служба работает, виджет «Живой портрет» берёт паузу до ответа и
+ * ответы в чате из ленты реплик (PortraitSaidFeed) — своим опросом и только
+ * при включённом экране; этот опрос его не касается.
+ *
  * Задачи Gemma ядра (app/core/phone_llm, «Ключи и модели» → Ollama → «на
  * телефоне»): пока приложение свёрнуто или закрыто, служба вторым долгим
  * опросом (GET /api/phone-llm/next) забирает служебный вызов, считает его
@@ -88,6 +94,27 @@ import java.util.concurrent.TimeUnit;
 public class BackgroundInboxService extends Service {
 
     private static final String TAG = "BackgroundInbox";
+    /** Реплика из ответа /api/chat без строк хода агента задач (режим
+     * управления: «Нажал …», «Листаю страницу.»): они в журнале карточки
+     * задачи (task.log) — веб прячет их из пузыря, лента реплик ядра — из
+     * облачка; облачку виджета и голосу они тоже не нужны. */
+    static String withoutTaskLines(JSONObject reply, String text) {
+        JSONObject task = reply.optJSONObject("task");
+        JSONArray log = task != null ? task.optJSONArray("log") : null;
+        if (text == null || log == null || log.length() == 0) return text;
+        java.util.Set<String> lines = new java.util.HashSet<>();
+        for (int i = 0; i < log.length(); i++) {
+            JSONObject x = log.optJSONObject(i);
+            if (x != null) lines.add(x.optString("text", ""));
+        }
+        StringBuilder out = new StringBuilder();
+        for (String ln : text.split("\n", -1)) {
+            if (lines.contains(ln.trim())) continue;
+            if (out.length() > 0) out.append('\n');
+            out.append(ln);
+        }
+        return out.toString().trim();
+    }
 
     static final String PREFS = "vpc_bg_inbox";
     static final String KEY_ENABLED = "enabled";
@@ -110,14 +137,11 @@ public class BackgroundInboxService extends Service {
     // …и куда её открыть: "room" — комната (виджет комнаты), иначе — чат
     static final String EXTRA_SECTION = "io.vpcore.app.SECTION";
 
-    private static final String CHANNEL_LINK = "vpc_link";
+    static final String CHANNEL_LINK = "vpc_link";
     static final String CHANNEL_MESSAGES = "vpc_messages";
     private static final int ONGOING_ID = 1;
-    // Метки уведомлений сообщений: по ним их снимают, когда приложение на экране
-    private static final String TAG_MESSAGE = "vpc-msg:";
-    private static final String TAG_SUMMARY = "vpc-sum:";
+    // Уведомление «Проверить» из настроек
     private static final String TAG_TEST = "vpc-test";
-    private static final String GROUP_PREFIX = "io.vpcore.app.persona.";
 
     // Ожидание ответа на ядре (там же предел — MAX_WAIT_SEC в app/api/inbox.py)
     private static final int LONG_WAIT_SEC = 300;
@@ -204,9 +228,6 @@ public class BackgroundInboxService extends Service {
     private long backoffMs = POLL_MS;
     // Текст значка в шторке: обновляем, только когда он меняется
     private String shownStatus = null;
-    // Номера уведомлений сообщений: от времени запуска — после перезапуска
-    // службы новые не перетирают ещё висящие в шторке
-    private int messageSeq = (int) ((System.currentTimeMillis() / 1000) & 0x3fffffff);
 
     /** Запустить (или перечитать настройки и опросить сразу). */
     static void start(Context ctx) {
@@ -307,6 +328,8 @@ public class BackgroundInboxService extends Service {
                 ContextCompat.RECEIVER_NOT_EXPORTED);
         // Виджет комнаты: обновлять, пока экран включён
         RoomWidget.startAuto(this);
+        // Портрет: пауза до ответа и ответы в чате — пока экран включён
+        PortraitSaidFeed.attach(this);
     }
 
     @Override
@@ -319,12 +342,13 @@ public class BackgroundInboxService extends Service {
         // startForeground — сразу и ВСЕГДА, даже если сейчас остановимся:
         // после startForegroundService остановка без него роняет приложение
         // (а запуск мог быть в полёте, когда пользователь выключил)
+        final Notification startedNote;
         try {
-            Notification n = ongoingNotification(getString(R.string.bg_connecting, hostOf(url)), want);
+            startedNote = ongoingNotification(getString(R.string.bg_connecting, hostOf(url)), want);
             if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(ONGOING_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                startForeground(ONGOING_ID, startedNote, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
             } else {
-                startForeground(ONGOING_ID, n);
+                startForeground(ONGOING_ID, startedNote);
             }
         } catch (RuntimeException e) {
             // Android 12+ запрещает запуск службы переднего плана из фона
@@ -343,6 +367,7 @@ public class BackgroundInboxService extends Service {
         running = true;
         synchronized (NOTIFY_LOCK) {
             stopping = false; // новый запуск после остановки
+            NotifyStack.shown(this, ONGOING_ID, startedNote);
         }
         final String tok = p.getString(KEY_TOKEN, "");
         final String cid = p.getString(KEY_CLIENT_ID, "");
@@ -370,6 +395,8 @@ public class BackgroundInboxService extends Service {
         } else {
             abortGemma(); // новые адрес и токен — со следующего опроса
         }
+        // Лента реплик портрета: включить, если нужна; новые адрес и токен — сразу
+        PortraitSaidFeed.update(this);
         return START_STICKY;
     }
 
@@ -390,6 +417,7 @@ public class BackgroundInboxService extends Service {
             stopping = true;
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+        NotifyStack.gone(this, null, ONGOING_ID);
         stopSelf(startId);
     }
 
@@ -400,9 +428,11 @@ public class BackgroundInboxService extends Service {
             // Значок «связь с ядром» больше не наш — убрать, чтобы не остался
             // неснимаемым уведомлением
             NotificationManagerCompat.from(this).cancel(ONGOING_ID);
+            NotifyStack.gone(this, null, ONGOING_ID);
         }
         running = false;
         RoomWidget.stopAuto(this);
+        PortraitSaidFeed.detach(this);
         if (alarms != null) alarms.cancel(alarmIntent);
         if (alarmReceiver != null) {
             try {
@@ -503,6 +533,7 @@ public class BackgroundInboxService extends Service {
                 lastError = null;
                 backoffMs = POLL_MS;
                 List<JSONObject> initiative = new ArrayList<>();
+                List<JSONObject> toShow = new ArrayList<>();
                 for (int i = 0; i < reply.messages.length(); i++) {
                     JSONObject m = reply.messages.optJSONObject(i);
                     if (m == null) continue;
@@ -512,7 +543,7 @@ public class BackgroundInboxService extends Service {
                     String ref = m.optString("ref", "");
                     boolean shownByPhone = ReminderAlarms.wasFired(this, ref);
                     ReminderAlarms.markDelivered(this, ref);
-                    if (!appVisible && !shownByPhone && personaShown(m)) showMessage(m);
+                    if (!appVisible && !shownByPhone && personaShown(m)) toShow.add(m);
                     // В виджет — и когда приложение на экране: там лента, а не уведомления
                     if (InitiativeWidget.KIND.equals(m.optString("kind")) && personaShown(m)) {
                         initiative.add(m);
@@ -523,6 +554,7 @@ public class BackgroundInboxService extends Service {
                     PortraitWidget.personaSpoke(this, m.optString("persona", ""),
                             appVisible ? null : m.optString("text", ""));
                 }
+                showMessages(toShow);
                 InitiativeWidget.add(this, initiative);
                 // Курсор — после показа: если процесс умрёт посередине, ответ
                 // придёт ещё раз (повтор уведомления лучше пропажи)
@@ -811,7 +843,9 @@ public class BackgroundInboxService extends Service {
         synchronized (NOTIFY_LOCK) {
             if (destroyed || stopping) return;
             try {
-                NotificationManagerCompat.from(this).notify(ONGOING_ID, ongoingNotification(text, true));
+                Notification n = ongoingNotification(text, true);
+                NotificationManagerCompat.from(this).notify(ONGOING_ID, n);
+                NotifyStack.shown(this, ONGOING_ID, n);
             } catch (SecurityException e) {
                 // Нет разрешения на уведомления — служба работает без значка в шторке
             }
@@ -836,62 +870,32 @@ public class BackgroundInboxService extends Service {
                 .setSilent(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setGroup(NotifyStack.GROUP) // в общую стопку уведомлений приложения
                 .setForegroundServiceBehavior(immediate
                         ? NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE
                         : NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
                 .build();
     }
 
-    private void showMessage(JSONObject m) {
-        String persona = m.optString("persona", "");
-        if (persona.isEmpty()) return;
-        String name = m.optString("name", persona);
-        String text = m.optString("text", "");
-        long when = (long) (m.optDouble("ts", System.currentTimeMillis() / 1000.0) * 1000);
-
-        // Тап — MainActivity с id персоны (requestCode по персоне: у каждой
-        // свой PendingIntent, экстра не перетирается чужой)
-        Intent open = new Intent(this, MainActivity.class)
-                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(EXTRA_PERSONA, persona);
-        PendingIntent pi = PendingIntent.getActivity(this, persona.hashCode(), open,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        String group = GROUP_PREFIX + persona;
-
-        Notification msg = new NotificationCompat.Builder(this, CHANNEL_MESSAGES)
-                .setSmallIcon(R.drawable.ic_stat_vpc)
-                .setContentTitle(name)
-                .setContentText(text)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
-                .setWhen(when)
-                .setShowWhen(true)
-                .setContentIntent(pi)
-                .setAutoCancel(true)
-                .setGroup(group)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .build();
-        // Сводка группы: сообщения одной персоны — одной стопкой в шторке
-        Notification summary = new NotificationCompat.Builder(this, CHANNEL_MESSAGES)
-                .setSmallIcon(R.drawable.ic_stat_vpc)
-                .setContentTitle(name)
-                .setContentText(text)
-                .setWhen(when)
-                .setContentIntent(pi)
-                .setAutoCancel(true)
-                .setGroup(group)
-                .setGroupSummary(true)
-                .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .build();
+    /** Сообщения одного ответа ядра: по карточке-переписке на персону (одно
+     * обновление на персону — у Android предел обновлений в секунду). */
+    private void showMessages(List<JSONObject> messages) {
+        Map<String, List<NotifyStack.Line>> byPersona = new LinkedHashMap<>();
+        Map<String, String> names = new HashMap<>();
+        for (JSONObject m : messages) {
+            String persona = m.optString("persona", "");
+            if (persona.isEmpty()) continue;
+            long when = (long) (m.optDouble("ts", System.currentTimeMillis() / 1000.0) * 1000);
+            List<NotifyStack.Line> lines = byPersona.get(persona);
+            if (lines == null) byPersona.put(persona, lines = new ArrayList<>());
+            lines.add(new NotifyStack.Line(m.optString("text", ""), when));
+            names.put(persona, m.optString("name", persona));
+        }
+        if (byPersona.isEmpty()) return;
         synchronized (NOTIFY_LOCK) {
             if (destroyed || stopping) return; // уведомления выключили, пока шёл запрос
-            try {
-                NotificationManagerCompat nm = NotificationManagerCompat.from(this);
-                nm.notify(TAG_MESSAGE + persona, ++messageSeq, msg);
-                nm.notify(TAG_SUMMARY + persona, 0, summary);
-            } catch (SecurityException e) {
-                // Разрешение на уведомления отозвано — молча пропускаем
+            for (Map.Entry<String, List<NotifyStack.Line>> e : byPersona.entrySet()) {
+                NotifyStack.personaMessages(this, e.getKey(), names.get(e.getKey()), e.getValue());
             }
         }
     }
@@ -913,37 +917,20 @@ public class BackgroundInboxService extends Service {
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent pi = PendingIntent.getActivity(ctx, 0x7e57, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification n = new NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_stat_vpc)
                 .setContentTitle(ctx.getString(R.string.bg_test_title))
                 .setContentText(ctx.getString(R.string.bg_test_text))
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .build();
-        try {
-            nm.notify(TAG_TEST, 0, n);
-        } catch (SecurityException e) {
-            return "denied";
-        }
-        return null;
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE);
+        return NotifyStack.post(ctx, TAG_TEST, 0, b, null) ? null : "denied";
     }
 
     /** Приложение вышло на экран: сообщения из шторки показывает уже сам чат. */
     static void clearMessageNotifications(Context ctx) {
-        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        try {
-            for (StatusBarNotification sbn : nm.getActiveNotifications()) {
-                String tag = sbn.getTag();
-                if (tag != null && (tag.startsWith(TAG_MESSAGE) || tag.startsWith(TAG_SUMMARY))) {
-                    nm.cancel(tag, sbn.getId());
-                }
-            }
-        } catch (RuntimeException e) {
-            // не критично
-        }
+        NotifyStack.clearMessages(ctx);
     }
 
     static void createChannels(Context ctx) {

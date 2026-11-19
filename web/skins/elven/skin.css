@@ -334,8 +334,7 @@ html[data-skin='elven'] .voice-mic-btn--active {
    (свои узлы-уголки — только у плашек, ниже) */
 html[data-skin='elven'] .corner,
 html[data-skin='elven'] .home-title.glitch::before,
-html[data-skin='elven'] .home-title.glitch::after,
-html[data-skin='elven'] .barcode {
+html[data-skin='elven'] .home-title.glitch::after {
   display: none;
 }
 
@@ -1376,21 +1375,20 @@ html[data-skin='elven'] .home-block-num {
   color: var(--el-label);
 }
 
-/* Карточки присутствия, телеметрия, досье-карточки, лента, заметки, календарь */
-html[data-skin='elven'] :is(.home-presence, .home-dossier, .home-feed, .notes, .cal, .home-tele-cell) {
+/* Карточки присутствия, телеметрия, лента, заметки, календарь */
+html[data-skin='elven'] :is(.home-presence, .home-feed, .notes, .cal, .home-tele-cell) {
   background: var(--el-card);
   border: 1px solid var(--el-line);
   border-radius: var(--el-leaf);
   box-shadow: none;
   clip-path: none;
 }
-html[data-skin='elven'] :is(.home-presence, .home-dossier):hover {
+html[data-skin='elven'] .home-presence:hover {
   background: var(--el-card);
   border-color: var(--el-line-strong);
   transform: none;
 }
-html[data-skin='elven'] .home-presence-name,
-html[data-skin='elven'] .home-dossier h3 {
+html[data-skin='elven'] .home-presence-name {
   font-family: var(--el-head-font);
   font-size: 20px;
   font-weight: 700;
@@ -1409,16 +1407,10 @@ html[data-skin='elven'] .home-presence-activity--none {
   font-size: 14.5px;
   color: var(--text-dim);
 }
-html[data-skin='elven'] :is(.home-presence-reply, .home-dossier-foot) {
+html[data-skin='elven'] .home-presence-reply {
   font-family: var(--font);
   font-size: 12.5px;
   border-top: 1px solid var(--el-line);
-}
-html[data-skin='elven'] .home-dossier-index {
-  font-family: var(--font);
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: var(--el-label);
 }
 
 /* Телеметрия: отдельные листы с крупными цифрами */
@@ -1479,9 +1471,6 @@ html[data-skin='elven'] .start-guide-dlg-titlebar .lights i:nth-child(2) {
 html[data-skin='elven'] .home-term-titlebar .lights i:nth-child(3),
 html[data-skin='elven'] .start-guide-dlg-titlebar .lights i:nth-child(3) {
   background: #a5b778;
-}
-html[data-skin='elven'] .home-term-line .bright {
-  color: #e9d3a2;
 }
 html[data-skin='elven'] .home-term-cursor,
 html[data-skin='elven'] .start-guide-dlg-cursor {
@@ -2694,7 +2683,7 @@ html[data-skin='elven'] .art-drop {
 html[data-skin='elven'] .art-drop:hover {
   border-color: var(--el-ink-line);
 }
-html[data-skin='elven'] :is(.art-drop-title, .art-drop-spec, .art-drop-status, .art-style-desc) {
+html[data-skin='elven'] :is(.art-drop-title, .art-drop-spec, .art-drop-status) {
   font-family: var(--font);
 }
 html[data-skin='elven'] .art-prompt {
@@ -2944,4 +2933,9 @@ html[data-skin='elven'] :is(code, pre, kbd, samp, .devlog, .devlog-line) {
   html[data-skin='elven'] .room-telemetry .room-tele-offline {
     grid-column: 1 / -1;
   }
+}
+
+/* Орнамент бусин — только у главного бокового рельса; разделитель спокойнее */
+html[data-skin='elven'] .chrome-bar {
+  background: linear-gradient(var(--el-rule), var(--el-rule)) 0 50% / 100% 1px no-repeat;
 }

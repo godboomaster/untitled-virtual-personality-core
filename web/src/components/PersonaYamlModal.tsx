@@ -6,6 +6,7 @@ import { alertDialog, confirmDialog } from '../dialogStore';
 import { askLeftoverMemory, renamePersonaId } from '../personaRename';
 import FormModal from './FormModal';
 import PersonaFormFields from './PersonaFormFields';
+import PersonaModesPanel from './PersonaModesPanel';
 import { defaultForm, formFromYaml, prettifyYaml, yamlWithForm } from './personaYamlSync';
 import type { FormState } from './personaYamlSync';
 
@@ -15,7 +16,9 @@ import type { FormState } from './personaYamlSync';
    нет в форме (color, llm, …), и комментарии сохраняются. YAML целиком можно
    скопировать и вставить. id во вставленном тексте возвращается к тому, что
    записан в файле; сменить id — отдельной кнопкой у поля (переносит файл,
-   папку памяти, аватар — personaRename). Только при живом бэкенде. */
+   папку памяти, аватар — personaRename). Вкладка «Режимы» — другие YAML той
+   же персоны (PersonaModesPanel, как в досье): правка основного при этом
+   не теряется. Только при живом бэкенде. */
 
 export default function PersonaYamlModal({
   personaId,
@@ -38,6 +41,7 @@ export default function PersonaYamlModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [restartNote, setRestartNote] = useState(false);
+  const [view, setView] = useState<'persona' | 'modes'>('persona');
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const noteTimer = useRef<number | undefined>(undefined);
@@ -184,14 +188,32 @@ export default function PersonaYamlModal({
   return (
     <FormModal
       title={t('yaml.title')}
-      badge={`${personaId}.yaml`}
+      badge={view === 'modes' ? `${personaId}_modes/` : `${personaId}.yaml`}
       xl
       submitLabel={saved && !dirty ? t('yaml.saved') : saving ? t('yaml.saving') : t('yaml.save')}
       submitDisabled={!dirty || saving || !!yamlError}
-      onSubmit={save}
+      // Режимы сохраняются своей кнопкой у файла: в подвале — только «Закрыть»
+      onSubmit={view === 'persona' ? save : undefined}
       onClose={onClose}
     >
-      {loadError ? (
+      <div className="tabs yaml-tabs">
+        {(['persona', 'modes'] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            className={`tab ${view === v ? 'tab--active' : ''}`}
+            onClick={() => setView(v)}
+          >
+            {v === 'persona' ? t('yaml.tabPersona') : t('yaml.tabModes')}
+            {v === 'persona' && dirty ? ' •' : ''}
+          </button>
+        ))}
+      </div>
+      {view === 'modes' ? (
+        <div className="yaml-modes-view">
+          <PersonaModesPanel personaId={personaId} />
+        </div>
+      ) : loadError ? (
         <div className="yaml-view yaml-view--note">{t('yaml.error')}</div>
       ) : draft === null ? (
         <div className="yaml-view yaml-view--note">{t('yaml.loading')}</div>
@@ -208,8 +230,8 @@ export default function PersonaYamlModal({
               onIdRename={renameId}
               idRenameBlocked={dirty ? t('pc.idRenameUnsaved') : undefined}
             />
-            {saveError && <div className="field-hint">// {saveError}</div>}
-            {restartNote && !saveError && <div className="field-hint">// {t('settings.restartRequired')}</div>}
+            {saveError && <div className="field-hint">{t('ui.commentPrefix')}{saveError}</div>}
+            {restartNote && !saveError && <div className="field-hint">{t('ui.commentPrefix')}{t('settings.restartRequired')}</div>}
           </div>
 
           <div className="pcreate-yaml-col">
