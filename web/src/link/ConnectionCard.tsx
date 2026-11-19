@@ -2,6 +2,7 @@ import { useEffect, useReducer, useState } from 'react';
 import { api, apiHost, setApiUrl } from '../api';
 import { useI18n } from '../i18n';
 import { bgInboxStatus, bgNotifyEnabled, retryBgNotifyPermission, setBgNotify, stopBgInbox } from '../bgInbox';
+import { forgetPhoneControlServer } from '../phone/control';
 import type { BgInboxStatus, BgNotifyResult } from '../bgInbox';
 import { forgetWakeServer, openOverlaySettings, setWakeWord, wakeStatus } from '../wakeWord';
 import type { WakeResult, WakeStatus } from '../wakeWord';
@@ -26,6 +27,7 @@ export default function ConnectionCard() {
     if (link?.id) await api.unpairLink(link.id).catch(() => {});
     stopBgInbox();
     forgetWakeServer();
+    forgetPhoneControlServer();
     setLinkConfig(null);
     window.location.reload();
   };
@@ -49,6 +51,7 @@ export default function ConnectionCard() {
               onClick={() => {
                 stopBgInbox();
                 forgetWakeServer();
+                forgetPhoneControlServer();
                 setApiUrl('');
                 window.location.reload();
               }}

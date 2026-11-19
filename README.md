@@ -239,6 +239,22 @@ date). The phone cannot delete or turn off alarms — it opens the alarm list in
 control mode, commands are still meant for the computer; the phone also leaves alone anything
 said "on the computer". Works without a connection to the core too.
 
+**Screen control.** The persona taps, types and scrolls in any app on the phone when you ask
+from any chat — the app, Telegram, the computer or by voice. You address the phone
+explicitly: "tap Send on my phone", "phone, go back", "on my phone go home", "on my phone,
+scroll down", "what's on my phone screen?", "type kittens into the search field on my phone",
+"open Telegram on my phone", "on my phone open the notifications" — in Russian too. The core
+decides and the phone only carries it out: an accessibility service stays connected to the
+core as one of its devices, so screen control needs a connection to the core. Turn it on in
+Android settings: Accessibility → "Virtual Persona: screen control"; in the app, the "Screen
+control" card in Settings shows its state, opens the Android settings and has "What the core
+sees". Android 13+ hides the switch at first for apps installed outside a store: App info → ⋮
+→ "Allow restricted settings". Irreversible taps — Send, Delete, Confirm — only after your
+"yes"; payments and "Buy" are never tapped; banking, password and sign-in code apps are not
+read or touched (only "back" and "home" work there), and codes from notifications are not shown
+to the persona. Owner only, and not in Telegram groups. Doesn't work over VPC Link yet — only
+with the core's address.
+
 **Home screen widgets.** "Persona initiative" shows the latest messages personas write on
 their own (initiative and the morning, night and weather messages; reminders and service
 notifications stay out); a tap opens the chat. "Persona room" is the chosen persona's room

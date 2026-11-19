@@ -1376,6 +1376,57 @@ class BotInstance:
             return False
         return self.is_owner(user_id)
 
+    def phone_control_allowed(self, user_id: str, chat_id=None) -> bool:
+        """Управление экраном телефона (app/features/phone_control): тот же
+        гейт, что у режима управления (владелец или allowlist), не из скина,
+        не в ходе команды, уже исполненной телефоном, и в Telegram — не в
+        группе (экран телефона увидели бы все). features.phone_control:
+        false — выключено у персоны."""
+        if getattr(self, "features", {}).get("phone_control", True) is False:
+            return False
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
+            return False
+        chat = str(chat_id or "")
+        if not getattr(self, "web_single_user", False) and chat.startswith("-"):
+            return False
+        return self._cc_user_allowed(user_id)
+
+    def _phone_control_turn(self, text: str, user_id: str, chat_id,
+                            lang: Optional[str]) -> Optional[dict]:
+        """Реплика экрану телефона → {"reply"} | {"note"} | None (не ему)."""
+        if not text or not self.phone_control_allowed(user_id, chat_id):
+            return None
+        from app.features import phone_control
+        key = str(chat_id or user_id or "")
+        if not key:
+            return None
+        waiting = phone_control.has_pending(key)
+        if not waiting and not phone_control.mentions_phone(text):
+            return None
+        # Подтверждение режима управления компьютером, ждущее ответа, — новее
+        # нашего вопроса (наш при создании гасит его, см. ниже): «да» — ему
+        cc = getattr(self, "computer_control", None)
+        foreign = False
+        if waiting and cc is not None:
+            try:
+                foreign = cc.get_pending(chat_id, user_id=user_id) is not None
+            except Exception:
+                foreign = False
+        try:
+            res = phone_control.turn(text, key, user_id, lang, names=self._address_names(),
+                                     foreign_pending=foreign)
+        except Exception:
+            logger.exception("[BotInstance] экран телефона: сбой хода")
+            return None
+        if res is not None and cc is not None and phone_control.has_pending(key):
+            # Наш вопрос стал последним в чате: старое «да» режима управления
+            # компьютером больше не получает
+            try:
+                cc.clear_pending(chat_id)
+            except Exception:
+                pass
+        return res
+
     @staticmethod
     def _file_talk(text: Optional[str], reply_context: Optional[str] = None) -> bool:
         """Реплика про файлы и папки компьютера (или ответ на служебное
@@ -3787,6 +3838,21 @@ class BotInstance:
             if self.proactive:
                 self.proactive.record_user_response(chat_id)
             return _skin_reply
+        # Экран телефона (app/features/phone_control): «на телефоне нажми …»,
+        # «телефон, назад», «что на экране телефона?» — раньше режима
+        # управления: обращение к телефону явное, и «нажми «Далее»» с ним —
+        # не компьютеру. Ответ готов — без модели; «что на экране» — заметка
+        # персоне, компьютер в этом ходе не трогается (_PHONE_TURN)
+        _phone = self._phone_control_turn(raw_user_text, user_id, chat_id, turn_lang)
+        if _phone is not None:
+            if "reply" in _phone:
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                self.memory.add_message("assistant", _phone["reply"], user_id, chat_id)
+                if self.proactive:
+                    self.proactive.record_user_response(chat_id)
+                return _phone["reply"]
+            turn_note = "\n\n".join(x for x in (turn_note, _phone.get("note")) if x)
+            _PHONE_TURN.on = True
         if cc_mode_key and self._cc_allowed(user_id, chat_id):
             _mode = parse_control_mode(raw_user_text)
             # Новый ход: «стоп» прошлого хода отработал, флаг снимаем.

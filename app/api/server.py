@@ -1216,9 +1216,11 @@ def _wants_screen(bot, req: ChatRequest) -> bool:
     # «Посмотри на экран». Не из скина: скин — сторонний код, ответ с
     # описанием экрана он бы прочитал. Не в режиме управления: там «экран»
     # — страница агента, её смотрит сам режим
-    from app.features import screen_look
+    from app.features import phone_control, screen_look
     if req.from_skin or not screen_look.is_screen_request(req.message):
         return False
+    if phone_control.mentions_phone(req.message):
+        return False  # экран телефона — его читает служба на телефоне
     try:
         return not bot.control_mode_on(req.chat_id or req.user_id)
     except Exception:
@@ -3313,6 +3315,14 @@ async def device_forget(device_id: DeviceIdPath):
     if not devices.forget(device_id):
         raise HTTPException(status_code=404, detail="Такого устройства нет")
     return {"ok": True}
+
+
+@app.post("/api/devices/{device_id}/bye", dependencies=[Depends(require_auth)])
+async def device_bye(device_id: DeviceIdPath):
+    # Устройство уходит само (служба управления экраном выключена): сразу
+    # «не на связи», чтобы ход персоны не ждал команде таймаута
+    from app.core import devices
+    return {"ok": devices.leave(device_id)}
 
 
 @app.get("/api/devices/{device_id}/commands", dependencies=[Depends(require_auth)])

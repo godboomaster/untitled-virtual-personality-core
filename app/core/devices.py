@@ -158,6 +158,17 @@ def forget(device_id: str) -> bool:
     return True
 
 
+def leave(device_id: str) -> bool:
+    """Устройство уходит само (служба выключена): сразу «не на связи», а не
+    ещё ONLINE_SEC после последнего опроса — команда не ждёт таймаута."""
+    with _lock:
+        if device_id not in _registry():
+            return False
+        _seen[device_id] = {"seen": 0.0, "waiting": False}
+    logger.info(f"[Devices] {device_id}: ушло со связи")
+    return True
+
+
 def list_devices() -> list[dict]:
     now = time.time()
     with _lock:

@@ -27,6 +27,7 @@ import { BACK_MENU, useBackHandler } from './backStack';
 import { setThemePreference, useAppliedSkin, useEffectiveSkin } from './skinTheme';
 import { getSkin } from '../skins';
 import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
+import { syncPhoneControl } from './phone/control';
 import { usePhoneGemma } from './offline/phoneGemma';
 import { syncWakeWord } from './wakeWord';
 import { useOfflineSync } from './offline/state';
@@ -128,6 +129,8 @@ export default function App() {
     syncBgInbox();
     // «Слушать по имени»: служба получает свежие адрес и токен
     syncWakeWord();
+    // Управление экраном телефона — тоже
+    syncPhoneControl();
     return listenBgNotificationTaps();
   }, []);
 

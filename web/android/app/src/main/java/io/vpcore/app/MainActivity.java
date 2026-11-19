@@ -17,6 +17,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(FileSavePlugin.class);
         registerPlugin(WakeWordPlugin.class);
         registerPlugin(CoreFinderPlugin.class);
+        registerPlugin(PhoneControlPlugin.class);
         super.onCreate(savedInstanceState);
         handleTap(getIntent());
     }

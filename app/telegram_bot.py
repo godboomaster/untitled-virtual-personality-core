@@ -28,7 +28,7 @@ from app.core.telegram_sender import TelegramMessageSender
 from app.core.message_pacing import send_delay as _send_delay
 from app.features.file_sender import prepare_response, cleanup_files
 from app.features.reply_context import extract_reply_context
-from app.features import screen_look
+from app.features import phone_control, screen_look
 
 logger = logging.getLogger(__name__)
 
@@ -935,6 +935,7 @@ def create_handlers(bot: BotInstance) -> dict:
             # управления «экран» — страница агента, её смотрит сам режим
             screen_raw = None
             if (screen_look.is_screen_request(clean_text) and _is_owner(bot, user_id)
+                    and not phone_control.mentions_phone(clean_text)
                     and not bot.control_mode_on(chat_id)):
                 await update.message.reply_text("Смотрю на экран...")
                 lang = detect_language(clean_text) or bot.chat_user_language(chat_id)

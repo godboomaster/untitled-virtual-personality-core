@@ -143,6 +143,22 @@
         <service
             android:name=".PhoneGemmaService"
             android:exported="true" />
+        <!-- Управление экраном телефона (PhoneControlService): служба спец.
+             возможностей. Включает её только человек в настройках телефона;
+             пока включена — устройство ядра, команды screen.* (PhoneControlLink).
+             BIND_ACCESSIBILITY_SERVICE — привязаться к ней может только система -->
+        <service
+            android:name=".PhoneControlService"
+            android:exported="true"
+            android:label="@string/phone_control_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_control_service" />
+        </service>
         <!-- Gemma на телефоне (LiteRT-LM) на видеоядре; нет библиотек — на процессоре -->
         <uses-native-library android:name="libvndksupport.so" android:required="false" />
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
@@ -196,6 +212,11 @@
         </intent>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <!-- Управление экраном (PhoneScreen): узнать рабочий стол среди окон -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
         </intent>
         <!-- Команды телефону: «Часы» (будильник, таймер, список) и «открой X» —
              приложения с иконкой на рабочем столе (не все пакеты) -->

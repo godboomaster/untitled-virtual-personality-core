@@ -8,6 +8,7 @@ import { testNativeNotification } from '../bgInbox';
 import LinkSettings from '../link/LinkSettings';
 import OfflineCard from '../offline/OfflineCard';
 import PhoneCheckCard from '../phone/PhoneCheckCard';
+import PhoneControlCard from '../phone/PhoneControlCard';
 import type { GemmaDevice, LocalStatus, LocationConfig, TimezoneConfig } from '../api';
 import { refetchProviders, refreshProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
 import { useDevMode, setDevMode } from '../devMode';
@@ -278,6 +279,8 @@ export default function ApiKeys() {
       {isNativeApp() && <OfflineCard />}
       {/* Телефон: команды телефону из чата — проверка и журнал */}
       {isNativeApp() && <PhoneCheckCard />}
+      {/* Телефон: управление экраном (служба спец. возможностей) — состояние и проверка */}
+      {isNativeApp() && <PhoneControlCard />}
 
       {/* Общие настройки: язык интерфейса, подсказки */}
       <div className="card">

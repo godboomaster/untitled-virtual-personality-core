@@ -6,6 +6,7 @@ import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from 
 import QrScanner from '../link/QrScanner';
 import { syncSystemBars } from '../nativeBars';
 import { stopBgInbox } from '../bgInbox';
+import { forgetPhoneControlServer } from '../phone/control';
 import { forgetWakeServer } from '../wakeWord';
 import { hasOfflinePersonas, refetchPersonas, seedOfflinePersonas } from '../apiData';
 import { setOfflineBoot } from '../offline/state';
@@ -290,6 +291,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
     stopBgInbox();
     // И голосовая активация — по прежнему адресу
     forgetWakeServer();
+    forgetPhoneControlServer();
     // По каналу — забыть ноутбук (ключ этого телефона больше не нужен)
     if (getLinkConfig()) setLinkConfig(null);
     setUrlDraft(getApiUrl());
